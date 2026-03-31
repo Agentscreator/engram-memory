@@ -74,6 +74,84 @@ The most comprehensive survey of agent memory as of early 2026. Confirms that sh
 
 ---
 
+## [30] Zep: A Temporal Knowledge Graph Architecture for Agent Memory (Round 3)
+
+**Authors:** Preston Rasmussen, Pavlo Paliychuk, Travis Jewett, Daniel Chalef (Zep AI)
+**ArXiv:** [2501.13956](https://arxiv.org/abs/2501.13956) (Jan 2025)
+**GitHub:** [getzep/graphiti](https://github.com/getzep/graphiti)
+
+### Summary
+
+Graphiti is a temporally-aware knowledge graph engine for AI agent memory. Its key architectural contribution relevant to Engram is **bitemporal modeling**: every node and edge carries both *valid time* (when the fact was true in the world) and *transaction time* (when the system learned it). This provides full auditability and point-in-time queryability without any separate archive mechanism.
+
+**Critical insight for Round 3:** Graphiti uses temporal edge invalidation — when a conflict is detected, the old edge's `invalid_at` timestamp is set, preserving historical record while marking it as not current. This is the same primitive as Engram's `valid_until` but applied to a graph structure.
+
+**Why not just use Graphiti?** Graphiti requires Neo4j (external service, ~1GB RAM, JVM). Engram's design philosophy is local-first with `pip install`. Graphiti's primary use case is rich knowledge graph traversal; Engram's is consistency checking. The bitemporal validity insight transfers; the implementation does not.
+
+**Influence on Round 3 rewrite:** Graphiti's `valid_from`/`valid_until` model directly inspired the collapse of Round 2's four versioning mechanisms (`superseded_by`, `facts_archive`, `utility_score`, version chain) into a single temporal invariant.
+
+---
+
+## [31] NLI Domain Shift on Technical Facts (Round 3 Finding)
+
+**Sources:** Research synthesis from production NLI deployment literature, 2024–2025.
+
+### Summary
+
+Cross-encoder NLI models (`cross-encoder/nli-deberta-v3-base`) achieve high accuracy on general-domain benchmarks (SNLI/MNLI) but suffer significant performance degradation when applied to technical domain text. Root causes:
+
+1. **Vocabulary mismatch:** SNLI/MNLI uses everyday conversational English. Codebase facts contain domain-specific jargon, numeric constraints, version identifiers, and API terminology not present in training data.
+2. **Structural mismatch:** NLI benchmarks are typically 1-2 sentence premise/hypothesis pairs. Codebase facts may be structured claims with embedded entity references.
+3. **Label artifact learning:** NLI models learn to classify based on trigger words ("not", "never", "no") rather than logical inference — unreliable in technical contexts where these words have different distributions.
+
+**The 92% accuracy claim cited in Round 2 is on benchmark data, not production technical facts.**
+
+**Influence on Round 3 rewrite:** NLI demoted from *judge* to *signal*. Deterministic entity and numeric rules (Tier 0, Tier 2) handle the majority of high-confidence technical contradictions. NLI handles natural language semantic contradictions — its genuine strength. Threshold is locally calibrated via feedback loop.
+
+---
+
+## [32] SQLite WAL Mode Concurrency Limits Under Concurrent Writes (Round 3 Finding)
+
+**Sources:** SQLite documentation, PowerSync engineering blog, benchmark literature.
+
+### Summary
+
+SQLite WAL mode enables concurrent reads during writes, but enforces **strict single-writer serialization**: only one connection can write at a time. If NLI inference (~300ms) runs inside the write transaction, the write lock is held for 300ms. With 10 concurrent agents attempting commits, throughput collapses to ~3 commits/second.
+
+**This is a fatal bottleneck for multi-agent use if detection blocks the write path.**
+
+**Influence on Round 3 rewrite:** Conflict detection fully decoupled from the write path. The write lock is held only for the `INSERT INTO facts` statement (~1ms). Detection runs in a background asyncio worker. Throughput at 10 concurrent agents: ~100 commits/second (SQLite WAL insert rate).
+
+---
+
+## [33] Byzantine Fault Tolerance: Overhead vs. Necessity Assessment (Round 3 Finding)
+
+**Sources:** BFT literature synthesis, multi-agent coordination research, 2025 industry practice.
+
+### Summary
+
+BFT consensus protocols (PBFT, HotStuff) are designed for open adversarial networks with unknown participants. They require O(n²) message complexity, high latency, and significant implementation overhead. For a **permissioned, private, trusted-agent network** (Engram's target environment), BFT provides zero practical benefit and catastrophic complexity cost.
+
+Industry consensus (2025): start with the simplest possible coordination mechanism. For trust models that assume good-faith participants with occasional crashes, SQLite's WAL mode provides sufficient durability (crash fault tolerance). BFT is needed when participants are unknown or actively malicious.
+
+**Influence on Round 3 rewrite:** BFT removed entirely. Rate limiting + agent reliability scoring + source corroboration provide sufficient protection against accidental poisoning. Full adversarial attack resistance is explicitly out of scope for the initial Engram implementation.
+
+---
+
+## [34] Quorum Commits: Coordination Tax vs. Solo Developer Reality (Round 3 Finding)
+
+**Sources:** Multi-agent coordination literature, 2025 industry analysis.
+
+### Summary
+
+Quorum-based commit protocols require a minimum number of independent agents to ratify a fact before it is considered trusted. For a **single-developer workflow** (the majority case for Engram's initial users), no quorum is ever achievable — the developer runs one agent at a time. Quorum commits, as proposed in Round 2, would make Engram non-functional for its primary user.
+
+The underlying goal (single-source facts are less trusted) is achievable without the quorum mechanism: track `corroborating_agents` count as metadata, downweight single-source facts in query scoring.
+
+**Influence on Round 3 rewrite:** Quorum commits removed. Source corroboration count tracked as a metadata signal, not an access gate.
+
+---
+
 ## Landscape at a Glance
 
 | Paper | Scope | Consistency | Conflict Detection | Year |
@@ -82,273 +160,109 @@ The most comprehensive survey of agent memory as of early 2026. Confirms that sh
 | Xu et al. [2] (A-Mem) | Single-agent memory organization | Temporal coherence only | No | 2025 |
 | Wang & Chen [3] (MIRIX) | Single-user multi-component memory | Within one user's store | No | 2025 |
 | Hu et al. [4] (Survey) | Full landscape | Flagged as unsolved frontier | No | 2026 |
+| Rasmussen et al. [30] (Zep/Graphiti) | Single-agent temporal KG | Bitemporal edge invalidation | Implicit (supersession) | 2025 |
 | **Engram** | **Multi-agent shared memory** | **Cross-agent fact consistency** | **Yes (`engram_conflicts`)** | **2026** |
 
+### Round 3 Structural Simplifications vs. Round 2
 
-
----
-
-# Adversarial Literature: Three Rounds of Falsification
-
-## Round 1 — Failure Modes in the Original Design
-
-### [5] Foundations of Global Consistency Checking with Noisy LLM Oracles
-
-**Authors:** Paul He et al.
-**ArXiv:** [2601.13600](https://arxiv.org/abs/2601.13600) (Jan 2026)
-
-Proves that pairwise LLM contradiction checks are insufficient for global consistency — three facts may each be pairwise consistent while being jointly inconsistent. Engram's detection is inherently pairwise. This is a known ceiling, not a solvable bug.
-
-### [6] Negation is Not Semantic (Bharti et al.)
-
-**ArXiv:** [2603.17580](https://arxiv.org/abs/2603.17580) (Mar 2026)
-
-Embedding-based retrieval fails on negation. "Uses JWT" and "does not use JWT" produce nearly identical embeddings. BM25 lexical retrieval catches what embeddings miss. Engram uses hybrid retrieval (embedding + BM25) to address this.
-
-### [7] The Orthogonality Constraint (Chana et al.)
-
-**ArXiv:** [2601.15313](https://arxiv.org/abs/2601.15313) (Jan 2026)
-
-Embedding retrieval degrades at high semantic density (ρ > 0.6, collapse at N=5 facts). Hash-based retrieval via structured entities maintains 100% accuracy. Engram uses entity extraction as a third retrieval path alongside embeddings and BM25.
-
-### [8] Mandela Effect in Multi-Agent Systems (Xu et al.)
-
-**ArXiv:** [2602.00428](https://arxiv.org/abs/2602.00428) (Jan 2026)
-
-Agents reinforce each other's incorrect beliefs through shared memory. Conflict detection catches contradictions but not corroborating errors. Engram tracks derivation chains via `source_claim_id` and flags single-source clusters.
-
-### [9] Why Do Multi-Agent LLM Systems Fail? (Cemri et al.)
-
-**ArXiv:** [2503.13657](https://arxiv.org/abs/2503.13657) (Mar 2025)
-
-Inter-agent misalignment accounts for 36.9% of MAS failures, including duplication. Engram uses content-hash deduplication to catch semantically identical commits.
-
-### [10] Knowledge Conflicts for LLMs (Xu et al.)
-
-**ArXiv:** [2403.08319](https://arxiv.org/abs/2403.08319) (Mar 2024)
-
-LLMs exhibit unpredictable behavior when retrieved context conflicts with parametric knowledge. Engram cannot control what agents do with retrieved facts, but surfaces provenance and conflict flags to help agents decide.
-
-### [11] Narrative Focus Bias (Purkayastha et al.)
-
-**ArXiv:** [2603.09434](https://arxiv.org/abs/2603.09434) (Mar 2026)
-
-LLMs detect contradictions about secondary entities more readily than primary subjects. Engram's NLI-based detection is not subject to this bias (NLI models don't have narrative focus).
-
-### [12] Agreeableness Bias in LLM Judges (Ahmed et al.)
-
-**ArXiv:** [2510.11822](https://arxiv.org/abs/2510.11822) (Oct 2025)
-
-LLM judges have True Negative Rate < 25% — they miss 75%+ of contradictions. This was the critical finding that drove the shift from LLM-as-judge to NLI cross-encoders as the primary detection mechanism.
-
-### [13] The Messy Reality of Contradiction Detection
-
-**Source:** httphangar.com (2025)
-
-Numeric contradictions (port numbers, rate limits, version numbers) are systematically missed by both embeddings and LLMs. Engram adds deterministic numeric/temporal extraction as a pre-check.
-
-### [14] Cosine Similarity Limitations (You et al.)
-
-**ArXiv:** [2504.16318](https://arxiv.org/abs/2504.16318) (Apr 2025)
-
-Anisotropy in embedding spaces makes absolute cosine thresholds meaningless. Engram uses relative ranking (top-k) rather than fixed thresholds.
-
-### [15] Collaborative Memory (Zhao et al.)
-
-**ArXiv:** [2505.18279](https://arxiv.org/abs/2505.18279) (May 2025)
-
-Real team deployments require time-evolving, asymmetric access policies. Engram's scope permissions are the MVP; the schema supports extension.
-
-### [16] SEDM: Scalable Self-Evolving Distributed Memory (Xu et al.)
-
-**ArXiv:** [2509.09498](https://arxiv.org/abs/2509.09498) (Sep 2025)
-
-Append-only without consolidation leads to noise accumulation. Engram adds utility-based decay and periodic consolidation.
-
-### [17] Learning to Share (Fioresi et al.)
-
-**ArXiv:** [2602.05965](https://arxiv.org/abs/2602.05965) (Feb 2026)
-
-Learned admission control dramatically improves shared memory efficiency. Engram uses novelty-based heuristic admission (content-hash dedup + entity overlap check) as a lightweight alternative.
-
-### [18] MMA: Multimodal Memory Agent (Zhang et al.)
-
-**ArXiv:** [2602.16493](https://arxiv.org/abs/2602.16493) (Feb 2026)
-
-Agent reliability scoring (source credibility + temporal decay + conflict-aware consensus) improves retrieval quality. Engram incorporates agent reliability into query scoring.
+| Round 2 Mechanism | Round 3 Replacement | Net Change |
+|---|---|---|
+| `superseded_by TEXT` pointer | `valid_until` timestamp | Removed 1 column |
+| `facts_archive` separate table | `WHERE valid_until < CUTOFF` predicate | Removed 1 table |
+| `utility_score REAL` decay field | `WHERE valid_from < CUTOFF` predicate | Removed 1 column |
+| Version chain pointer chasing | `WHERE lineage_id = X ORDER BY valid_from` | Removed pointer |
+| BFT consensus protocol | Removed | Removed 1 major subsystem |
+| Graph database requirement | Removed | Removed 1 external dependency |
+| Quorum commit gating | Source corroboration metadata | Simplified mechanism |
+| Confidence in scoring formula | Removed from formula | Reduced noise |
+| NLI as judge | NLI as signal + calibration loop | More robust |
+| Detection in write path | Detection in background worker | Fixed fatal bottleneck |
 
 ---
 
-## Round 2 — The NLI Simplification
+# MCP Ecosystem Learnings
 
-### [23] NLI Cross-Encoders Replace LLM-as-Judge
-
-**Model:** `cross-encoder/nli-deberta-v3-base` (92% accuracy, ~10ms/pair, runs locally)
-
-The single most important finding. Replaces the slow, expensive, non-deterministic, agreeableness-biased LLM judge with a fast, free, deterministic NLI model for the majority of contradiction checks. LLM escalation only for ambiguous cases.
-
-### [24] SummaC: Sentence-Level NLI Aggregation (Laban et al.)
-
-**ArXiv:** [2111.09525](https://arxiv.org/abs/2111.09525)
-
-Validates the pairwise NLI scoring + aggregation pattern for consistency checking.
-
-### [25] CLAIRE: Corpus-Level Inconsistency Detection (Semnani et al.)
-
-**ArXiv:** [2509.23233](https://arxiv.org/abs/2509.23233)
-
-Best fully automated detection reaches 75.1% AUROC. Human-in-the-loop review is essential. The dashboard is not optional.
-
-### [26] CodeCRDT (Pugachev et al.)
-
-**ArXiv:** [2510.18893](https://arxiv.org/abs/2510.18893)
-
-CRDTs achieve 100% convergence for multi-agent LLM systems. Validates eventual consistency for federation. 5-10% semantic conflict rate observed.
-
-### [27] Semantic Conflict Model (Semenov et al.)
-
-**ArXiv:** [2602.19231](https://arxiv.org/abs/2602.19231)
-
-Replicated journal with semantic dependency tracking. Engram's append-only log is already a replicated journal — this formalizes the replication semantics for federation.
-
-### [28] Letta (formerly MemGPT)
-
-**Source:** [docs.letta.com](https://docs.letta.com), [GitHub](https://github.com/letta-ai/letta)
-
-Shared memory blocks for multi-agent systems. No conflict detection. Closest competitor. Engram's moat is the consistency layer.
-
-### [29] Agent-MCP
-
-**Source:** [GitHub](https://github.com/rinadelph/Agent-MCP)
-
-Shared knowledge graph MCP server. No conflict detection. Broader feature set (task management, visualization) but no consistency model.
-
-### [30] MAGIC: Multi-Hop Contradictions (EMNLP 2025)
-
-**ArXiv:** [2507.21544](https://arxiv.org/abs/2507.21544)
-
-Confirms that multi-hop contradictions are practically hard for current models. Entity-based retrieval partially mitigates by ensuring facts about the same entities are compared.
-
-### [31] Debate Collapse (Tang et al.)
-
-**ArXiv:** [2602.07186](https://arxiv.org/abs/2602.07186)
-
-Multi-agent feedback loops create cascading false beliefs. Engram tracks derivation chains and flags single-source clusters.
-
-### [32] SCALE: NLI Over Long Documents (EMNLP 2023)
-
-**ArXiv:** [2310.13189](https://arxiv.org/abs/2310.13189)
-
-NLI should operate on full fact content rather than decomposing into sentences.
+The following findings come from studying the MCP servers that achieved real production adoption, the MCP specification evolution, and production security guidance. These shaped Engram's tool design, transport, deployment model, and security posture.
 
 ---
 
-## Round 2 — Security and Infrastructure
+## Context7 (Upstash) — 44k GitHub Stars, 240k Weekly npm Downloads
 
-### [19] MINJA: Memory Injection Attack
+**Source:** [Hands-on Architects analysis](https://handsonarchitects.com/blog/2026/what-makes-mcp-server-successful/) (Feb 2026)
 
-**ArXiv:** [2503.03704](https://arxiv.org/abs/2503.03704) (Mar 2025)
+The most successful MCP server by adoption. Provides real-time documentation to AI coding assistants. Two tools only: `resolve-library-id` and `query-docs`.
 
-Shared memory is a target for poisoning attacks. Engram mitigates via rate limiting, derivation tracking, and single-source flagging. No quorum or BFT needed — those are overengineered for the threat model.
+Key architectural decisions relevant to Engram:
 
-### [20] SQLite WAL Concurrency
+- Tool descriptions carry embedded behavioral guidance: privacy warnings, call frequency limits ("Do not call more than 3 times per question"), query quality examples (good vs bad queries), and structured selection criteria. The LLM reads these at tool discovery and follows them.
+- Server-side reranking reduced token consumption by 65% and latency by 38% vs. returning raw results for the LLM to filter.
+- Zero-setup deployment: one line of JSON config (`npx -y @upstash/context7-mcp`).
+- Privacy by design: user code never leaves the local machine. Only reformulated queries are sent to the API.
+- DiskANN for cost-effective vector storage (indexes on disk, not RAM).
+- ThoughtWorks Technology Radar listed Context7 in its "Tools" section.
 
-**Source:** SQLite documentation, berthub.eu, tenthousandmeters.com (2024–2025)
-
-SQLite serializes all writes. Under concurrent agent commits, this is a bottleneck. Mitigated by WAL mode, busy timeout, and performing all inference outside transactions. The single-writer principle (see Round 3) eliminates this entirely.
-
-### [21] Silent Embedding Model Drift
-
-**Sources:** Production RAG reports (Weaviate, 2024–2025)
-
-Upgrading embedding models silently corrupts retrieval. Engram stores `embedding_model` and `embedding_model_ver` with every claim and provides `engram reindex`.
-
-### [22] LLM Confidence Calibration Failure
-
-**Sources:** NeurIPS 2024 calibration papers
-
-Agent-reported confidence is systematically inflated. Engram treats it as a noisy signal, normalizes via historical calibration, and uses structural signals (same/different engineer, scope overlap) for severity classification.
+**Impact on Engram:** Engram adopts the behavioral guidance pattern for tool descriptions, server-side ranking, zero-setup local deployment via `uvx`, and the privacy-by-design principle (NLI and embedding models run locally).
 
 ---
 
-## Round 3 — The Architectural Collapse
+## Block's Playbook — 60+ Internal MCP Servers
 
-This round asked a different question: not "what failure modes exist?" but "is the architecture itself the problem?"
+**Source:** [Block Engineering Blog](https://engineering.block.xyz/blog/blocks-playbook-for-designing-mcp-servers) (Jun 2025)
 
-### The GraphRAG Trap
+Key principles from building MCP servers at production scale:
 
-**Sources:** [Hamel Husain / Jo Kristian Bergum](https://hamel.dev/notes/llm/rag/p7-graph-db.html) (Jul 2025), [Gading Nasution](https://gading.dev/blog/the-graphrag-trap) (Jun 2026), [Substack: When to Use a Knowledge Graph](https://todatabeyond.substack.com/p/when-to-use-a-knowledge-graph-and) (Jun 2026)
+- Design top-down from workflows, not bottom-up from API endpoints. Combine multiple internal calls into single high-level tools.
+- Tool names, descriptions, and parameters are prompts for the LLM. Use Pydantic models with field descriptions.
+- Token budget management: check output size before returning, truncate or paginate large responses, raise actionable errors for oversized content.
+- Prompt prefix caching: avoid injecting dynamic data into tool descriptions (breaks cache).
+- Goose (Block's open-source agent) raises tool execution errors for files over 400KB with actionable recovery suggestions.
 
-Graph databases are unnecessary complexity for 90% of knowledge base use cases. Key arguments from production practitioners:
-
-- A knowledge graph can live in a CSV, a JSON object, or a standard relational database. The hard part is entity disambiguation and maintenance, not storage.
-- Graph databases add operational overhead (schema management, entity disambiguation, compute overhead of traversals) without proportional benefit for flat fact stores.
-- Early Facebook ran its social graph on MySQL. You can get surprisingly far with general-purpose tools.
-- For personal/small-team use, "RAG + structured memory" outperforms GraphRAG in speed, cost, and predictability.
-
-**Impact on Engram:** The previous implementation plan called for replacing SQLite with a graph database (Key Design Constraint #1). This was wrong. Engram's data model is a flat fact store with entity links — not a graph. The relationships between facts (contradicts, supersedes, corroborates) are simple typed edges that SQLite handles natively via foreign keys. Adding a graph database would increase operational complexity, deployment friction, and the dependency surface without improving conflict detection accuracy.
-
-### The Single-Writer Principle
-
-**Source:** [Tacnode: 8 Coordination Patterns That Actually Work](https://tacnode.io/post/ai-agent-coordination) (Jan 2026)
-
-Production multi-agent systems use "shared context, not shared state" — agents read from a single authoritative layer rather than syncing state. The single-writer principle assigns write authority for critical entities to exactly one process, eliminating race conditions by design.
-
-**Impact on Engram:** Engram's SQLite write contention problem [20] is not a SQLite problem — it's an architecture problem. The MCP server process should be the single writer. All agent commits go through one serialized write path. This is not a limitation; it's the correct design for a consistency layer. SQLite's single-writer model becomes an advantage, not a bottleneck.
-
-### Event Sourcing as the Unifying Abstraction
-
-**Sources:** [Event Sourcing with SQLite](https://www.sqliteforum.com/p/event-sourcing-with-sqlite) (Dec 2025), [Reactive Principles: Communicate Facts](https://www.reactiveprinciples.org/patterns/communicate-facts.html), [Pat Helland / Jay Kreps / Martin Kleppmann](https://www.tigrisdata.com/blog/append-only-storage) (Feb 2026)
-
-Engram's facts table is already an event log. Every commit is an immutable event. The current state is derived by replaying events (filtering by non-superseded, non-archived). Conflicts are events too — they record the detection of an inconsistency at a point in time.
-
-The previous plan fought against this by bolting on graph databases, BFT consensus, quorum commits, and complex consolidation jobs. These are mechanisms. The event log is the invariant.
-
-**Impact on Engram:** The entire architecture collapses to: *an append-only event log with projections*. Claims go in. Projections (retrieval index, conflict index, agent stats) are derived views. The log is the source of truth. Everything else is a read model.
-
-### The BFT/Quorum Overengineering
-
-**Sources:** [ResearchGate: Resource-Efficient BFT](https://www.researchgate.net/publication/283444849) (2015), general distributed systems literature
-
-BFT requires 3f+1 replicas to tolerate f faults. For a team of 5-20 engineers running coding agents, this is absurd. The threat model is not Byzantine generals — it's sloppy LLM outputs and occasional bad commits. Rate limiting, content-hash dedup, derivation tracking, and human review (dashboard) are sufficient. BFT and quorum-based commits were removed.
-
-### Git Worktree Isolation as the Industry Direction
-
-**Sources:** [Augment Code](https://www.augmentcode.com/guides/how-to-run-a-multi-agent-coding-workspace) (Mar 2026), [DevSwarm](https://devswarm.ai/blog/why-worktrees-arent-enough) (Mar 2026)
-
-The industry is converging on git worktree isolation for multi-agent coding: each agent works in its own branch, changes merge sequentially. This is the coordination layer. Engram is not a coordination layer — it's a consistency layer that sits alongside this pattern, catching when agents in different worktrees develop contradictory beliefs about the same system.
+**Impact on Engram:** `engram_query` caps responses at ~4000 tokens. `engram_commit` uses Pydantic validation. Tool descriptions include good/bad query examples and call frequency limits.
 
 ---
 
-## Competitive Landscape (Updated)
+## MCP Specification Evolution (2024–2026)
 
-| System | Shared Memory | Conflict Detection | MCP Compatible | Status |
+**Sources:** [MCP Specification](https://modelcontextprotocol.io), [Anthropic AAIF announcement](https://www.anthropic.com/news/donating-the-model-context-protocol-and-establishing-of-the-agentic-ai-foundation) (Dec 2025), [ForgeCode spec analysis](https://forgecode.dev/blog/mcp-spec-updates/) (Jun 2025)
+
+- MCP donated to Linux Foundation's Agentic AI Foundation (Dec 2025). OpenAI, Google DeepMind, Microsoft, AWS, Cloudflare joined as founding members. 97M cumulative SDK downloads. 13k+ servers on GitHub.
+- Streamable HTTP replaced SSE as recommended remote transport (spec 2025-03-26). More flexible, production-ready, supports both stateless and stateful modes.
+- OAuth 2.1 with PKCE for remote server auth (spec 2025-06-18). Servers classified as OAuth 2.0 Resource Servers. Protected Resource Metadata (RFC 9728) for authorization server discovery. Resource parameter (RFC 8707) for token binding.
+- Tool annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`) for client-side safety decisions (spec 2025-11-25).
+- Structured JSON output (`structuredContent`) for machine-readable tool results.
+- Resource links (`resource_link` type) for lazy-loading large data.
+- `MCP-Protocol-Version` header required on all HTTP requests (spec 2025-06-18).
+- JSON-RPC batching removed (breaking change in 2025-06-18).
+
+**Impact on Engram:** Engram supports both stdio (local) and Streamable HTTP (team/remote). Auth follows the OAuth 2.0 Resource Server model. All tools carry annotations. Bearer tokens as MVP, full OAuth 2.1 as future work.
+
+---
+
+## Production MCP Security Best Practices
+
+**Sources:** [Aptori](https://www.aptori.com/blog/mcp-server-best-practices) (Mar 2026), [Microsoft OWASP MCP Top 10](https://microsoft.github.io/mcp-azure-security-guide/)
+
+- Validate all inputs — LLM output is untrusted. Use Pydantic schemas, parameterized queries.
+- Enforce authorization per tool, not just per connection. Bind access to identity.
+- One tool, one responsibility. Ambiguous tools get misused by LLMs.
+- Full observability: log every tool call with identity, arguments, duration.
+- Validate behavior, not just inputs. Identity-to-object relationships must be enforced.
+- Token confusion attacks: bind tokens to specific server instances (audience claim).
+- HTTPS required for any non-localhost deployment.
+
+**Impact on Engram:** All tool inputs validated via Pydantic. Parameterized SQL only. Scope permissions enforced per tool call. Tool calls logged with agent identity and duration. Tokens bound to server instance.
+
+---
+
+## Top MCP Servers by Adoption (March 2026)
+
+| Server | Stars | Category | Tools | Key Pattern |
 |---|---|---|---|---|
-| **Letta** | Yes (blocks) | No | Via adapters | Production |
-| **Agent-MCP** | Yes (knowledge graph) | No | Yes (native) | Active OSS |
-| **mem0** | No (single-user) | No | Via wrapper | Production (40k+ stars) |
-| **shared-memory-mcp** | Yes | No | Yes | Early OSS |
-| **Memorix** | Yes (cross-IDE) | No | Partial | Active OSS |
-| **SAMEP** | Yes (encrypted) | No | Yes | Research |
-| **Engram** | Yes | **Yes** | Yes (native) | **Early development** |
+| Context7 (Upstash) | 44k | Documentation | 2 | Server-side intelligence, behavioral descriptions |
+| MindsDB | 30k | Database AI | ~10 | Natural language to SQL |
+| GitHub MCP | 20k | Developer tools | ~15 | Workflow-level tools (not raw API) |
+| Playwright MCP (Microsoft) | 15k | Browser automation | ~8 | Full browser control |
+| PostgreSQL MCP | 1.8k | Database | ~5 | Read/write + performance analysis |
+| Google Drive MCP | 2k | Productivity | ~6 | Document search and management |
 
-The consistency model remains Engram's unique differentiator. The window is narrowing — Letta has the infrastructure and funding to add conflict detection. Ship fast.
-
----
-
-## The Unifying Insight
-
-Three rounds of adversarial research converged on a single principle:
-
-> **A fact committed to shared memory is an event. The log of events is the system. Everything else is a projection.**
-
-This is not a metaphor. It is the literal architecture:
-
-- `engram_commit` appends an event to the log
-- `engram_query` reads from a retrieval projection (embedding index + BM25 index)
-- `engram_conflicts` reads from a consistency projection (NLI-scored pairs)
-- The dashboard reads from an analytics projection (agent stats, timelines)
-
-The log never changes. Projections are derived, rebuildable, disposable. This makes the system simple to reason about, simple to federate (sync the log), and simple to extend (add a new projection).
-
-Every component that was removed in Round 3 (graph database, BFT consensus, quorum commits, complex consolidation) was a mechanism that fought against this invariant. Every component that survived (append-only log, NLI cross-encoder, hybrid retrieval, content-hash dedup) reinforces it.
+The pattern across all successful servers: focused scope, minimal tool count, rich descriptions, zero-setup deployment, and server-side processing that minimizes token consumption.
