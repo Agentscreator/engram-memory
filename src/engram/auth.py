@@ -100,7 +100,7 @@ def verify_token(token: str) -> dict[str, Any] | None:
         payload = json.loads(_b64url_decode(body_b64))
         if payload.get("aud") != _TOKEN_AUDIENCE:
             return None
-        if payload.get("exp", 0) < int(time.time()):
+        if payload.get("exp", 0) <= int(time.time()):
             return None
         return payload
     except Exception:

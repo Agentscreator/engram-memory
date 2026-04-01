@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 
+from engram.engine import EngramEngine
 from engram.storage import Storage
 
 
@@ -78,3 +79,46 @@ async def test_ingest_remote_fact_dedup(storage: Storage):
     }
     assert await storage.ingest_remote_fact(fact) is True
     assert await storage.ingest_remote_fact(fact) is False  # duplicate
+
+
+@pytest.mark.asyncio
+async def test_detection_re_embeds_federated_fact(engine: EngramEngine, storage: Storage):
+    """Facts ingested via federation (embedding=None) are re-embedded by the detection worker."""
+    fact_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc).isoformat()
+    fact = {
+        "id": fact_id,
+        "lineage_id": uuid.uuid4().hex,
+        "content": "The payments service uses PostgreSQL for persistent storage",
+        "content_hash": "federated_hash_123",
+        "scope": "payments",
+        "confidence": 0.9,
+        "fact_type": "observation",
+        "agent_id": "remote-agent-1",
+        "engineer": None,
+        "provenance": None,
+        "keywords": json.dumps(["payments", "postgresql", "storage"]),
+        "entities": "[]",
+        "artifact_hash": None,
+        "embedding": None,  # Federated facts arrive without embeddings
+        "embedding_model": "all-MiniLM-L6-v2",
+        "embedding_ver": "3.0.0",
+        "committed_at": now,
+        "valid_from": now,
+        "valid_until": None,
+        "ttl_days": None,
+    }
+    await storage.ingest_remote_fact(fact)
+
+    # Queue the federated fact for detection (this is what FederationClient.sync() does)
+    await engine._detection_queue.put(fact_id)
+
+    # Wait for the detection worker to process it
+    await engine._detection_queue.join()
+
+    # The detection worker should have re-generated the embedding
+    stored = await storage.get_fact_by_id(fact_id)
+    assert stored is not None
+    assert stored["embedding"] is not None, (
+        "Detection worker should re-generate embeddings for federated facts"
+    )

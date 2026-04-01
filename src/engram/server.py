@@ -65,6 +65,7 @@ async def engram_commit(
     scope: str,
     confidence: float,
     agent_id: str | None = None,
+    engineer: str | None = None,
     corrects_lineage: str | None = None,
     provenance: str | None = None,
     fact_type: str = "observation",
@@ -97,7 +98,12 @@ async def engram_commit(
       "infra/docker". Use consistent scopes across your team.
     - confidence: 0.0-1.0. How certain is this claim? 1.0 = verified in
       code. 0.7 = observed behavior. 0.3 = inferred from context.
-    - agent_id: Your agent identifier. Auto-generated if omitted.
+    - agent_id: Your agent identifier. Use your agent name for attribution
+      (e.g. the name field from your AgentConfig when using open-multi-agent).
+      Auto-generated if omitted.
+    - engineer: Optional human identifier (email or username) of the engineer
+      whose agent is making this commit. Used for team attribution and trust
+      scoring. Example: "alice@example.com" or your GitHub username.
     - corrects_lineage: If this claim corrects a previous one, pass the
       lineage_id of the claim being corrected. The old claim will be
       marked as superseded.
@@ -139,6 +145,7 @@ async def engram_commit(
         scope=scope,
         confidence=confidence,
         agent_id=agent_id,
+        engineer=engineer,
         corrects_lineage=corrects_lineage,
         provenance=provenance,
         fact_type=fact_type,
@@ -164,6 +171,7 @@ async def engram_query(
     limit: int = 10,
     as_of: str | None = None,
     fact_type: str | None = None,
+    agent_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Query what your team's agents collectively know about a topic.
 
@@ -190,12 +198,25 @@ async def engram_query(
       the system knew at that point in time.
     - fact_type: Optional filter. "observation", "inference", or
       "decision". Omit to return all types.
+    - agent_id: Your agent identifier. Used for read permission checks
+      when the server runs in auth mode (--auth flag). Match the same
+      agent_id you use when calling engram_commit.
 
     Returns: List of claims with content, scope, confidence, agent_id,
     committed_at, has_open_conflict, verified, fact_type, and provenance
     metadata.
     """
     engine = get_engine()
+
+    # Scope read permission check when auth is enabled and scope is specified
+    if _auth_enabled and _storage is not None and agent_id and scope:
+        from engram.auth import check_scope_permission
+        allowed = await check_scope_permission(_storage, agent_id, scope, "read")
+        if not allowed:
+            raise ValueError(
+                f"Agent '{agent_id}' does not have read permission for scope '{scope}'."
+            )
+
     return await engine.query(
         topic=topic,
         scope=scope,

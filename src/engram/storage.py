@@ -482,6 +482,19 @@ class Storage:
         )
         await self.db.commit()
 
+    async def update_fact_embedding(self, fact_id: str, embedding: bytes) -> None:
+        """Update the embedding for an existing fact.
+
+        Used when a fact was ingested without an embedding (e.g. via federation,
+        which strips binary BLOBs from JSON responses) and needs to be re-embedded
+        locally so it participates in semantic search and NLI conflict detection.
+        """
+        await self.db.execute(
+            "UPDATE facts SET embedding = ? WHERE id = ?",
+            (embedding, fact_id),
+        )
+        await self.db.commit()
+
     # ── Federation: facts since watermark ─────────────────────────────
 
     async def get_facts_since(

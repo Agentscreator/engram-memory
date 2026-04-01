@@ -443,6 +443,24 @@ class EngramEngine:
         if not fact or fact.get("valid_until"):
             return  # Already superseded or not found
 
+        # Re-generate embedding if missing.
+        # Facts ingested via federation arrive without embeddings because binary
+        # BLOBs are stripped from the JSON federation response. Re-embed locally
+        # so the fact participates in semantic search and Tier 1 NLI detection.
+        if not fact.get("embedding"):
+            try:
+                emb = embeddings.encode(fact["content"])
+                emb_bytes = embeddings.embedding_to_bytes(emb)
+                await self.storage.update_fact_embedding(fact_id, emb_bytes)
+                fact["embedding"] = emb_bytes
+                logger.debug("Re-generated embedding for fact %s (was missing)", fact_id)
+            except Exception:
+                logger.warning(
+                    "Could not re-generate embedding for fact %s; "
+                    "Tier 1 NLI detection will be skipped for this fact.",
+                    fact_id,
+                )
+
         entities = json.loads(fact.get("entities") or "[]")
         now = datetime.now(timezone.utc).isoformat()
 
