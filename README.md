@@ -156,7 +156,7 @@ Engram is grounded in peer-reviewed research on multi-agent memory systems:
 - [Rasmussen et al. (2025)](https://arxiv.org/abs/2501.13956) — Graphiti's bitemporal modeling directly inspired the temporal validity design
 - [Hu et al. (2026)](https://arxiv.org/abs/2512.13564) — comprehensive survey confirming shared multi-agent memory as an open frontier
 
-Full literature review: [`LITERATURE.md`](./LITERATURE.md) · Implementation plan: [`IMPLEMENTATION.md`](./IMPLEMENTATION.md) · Adversarial critique: [`CRITIQUE.md`](./CRITIQUE.md)
+Full literature review: [`LITERATURE.md`](./LITERATURE.md) · Implementation plan: [`IMPLEMENTATION.md`](./IMPLEMENTATION.md)
 
 <br />
 

@@ -4,13 +4,20 @@ This plan is grounded in the papers in [`./papers/`](./papers/), the adversarial
 review in [`LITERATURE.md`](./LITERATURE.md), and a deep study of the protocols and MCP
 servers that have achieved real production adoption across every major platform.
 
-Four rounds of research shaped the architecture:
+Five rounds of research shaped the architecture:
 
 - **Round 1** exposed embedding retrieval failures and LLM-as-judge agreeableness bias.
 - **Round 2** replaced the LLM-only pipeline with a tiered NLI approach, cutting latency 200×.
 - **Round 3** found seven structural failure modes and collapsed four versioning mechanisms
   into one invariant: *temporal validity intervals*. BFT, graph database, and quorum commits
   removed as premature complexity.
+- **Round 5** addressed regex entity extraction recall failure and cross-scope detection
+  blind spots.
+- **Round 6** — an adversarial external review — falsified latency claims, identified the
+  MINJA memory injection threat model, replaced `rank_bm25` with SQLite FTS5, corrected
+  NLI model sizing for CPU deployment, added fact expiry (TTL), secret detection, provenance
+  tracking, and fact typing. It also identified Turso/libSQL as the v2 storage upgrade path
+  and recalibrated the competitive landscape against Mem0, Cipher, SAMEP, and Agent KB.
 
 A fourth input — the live MCP ecosystem — shaped the tool surface, transport, security,
 and deployment model. This includes:
@@ -65,6 +72,7 @@ fact(id, content, valid_from, valid_until, ...)
 A fact is **current** when `NOW() ∈ [valid_from, valid_until)`.  
 A fact is **superseded** when `valid_until IS NOT NULL`.  
 A fact is **archived** when `valid_until` is old enough.  
+A fact is **expired** when `valid_until` was set by TTL, not by supersession.  
 A fact is **a version** because all versions share a `lineage_id`.
 
 This collapses *four separate Round 2 mechanisms* into one:
@@ -91,6 +99,10 @@ with each other?*
 │  engram_commit / engram_query /          │
 │  engram_conflicts / engram_resolve       │
 ├──────────────────────────────────────────┤
+│        Commit Pipeline                   │  ← inline, <10ms
+│  Secret scan → dedup → entity extract →  │
+│  provenance check → insert → queue       │
+├──────────────────────────────────────────┤
 │          Detection Layer                 │  ← runs asynchronously
 │  Tier 0: hash dedup + entity exact-match │
 │  Tier 1: NLI cross-encoder (local)       │
@@ -101,13 +113,43 @@ with each other?*
 │          Storage Layer (SQLite)          │  ← durable append-only log
 │  facts (temporal), conflicts, agents,    │
 │  scope_permissions, detection_feedback   │
+│  facts_fts (FTS5 virtual table)          │
 └──────────────────────────────────────────┘
 ```
 
 Conflict detection runs **outside the write path**. Every `engram_commit` returns
-immediately; detection happens in a background thread, completing within ~500ms for
-typical loads. This eliminates the SQLite write-lock contention that the Round 3
-analysis identified as an existential bottleneck.
+immediately; detection happens in a background worker. On CPU (the default deployment),
+detection completes in 2–10 seconds depending on candidate set size and NLI model
+choice. On GPU, detection completes in <500ms. This is acceptable because detection
+is fully async — it does not block the committing agent.
+
+This eliminates the SQLite write-lock contention that the Round 3 analysis identified
+as an existential bottleneck.
+
+---
+
+## Competitive Landscape and Strategic Positioning
+
+The window for "only system doing consistency" is narrowing. The plan must be explicit
+about where Engram sits relative to converging competitors:
+
+- **Mem0** (38k+ GitHub stars) now addresses multi-agent memory with four scoping
+  dimensions (user, session, agent, application). Their March 2026 blog post directly
+  discusses "agents duplicating and contradicting each other's work." They don't have
+  conflict *detection*, but they're framing the same problem.
+- **Cipher (Byterover)** ships team-level memory sharing across IDEs with real-time
+  sync. No conflict detection, but the shared memory layer is production-ready.
+- **SAMEP** ([arxiv 2507.10562](https://arxiv.org/abs/2507.10562)) proposes a formal
+  protocol for secure agent memory exchange with cryptographic access controls
+  (AES-256-GCM) and MCP/A2A compatibility.
+- **Agent KB** (ICML 2025) provides cross-domain experience sharing with hybrid
+  retrieval — structurally similar to `engram_query`.
+
+**Engram's moat is the conflict detection pipeline (Tiers 0–3), not the shared memory
+layer itself.** If Engram ships Phases 1–2 without Phase 3, it is just another shared
+memory MCP server in a crowded field. Phase 3 must be prioritized as the defensible
+differentiator. The delivery sequence reflects this: Phases 1–3 are the minimum viable
+product, and Phase 3 is the reason Engram exists.
 
 ---
 
@@ -152,6 +194,9 @@ def engram_commit(
     confidence: float,
     agent_id: str | None = None,
     corrects_lineage: str | None = None,
+    provenance: str | None = None,
+    fact_type: str = "observation",
+    ttl_days: int | None = None,
 ) -> dict:
     """Commit a claim about the codebase to shared team memory.
 
@@ -164,7 +209,8 @@ def engram_commit(
     direct observation. Set confidence below 0.5 for uncertain claims.
 
     IMPORTANT: Do not include secrets, API keys, passwords, or credentials
-    in the content field. These will be permanently stored.
+    in the content field. The server will reject commits containing
+    detected secrets.
 
     IMPORTANT: Do not call this tool more than 5 times per task. Batch
     related discoveries into a single, well-structured claim.
@@ -183,6 +229,16 @@ def engram_commit(
     - corrects_lineage: If this claim corrects a previous one, pass the
       lineage_id of the claim being corrected. The old claim will be
       marked as superseded.
+    - provenance: Optional evidence trail. File path, line number, test
+      output, or tool call ID that generated this evidence. Facts with
+      provenance are marked as verified in query results.
+    - fact_type: "observation" (directly observed in code/tests/logs),
+      "inference" (concluded from observations), or "decision"
+      (architectural decision by humans or agents). Default: observation.
+    - ttl_days: Optional time-to-live in days. When set, the fact
+      automatically expires after this period. Useful for facts about
+      external dependencies, API contracts, or infrastructure that
+      change frequently. Default: null (no expiry).
 
     Returns: {claim_id, committed_at, duplicate, conflicts_detected}
     """
@@ -195,6 +251,7 @@ def engram_query(
     scope: str | None = None,
     limit: int = 10,
     as_of: str | None = None,
+    fact_type: str | None = None,
 ) -> list[dict]:
     """Query what your team's agents collectively know about a topic.
 
@@ -204,6 +261,9 @@ def engram_query(
     IMPORTANT: Claims marked with has_open_conflict=true are disputed.
     Do not treat them as settled facts. Check the conflict details before
     relying on them.
+
+    IMPORTANT: Claims marked with verified=false lack provenance. Treat
+    them with appropriate skepticism.
 
     IMPORTANT: Do not call this tool more than 3 times per task. Refine
     your query to be specific rather than making multiple broad queries.
@@ -216,9 +276,12 @@ def engram_query(
     - limit: Max results (default 10, max 50).
     - as_of: ISO 8601 timestamp for historical queries. Returns what
       the system knew at that point in time.
+    - fact_type: Optional filter. "observation", "inference", or
+      "decision". Omit to return all types.
 
     Returns: List of claims with content, scope, confidence, agent_id,
-    committed_at, has_open_conflict, and provenance metadata.
+    committed_at, has_open_conflict, verified, fact_type, and provenance
+    metadata.
     """
 ```
 
@@ -301,11 +364,12 @@ server — reducing token consumption by 65% and latency by 38%. Engram applies 
 principle:
 
 - `engram_query` returns pre-ranked, pre-scored results. The LLM does not need to
-  re-rank or filter. Each result includes a relevance score and conflict flag.
+  re-rank or filter. Each result includes a relevance score, conflict flag, verification
+  status, and fact type.
 - `engram_conflicts` returns conflicts pre-grouped by scope and pre-sorted by severity.
   The LLM gets an actionable queue, not raw data.
-- `engram_commit` performs dedup, entity extraction, and conflict detection server-side.
-  The LLM just provides the raw claim text.
+- `engram_commit` performs secret scanning, dedup, entity extraction, and conflict
+  detection server-side. The LLM just provides the raw claim text.
 
 Token budget: `engram_query` responses are capped at ~4000 tokens (10 claims × ~400
 tokens each). If a claim is too long, it is truncated server-side with a note. This
@@ -362,6 +426,15 @@ only the topic string. The NLI model and embedding model run locally. The only e
 call is Tier 3 LLM escalation (optional, for ambiguous cases), and even that sends
 only the two claim texts being compared — never the agent's code or conversation.
 
+**Deterministic secret detection (Round 6):** The tool description says "do not include
+secrets," but relying on the LLM to follow this instruction is insufficient.
+[AMP (ICML 2026)](https://proceedings.mlr.press/v317/wu26a.html) demonstrates that
+privacy guarantees require deterministic enforcement, not advisory prompts. Engram runs
+a lightweight regex scanner on `content` at commit time to detect common secret patterns
+(API keys, JWT tokens, connection strings, AWS credentials). If detected, the commit is
+rejected with an actionable error message identifying the pattern. This is a ~1ms check
+that prevents the most common accidental secret leakage.
+
 ---
 
 ## Phase 1 — Foundation: Data Model and Storage
@@ -378,35 +451,56 @@ CREATE TABLE facts (
     content_hash     TEXT NOT NULL,      -- SHA-256(normalize(content)), for dedup
     scope            TEXT NOT NULL,      -- e.g. "auth", "payments/webhooks"
     confidence       REAL NOT NULL,      -- 0.0–1.0, agent-reported
+    fact_type        TEXT NOT NULL DEFAULT 'observation',  -- observation | inference | decision
     agent_id         TEXT NOT NULL,
     engineer         TEXT,
+    provenance       TEXT,               -- optional evidence trail (file path, test output, etc.)
     keywords         TEXT,               -- JSON array
     entities         TEXT,               -- JSON array: {name, type, value}
+    artifact_hash    TEXT,               -- optional SHA-256 of referenced file/config at commit time
     embedding        BLOB,               -- float32, serialized numpy
     embedding_model  TEXT NOT NULL,      -- "all-MiniLM-L6-v2"
     embedding_ver    TEXT NOT NULL,      -- semver of sentence-transformers
     committed_at     TEXT NOT NULL,      -- ISO 8601
     valid_from       TEXT NOT NULL,      -- ISO 8601 (= committed_at for new facts)
-    valid_until      TEXT               -- NULL = currently valid; set when superseded
+    valid_until      TEXT,              -- NULL = currently valid; set when superseded or expired
+    ttl_days         INTEGER            -- optional; when set, valid_until = valid_from + ttl_days
 );
 
 -- Validity window is the primary query filter
-CREATE INDEX idx_facts_validity   ON facts(scope, valid_until);
+CREATE INDEX idx_facts_validity     ON facts(scope, valid_until);
 CREATE INDEX idx_facts_content_hash ON facts(content_hash);
-CREATE INDEX idx_facts_lineage    ON facts(lineage_id);
-CREATE INDEX idx_facts_agent      ON facts(agent_id);
+CREATE INDEX idx_facts_lineage      ON facts(lineage_id);
+CREATE INDEX idx_facts_agent        ON facts(agent_id);
+CREATE INDEX idx_facts_type         ON facts(fact_type);
+
+-- FTS5 virtual table for lexical retrieval (replaces rank_bm25 dependency)
+CREATE VIRTUAL TABLE facts_fts USING fts5(
+    content, scope, keywords,
+    content=facts, content_rowid=rowid
+);
 ```
+
+**New columns from Round 6:**
+
+| Column | Source | Purpose |
+|---|---|---|
+| `fact_type` | Cipher's System 1/2 model | Distinguishes observations, inferences, and decisions. Enables richer query filtering and differential conflict weighting. |
+| `provenance` | MINJA threat model, SEDM | Evidence trail for auditability. Facts with provenance are marked `verified` in query results. |
+| `artifact_hash` | SEDM's verifiable write admission | SHA-256 of the referenced file/config at commit time. Enables staleness detection on query. |
+| `ttl_days` | Round 6 expiry analysis | Automatic fact expiry. When set, a background job sets `valid_until = valid_from + ttl_days`. |
 
 **Why `valid_until` replaces all Round 2 versioning machinery:**
 
-| Round 2 mechanism | Round 3 equivalent |
+| Round 2 mechanism | Round 3+ equivalent |
 |---|---|
 | `superseded_by TEXT` pointer | `valid_until = now()` on the old fact |
 | `facts_archive` table | `WHERE valid_until < ARCHIVE_CUTOFF` |
 | `utility_score REAL` decay field | `DATEDIFF(now(), valid_from) > THRESHOLD` |
 | Version chain via `superseded_by` | `WHERE lineage_id = X ORDER BY valid_from` |
+| *(none — Round 6)* | `valid_until = valid_from + ttl_days` for TTL expiry |
 
-Four separate mechanisms → one temporal predicate.
+Five separate mechanisms → one temporal predicate.
 
 **Why `lineage_id` is new:** When a fact is corrected, the new version shares the old
 fact's `lineage_id`. This enables point-in-time queries ("what did the system believe
@@ -431,7 +525,7 @@ CREATE TABLE conflicts (
     fact_a_id        TEXT NOT NULL REFERENCES facts(id),
     fact_b_id        TEXT NOT NULL REFERENCES facts(id),
     detected_at      TEXT NOT NULL,
-    detection_tier   TEXT NOT NULL,  -- "tier0_entity" | "tier1_nli" | "tier2_numeric" | "tier3_llm"
+    detection_tier   TEXT NOT NULL,  -- "tier0_entity" | "tier1_nli" | "tier2_numeric" | "tier2b_cross_scope" | "tier3_llm"
     nli_score        REAL,           -- contradiction score from NLI model, if applicable
     explanation      TEXT,           -- LLM-generated only for Tier 3
     severity         TEXT NOT NULL,  -- "high" | "medium" | "low"
@@ -470,25 +564,32 @@ CREATE TABLE detection_feedback (
 );
 ```
 
-False-positive feedback from `engram_dismiss` feeds a local calibration file
-that adjusts the NLI threshold over time. This addresses the calibration failure
-mode identified in Round 3.
+False-positive feedback from `engram_resolve(resolution_type="dismissed")` feeds a
+local calibration file that adjusts the NLI threshold over time. This addresses the
+calibration failure mode identified in Round 3.
 
 ### Scope Permissions
 
 ```sql
 CREATE TABLE scope_permissions (
-    agent_id   TEXT NOT NULL,
-    scope      TEXT NOT NULL,
-    can_read   BOOLEAN NOT NULL DEFAULT TRUE,
-    can_write  BOOLEAN NOT NULL DEFAULT TRUE,
+    agent_id    TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    can_read    BOOLEAN NOT NULL DEFAULT TRUE,
+    can_write   BOOLEAN NOT NULL DEFAULT TRUE,
+    valid_from  TEXT,              -- NULL = always valid (Round 6: temporal permissions)
+    valid_until TEXT,              -- NULL = no expiry
     PRIMARY KEY (agent_id, scope)
 );
 ```
 
 Hierarchical scope matching: `payments/webhooks` inherits from `payments`. Default
-(no row): full access. This is the MVP — role-based extensions and temporal policy
-windows are future work.
+(no row): full access.
+
+**Temporal permissions (Round 6):** Inspired by [Collaborative Memory
+(OpenReview, 2025)](https://openreview.net/forum?id=pJUQ5YA98Z), scope permissions
+carry the same `valid_from`/`valid_until` temporal primitive as facts. An agent might
+have write access to `payments/*` only during a specific sprint or deployment window.
+This reuses the existing temporal model — no new abstraction needed.
 
 ---
 
@@ -500,13 +601,17 @@ windows are future work.
 
 | Dependency | Purpose | Why this and not X |
 |---|---|---|
-| `fastmcp` or `mcp` SDK | MCP server | Standard; supports Streamable HTTP transport |
+| `mcp` SDK (includes FastMCP) | MCP server | Standard; supports Streamable HTTP transport |
 | `aiosqlite` | Async SQLite I/O | WAL mode + async = correct |
 | `sentence-transformers` | Embeddings + NLI | Local, no API key |
-| `rank_bm25` | Lexical retrieval | Negation blindness fix |
 | `numpy` | Cosine similarity | No extra dep |
-| `datasketch` | MinHash for entity dedup | Round 4: replaces LLM-only entity resolution |
+| `datasketch` | MinHash for entity dedup | Replaces LLM-only entity resolution |
 | small NER model (e.g. `dslim/bert-base-NER`) | Entity extraction fallback | Catches what regex misses; ~50ms, local |
+
+**Round 6 change: `rank_bm25` removed.** SQLite FTS5 provides BM25 ranking natively
+in C, requires zero additional dependencies, and integrates with the existing storage
+layer. The `facts_fts` virtual table replaces the Python-level BM25 library entirely.
+This removes a dependency seam and improves lexical retrieval performance.
 
 **Transport:** Streamable HTTP (MCP spec v2025-03-26+) is the default for remote
 deployment. Local/CLI use is `stdio`. The legacy `HTTP+SSE` transport (2024-11-05 spec)
@@ -522,8 +627,12 @@ in §MCP Tool Design.
 
 **No graph database.** SQLite + the `entities` JSON column provides all the structured
 lookup needed. Graph databases add operational burden for no capability advantage within
-Engram's scope. See §MCP Tool Design for the rationale: Engram is a consistency layer,
-not a knowledge graph.
+Engram's v1 scope. See §MCP Tool Design for the rationale: Engram is a consistency layer,
+not a knowledge graph. **Note (Round 6):** This stance is correct for v1 but not absolute.
+If federation (Phase 6) scales beyond ~10 teams or ~100k facts, traversal queries
+("which agents' facts influenced this decision?", "show the correction chain for this
+lineage") become expensive in SQL. At that scale, a lightweight embedded graph layer
+(e.g., [Kùzu](https://kuzudb.com/)) may become justified. This is a v2+ consideration.
 
 **No BFT.** Engram serves a permissioned team. Crash fault tolerance via SQLite WAL is
 sufficient.
@@ -534,24 +643,43 @@ sufficient.
 - Conflict detection runs in a **background thread**, holding no write lock during
   NLI inference. The inference result is written in a single short transaction.
 - Write lock is held only for the duration of the `INSERT INTO facts` statement
-  (~1ms), not for the 300ms NLI scan. This is the structural fix for the Round 3
+  (~1ms), not for the NLI scan. This is the structural fix for the Round 3
   bottleneck: decouple inference from the write path.
 
-### `engram_commit(fact, scope, confidence, agent_id?, source_lineage_id?)`
+**v2 storage upgrade path (Round 6):** [Turso](https://turso.tech/) (Rust rewrite of
+SQLite with MVCC) now supports concurrent writes, achieving 4x write throughput over
+vanilla SQLite and eliminating `SQLITE_BUSY` errors entirely. It is wire-compatible
+with SQLite, supports the same SQL dialect, and adds concurrent writes via MVCC,
+built-in vector search, Change Data Capture (useful for federation), and edge
+replication. For v1, SQLite WAL + async detection is safer and simpler. For team mode
+in v2, Turso is the natural upgrade: `pip install engram-mcp[team]`. The schema is
+identical; only the connection layer changes.
 
-1. Validate inputs
-2. Compute `content_hash` (SHA-256 of lowercased, whitespace-normalized content)
-3. **Dedup check:** `SELECT id FROM facts WHERE content_hash = ? AND valid_until IS NULL AND scope = ?`.
+**Embedding model consistency (Round 6):** In team mode, the server is the single
+source of all embeddings — both at commit time and query time. This eliminates the
+risk of different engineers running different `sentence-transformers` versions and
+producing incompatible embeddings. In local mode, embedding version mismatches are
+detected at startup by comparing the configured model against the newest stored rows,
+and flagged with a warning.
+
+### `engram_commit` Pipeline
+
+1. **Validate inputs** (Pydantic)
+2. **Secret scan (<1ms):** Regex scanner checks `content` for common secret patterns
+   (API keys, JWT tokens, AWS credentials, connection strings). If detected, reject
+   with an actionable error: `"Commit rejected: content appears to contain an API key
+   (pattern: sk-...). Remove secrets before committing."` This is deterministic
+   enforcement, not advisory.
+3. **Compute `content_hash`** (SHA-256 of lowercased, whitespace-normalized content)
+4. **Dedup check:** `SELECT id FROM facts WHERE content_hash = ? AND valid_until IS NULL AND scope = ?`.
    If found, return `{fact_id: existing_id, duplicate: true}`. O(1) — no model inference.
-4. Generate embedding for `content`
-5. Extract `keywords` and `entities` via a **hybrid extraction pipeline**.
+5. **Generate embedding** for `content`
+6. **Extract `keywords` and `entities`** via a hybrid extraction pipeline.
    Entity extraction is the foundation of Tier 0 detection and must have high recall.
    
-   **Why regex alone is insufficient:** The plan previously stated "a regex/rule engine
-   can extract numerics, version numbers, and capitalized service names reliably." This
-   is the most fragile assumption in the entire design. Natural language codebase facts
-   use varied phrasing: "about a thousand requests per second," "1k/s," "bumped from
-   30 to 60 seconds," "doesn't use rate limiting." Regex catches clean patterns like
+   **Why regex alone is insufficient:** Natural language codebase facts use varied
+   phrasing: "about a thousand requests per second," "1k/s," "bumped from 30 to 60
+   seconds," "doesn't use rate limiting." Regex catches clean patterns like
    `\d+\s*req/s` but misses written-out numbers, abbreviations, multi-value sentences,
    and negation of entity existence. Low entity recall means Tier 0 fires rarely, and
    the system silently falls through to NLI for contradictions that should have been
@@ -561,14 +689,16 @@ sufficient.
    
    a. **Regex pass (< 1ms):** Extract obvious patterns — bare numbers with units
       (`100 req/s`, `v3.2.1`, `port 5432`), ALL_CAPS identifiers (`AUTH_RATE_LIMIT`,
-      `JWT_SECRET`), and known service name patterns. This catches ~40-60% of entities
-      in well-structured facts.
+      `JWT_SECRET`), and known service name patterns. Regex is the fast first pass;
+      the NER model is the primary extractor. No unsupported recall claims — actual
+      regex recall depends on how well-structured the facts are, which the AGENTS.md
+      template influences but cannot guarantee.
    
    b. **Lightweight NER model pass (< 50ms):** Run a small token-classification model
       (e.g., a fine-tuned distilbert or the `sentence-transformers` NER head) to catch
       entities the regex missed — written-out numbers ("a thousand"), abbreviations
       ("1k"), service names in natural phrasing ("the auth service"), and negation
-      contexts ("does not use X"). This lifts recall to ~80-90%.
+      contexts ("does not use X"). This is the primary extraction path.
    
    c. **LLM extraction (optional, on commit if available):** For high-stakes scopes
       or when the lightweight model's confidence is low, use the Tier 3 LLM to extract
@@ -577,38 +707,53 @@ sufficient.
    
    The extraction result is stored in the `entities` JSON column. If extraction fails
    or returns empty, the fact is still committed — it just won't benefit from Tier 0
-   detection and will rely on Tier 1 NLI instead. Extraction quality improves over time
-   as the team's AGENTS.md template guides agents to write well-structured facts with
-   explicit numeric values and service names.
-6. Determine `lineage_id`: if `source_lineage_id` is provided, inherit it (this is a
+   detection and will rely on Tier 1 NLI instead.
+
+7. **Set provenance and verification status:** If `provenance` is provided, the fact
+   is marked as `verified`. If not, it is accepted but marked `unverified` in query
+   results. This is the lightweight version of [SEDM's verifiable write
+   admission](https://arxiv.org/abs/2509.09498) — full replay verification is too
+   heavy, but provenance tracking makes poisoned facts auditable and distinguishable
+   from verified ones. See §Memory Injection Defense for the full threat model.
+8. **Determine `lineage_id`:** if `corrects_lineage` is provided, inherit it (this is a
    correction of an existing fact). Otherwise, generate a new UUID.
-7. If correcting an existing fact: `UPDATE facts SET valid_until = NOW() WHERE lineage_id = source_lineage_id AND valid_until IS NULL`
-8. `INSERT INTO facts (..., valid_from = NOW(), valid_until = NULL)`
-9. Post the new `fact_id` to the **detection queue** (in-memory `asyncio.Queue`).
-   Return immediately: `{fact_id, committed_at, duplicate: false}`
+9. If correcting an existing fact: `UPDATE facts SET valid_until = NOW() WHERE lineage_id = corrects_lineage AND valid_until IS NULL`
+10. **Handle TTL:** If `ttl_days` is provided, set `valid_until = valid_from + ttl_days`.
+    A background job also periodically scans for facts where `ttl_days IS NOT NULL AND
+    valid_until IS NULL AND valid_from + ttl_days < NOW()` and closes their windows.
+11. `INSERT INTO facts (..., valid_from = NOW(), valid_until = NULL)`
+12. **Update FTS5 index:** `INSERT INTO facts_fts(rowid, content, scope, keywords) VALUES (...)`
+13. Post the new `fact_id` to the **detection queue** (in-memory `asyncio.Queue`).
+    Return immediately: `{fact_id, committed_at, duplicate: false}`
 
-**Write lock is released at step 8.** Detection runs without holding any lock.
+**Write lock is released at step 11.** Detection runs without holding any lock.
 
-### `engram_query(topic, scope?, limit?, as_of?)`
+### `engram_query(topic, scope?, limit?, as_of?, fact_type?)`
 
 1. Generate embedding for `topic`
-2. Retrieve **currently valid** facts: `WHERE valid_until IS NULL [AND scope = ?]`
+2. Retrieve **currently valid** facts: `WHERE valid_until IS NULL [AND scope = ?] [AND fact_type = ?]`
    If `as_of` timestamp provided: `WHERE valid_from <= ? AND (valid_until IS NULL OR valid_until > ?)`
    This enables historical point-in-time queries without any additional machinery.
-3. **Dual retrieval:** Score via embedding cosine + BM25 rank, fuse with RRF.
+3. **Dual retrieval:** Score via embedding cosine + FTS5 BM25 rank, fuse with RRF.
+   FTS5 query: `SELECT rowid, rank FROM facts_fts WHERE facts_fts MATCH ? ORDER BY rank LIMIT 20`
 4. **Scoring:**
    ```
    score = relevance              (RRF rank, 0-1 normalized)
          + 0.2 * recency          (exp(-0.05 * days_since_commit))
          + 0.15 * agent_trust     (1 - flagged_commits/total_commits)
    ```
-   **Change from Round 2:** Confidence is REMOVED from the scoring formula.
-   Agent-reported confidence is uncalibrated (Round 3 finding: LLMs systematically
-   over-report confidence). Including it as a scoring signal pollutes retrieval with
-   noise. Confidence is still stored and returned as metadata; agents can weight it
-   themselves.
-5. Return top-`limit` facts (default 10) with `has_open_conflict` flag joined from
-   `conflicts` table. Agents must see contested facts.
+   **Confidence handling (Round 6 revision):** Raw agent-reported confidence is excluded
+   from the scoring formula because LLMs systematically over-report confidence (Round 3
+   finding). However, confidence is not permanently discarded. Once sufficient calibration
+   data exists (tracked via `flagged_commits` at confidence buckets per agent), calibrated
+   confidence can be reintroduced as a scoring signal. Until then, confidence is stored
+   and returned as metadata; agents can weight it themselves. "Confidence is deferred
+   until calibration data exists" — not removed.
+5. Return top-`limit` facts (default 10) with:
+   - `has_open_conflict` flag joined from `conflicts` table
+   - `verified` flag (true if `provenance IS NOT NULL`)
+   - `fact_type` for filtering context
+   - `artifact_hash` for staleness checking by the consuming agent
 
 **Why the `as_of` parameter matters:** A debugging agent can query "what did Engram
 know about the auth service on December 3rd?" without any special archive mechanism.
@@ -643,10 +788,18 @@ database lock contention.
 
 ### Critical Domain-Shift Finding (Round 3)
 
-The 92% accuracy claim for `cross-encoder/nli-deberta-v3-base` is from SNLI/MNLI
-benchmarks on general English. Codebase facts like *"The auth service rate-limits to
-1,000 requests per second per IP"* are **not** general English. Domain shift will
-degrade NLI accuracy on technical facts, potentially severely.
+The 92% accuracy claim for NLI cross-encoders is from SNLI/MNLI benchmarks on general
+English. Codebase facts like *"The auth service rate-limits to 1,000 requests per
+second per IP"* are **not** general English. Domain shift will degrade NLI accuracy on
+technical facts, potentially severely.
+
+Research confirms this is worse than initially estimated. LLMs detect self-contradictions
+at 0.6–45.6% accuracy; pairwise contradictions top out at ~89% with chain-of-thought
+([httphangar.com synthesis, 2025](https://httphangar.com/blog/nlp-contradiction-deep-dive)).
+CLAIRE's ~75% AUROC on Wikipedia is an **upper bound from a more favorable domain**.
+Engram's actual automated precision on technical codebase facts will likely be 60–70%
+without the deterministic tiers, and 80–85% with them. The deterministic tiers are not
+just a performance optimization — they are a precision necessity.
 
 **Mitigation:** NLI is demoted from *judge* to *signal*. The tiered pipeline is
 restructured so that:
@@ -662,6 +815,42 @@ The NLI threshold is **locally calibrated** using the `detection_feedback` table
 After 100 conflict feedback events, the threshold is adjusted:
 `threshold = threshold - 0.05 * (false_positive_rate - 0.1)`.
 This creates a feedback loop that adapts the NLI to the team's codebase vocabulary.
+
+### NLI Model Selection (Round 6 Correction)
+
+The original plan specified `cross-encoder/nli-deberta-v3-base` (86M parameters) and
+claimed "~300ms for 30 candidates" and "~500ms total detection." **This latency claim
+is falsified on CPU.** DeBERTa-base takes ~200–400ms *per pair* on CPU. 30 pairs on
+CPU = 6–12 seconds, not 300ms. The claim is only valid on GPU with batch inference.
+
+Since the default deployment is CPU-first (`pip install`, no GPU required), the model
+selection must match the deployment target:
+
+| Model | Params | CPU per pair | 30 pairs (CPU) | MNLI accuracy | Default? |
+|---|---|---|---|---|---|
+| `cross-encoder/nli-MiniLM2-L6-H768` | ~60M | ~80ms | ~2.4s | ~85% of DeBERTa | **Yes (CPU)** |
+| `cross-encoder/nli-deberta-v3-base` | 86M | ~300ms | ~9s | Baseline | GPU flag |
+| DeBERTa + ONNX INT8 quantization | 86M | ~100ms | ~3s | ~98% of base | Optional |
+
+**Default:** MiniLM2-L6 for CPU deployment. This covers the zero-setup local use case.
+**`--high-accuracy` flag:** DeBERTa-base for GPU-equipped team servers.
+**Optional:** ONNX Runtime as an optional dependency (`pip install engram-mcp[onnx]`)
+for 2–4x CPU speedup with DeBERTa.
+
+After Tier 0 catches obvious entity conflicts and Tier 2 catches numeric ones, the
+NLI candidate set after dedup is typically 5–15 pairs, not 30. At 10 pairs × 80ms
+(MiniLM2-L6 on CPU) = ~800ms. This is acceptable for a background worker.
+
+**Honest latency table:**
+
+| Metric | CPU (MiniLM2-L6, default) | GPU (DeBERTa-base) |
+|---|---|---|
+| Commit latency | <10ms (async queue post) | <10ms |
+| Detection latency | 2–5 seconds (background) | <500ms (background) |
+| Write lock held | ~1ms | ~1ms |
+| SQLite throughput at 10 agents | ~100 commits/s | ~100 commits/s |
+
+Detection is async in both cases. The committing agent never waits.
 
 ### Detection Pipeline
 
@@ -690,18 +879,18 @@ Runs first, before any model inference:
 
 This tier catches "rate limit is 1000" vs "rate limit is 2000" with zero ML.
 
-**Tier 1 — NLI Cross-Encoder (<500ms total)**
+**Tier 1 — NLI Cross-Encoder**
 
 For `f_new`, retrieve candidates via three parallel paths:
 - *Path A:* Top-20 embedding-similar current facts in scope
-- *Path B:* Top-10 BM25 lexical matches in scope
+- *Path B:* Top-10 FTS5 BM25 lexical matches in scope
 - *Path C:* All facts with overlapping entity names (regardless of value)
 
 Union, dedup, skip any already flagged by Tier 0. Cap at 30 candidates.
 
 For each candidate:
 ```python
-nli_model = CrossEncoder('cross-encoder/nli-deberta-v3-base')
+nli_model = CrossEncoder('cross-encoder/nli-MiniLM2-L6-H768')  # CPU default
 scores = nli_model.predict([(f_new.content, f_cand.content)])
 # scores[0] = contradiction, scores[1] = entailment, scores[2] = neutral
 ```
@@ -711,9 +900,6 @@ Classification:
   with `detection_tier = 'tier1_nli'`, `nli_score = contradiction_score`
 - `contradiction_score > THRESHOLD_LOW` (default 0.5): **escalate to Tier 3**
 - `entailment_score > 0.85`, different agents: **corroboration link** (metadata only, not a conflict)
-
-Tier 1 completes in ~300ms for 30 candidates. This is acceptable for an async background
-worker — it does not block the write path.
 
 **Tier 2 — Numeric and Temporal Rules (<5ms, parallel with Tier 1)**
 
@@ -801,20 +987,6 @@ When `f_new` and `f_candidate` share the same `lineage_id` and NLI entailment > 
 | Tier 3 LLM confirmed, any | medium |
 | Tier 1 NLI 0.5–0.85, escalated but not confirmed | low |
 
-### Performance vs. Round 2
-
-| Metric | Round 2 (NLI in write path) | Round 3 (NLI in background) |
-|---|---|---|
-| Commit latency | ~500ms (NLI blocking) | <10ms (async queue post) |
-| Detection latency | ~500ms | ~500ms (background) |
-| Write lock held | ~500ms | ~1ms |
-| SQLite throughput at 10 concurrent agents | Serialized, ~2 commits/s | ~100 commits/s |
-| NLI on technical facts | 92% (benchmark) | Calibrated via feedback loop |
-
-The structural change: **detection is decoupled from the write path**. This is the
-only architectural change that prevents SQLite write serialization from being fatal
-under concurrent agent use.
-
 ---
 
 ## Phase 4 — Conflict Resolution Workflow
@@ -884,6 +1056,48 @@ for token binding. Integration with enterprise identity providers (Microsoft Ent
 Google IAM, Okta). This follows the pattern Microsoft's Azure MCP Server uses: remote
 HTTP servers behind an API gateway with centralized policy enforcement and monitoring.
 
+### Memory Injection Defense (Round 6)
+
+[MINJA (Dong et al., 2025)](https://arxiv.org/abs/2503.03704) demonstrates that an
+attacker can inject malicious records into an agent's memory bank through normal query
+interactions alone — no direct memory access needed. The attack achieves >95% injection
+success rate and 70% attack success rate. A follow-up paper ([Memory Poisoning Attack
+and Defense, Jan 2026](https://arxiv.org/abs/2601.05504)) studies defenses.
+
+**Why this matters for Engram:** `engram_commit` accepts facts from any authenticated
+agent. A compromised or prompt-injected agent (not a malicious human — a legitimate
+agent that was manipulated) could commit poisoned facts that propagate through
+`engram_query` to other agents. Rate limiting and agent reliability scoring are
+necessary but insufficient.
+
+**Defense layers:**
+
+1. **Provenance tracking:** Facts committed with a `provenance` field (file path, line
+   number, test output, tool call ID) are marked `verified` in query results. Facts
+   without provenance are accepted but marked `unverified`. This makes poisoned facts
+   auditable and distinguishable from verified ones.
+
+2. **Agent reliability scoring:** `flagged_commits / total_commits` downweights agents
+   with high conflict rates. A poisoning agent that triggers many conflicts will see
+   its facts ranked lower automatically.
+
+3. **Rate limiting:** Per-agent commit rate limits (configurable, default 50/hour)
+   prevent bulk poisoning.
+
+4. **Fact type differentiation:** `observation` facts (directly observed in code) are
+   harder to poison than `inference` facts (concluded from context). The conflict
+   detection pipeline can weight observation-vs-observation conflicts as more serious
+   than inference-vs-inference conflicts.
+
+5. **AGENTS.md guidance:** The template instructs agents to always include provenance
+   and to commit only verified facts. This is advisory, not deterministic, but it
+   reduces the attack surface by making well-behaved agents the norm.
+
+This is a "trust but verify" model. It does not prevent a determined attacker with
+write access from poisoning the store — that remains explicitly out of scope. It does
+make poisoning detectable, auditable, and self-correcting through the reliability
+scoring feedback loop.
+
 ### Security — copying what works
 
 Every major platform's MCP security guidance converges on the same principles. Engram
@@ -898,6 +1112,8 @@ implements all of them:
 | Bind tokens to server instance | MCP 2025-06-18 spec | JWT audience claim |
 | No shared keys | Google managed MCP | Per-engineer tokens, never shared |
 | HTTPS for non-localhost | MCP spec, all enterprise guides | Enforced in team/enterprise mode |
+| Deterministic secret detection | AMP (ICML 2026) | Regex scanner rejects commits containing secrets |
+| Provenance tracking | MINJA defense, SEDM | Facts without provenance marked unverified |
 
 ### AGENTS.md integration
 
@@ -911,6 +1127,9 @@ AGENTS.md to guide agents on when and how to use shared memory:
 Before starting work on any area of the codebase, query Engram for existing
 team knowledge: `engram_query("topic")`. After discovering something worth
 preserving, commit it: `engram_commit(content, scope, confidence)`.
+
+Always include provenance (file path, line number, test output) when committing
+facts. Facts without provenance are marked as unverified.
 
 Check `engram_conflicts()` before making architectural decisions. Conflicts
 mean two agents believe incompatible things about the same system.
@@ -943,6 +1162,11 @@ immutability guarantees convergence: the same row committed to two nodes will al
 produce the same state (same `id`, same `content_hash`). The only conflict is semantic,
 not structural, and semantic conflicts are the detection layer's job.
 
+**v2 acceleration (Round 6):** If Turso/libSQL is adopted for team mode, its built-in
+edge replication and Change Data Capture provide federation infrastructure for free.
+The sync endpoint above becomes a thin wrapper around Turso's replication protocol
+rather than a custom implementation.
+
 ---
 
 ## Phase 7 — Dashboard
@@ -957,18 +1181,24 @@ and a co-located HTTP endpoint serves the human interface. Agent-MCP uses the sa
 pattern (MCP + web dashboard in one process).
 
 **Views:**
-- **Knowledge base** — current facts (`valid_until IS NULL`), filterable by scope/agent/date
+- **Knowledge base** — current facts (`valid_until IS NULL`), filterable by scope/agent/date/fact_type
 - **Conflict queue** — open conflicts, grouped by scope, severity-sorted. Each shows both
   facts side-by-side with detection tier and NLI score.
 - **Timeline** — fact commits and validity windows as a Gantt-like chart. Makes it visible
   when different agents were active in the same scope.
-- **Agent activity** — per-engineer commit rate, conflict rate, resolution rate
+- **Agent activity** — per-engineer commit rate, conflict rate, resolution rate,
+  verification rate (% of commits with provenance)
 - **Point-in-time view** — query the knowledge base as of any past timestamp (enabled
   free by the `valid_from`/`valid_until` schema)
+- **Expiring facts** — facts with `ttl_days` approaching expiry, surfaced as
+  "needs re-verification"
 
-Human review is **structurally necessary**, not optional. CLAIRE [25] demonstrated that
-automated consistency detection has a hard ceiling at ~75% AUROC. The conflict queue
-is the human-in-the-loop interface that lifts the system above this ceiling.
+Human review is **structurally necessary**, not optional. CLAIRE demonstrated that
+automated consistency detection has a hard ceiling at ~75% AUROC on general knowledge.
+On technical codebase facts, the ceiling is likely lower (60–70% without deterministic
+tiers). The conflict queue is the human-in-the-loop interface that lifts the system
+above this ceiling. The deterministic tiers (0, 2, 2b) push automated precision to
+an estimated 80–85%, but the remaining 15–20% requires human judgment.
 
 ---
 
@@ -976,129 +1206,132 @@ is the human-in-the-loop interface that lifts the system above this ceiling.
 
 | Phase | Deliverable | Unlocks |
 |---|---|---|
-| 1 | Schema + migrations | All subsequent phases |
-| 2 | MCP server: commit + query | Usable by agents today |
-| 3 | Conflict detection (background, tiered) | Core differentiator |
+| 1 | Schema + migrations + FTS5 | All subsequent phases |
+| 2 | MCP server: commit (with secret scan, provenance, TTL) + query | Usable by agents today |
+| 3 | Conflict detection (background, tiered, CPU-optimized) | **Core differentiator** |
 | 4 | Resolution workflow | Conflicts become actionable |
-| 5 | Auth + access control | Team deployment |
-| 6 | Federation (replicated journal) | Multi-team / org-wide |
-| 7 | Dashboard | Human oversight (critical for >75% precision) |
+| 5 | Auth + access control + MINJA defense | Team deployment |
+| 6 | Federation (replicated journal, Turso optional) | Multi-team / org-wide |
+| 7 | Dashboard (with expiry view) | Human oversight |
 
-Phases 1–3 are the minimum viable Engram. The background worker in Phase 3 is the
+Phases 1–3 are the minimum viable Engram. **Phase 3 is the reason Engram exists** —
+without it, Engram is just another shared memory MCP server in a field that includes
+Mem0 (38k stars), Cipher, SAMEP, and Agent KB. The background worker in Phase 3 is the
 structural prerequisite for Phase 2 being usable under any real load.
 
 ---
 
-## Failure Modes & Mitigations (Round 3 Findings)
+## Failure Modes & Mitigations
 
 ### 1. NLI Domain Collapse (CRITICAL — Addressed)
-- **Failure:** `cross-encoder/nli-deberta-v3-base` trained on SNLI/MNLI (general English).
-  Technical codebase facts have different vocabulary, phrasing, and logical structure.
-  The 92% benchmark accuracy does not transfer to "rate limit is 1000 req/s" vs "rate
-  limit is 2000 req/s" — an NLI model trained on everyday language may classify these
-  as "neutral" (both describe a rate limit) rather than "contradiction."
+- **Failure:** NLI cross-encoders trained on SNLI/MNLI (general English) suffer
+  significant accuracy degradation on technical codebase facts. The 92% benchmark
+  accuracy does not transfer. LLMs detect pairwise contradictions at ~89% best case;
+  self-contradictions at 0.6–45.6%.
 - **Mitigation:**
   - Dominance inversion: Tier 0 entity exact-match and Tier 2 numeric rules handle all
     numeric/config contradictions deterministically, eliminating the NLI's blind spot.
   - NLI handles only *natural language semantic* contradictions — its genuine strength.
+  - Default model is MiniLM2-L6 (CPU-optimized); DeBERTa-base available for GPU.
   - Local threshold calibration via `detection_feedback` table adapts to team vocabulary.
   - Future: fine-tune on domain-specific pairs using LoRA (low cost, high impact).
 
 ### 2. SQLite Write Serialization Under Concurrent Load (CRITICAL — Addressed)
-- **Failure:** Round 2 ran NLI inference (~300ms) inside the write path, holding the
-  exclusive SQLite write lock for the duration. With 10 concurrent agents: ~3 commits/s
-  maximum throughput. The system collapses under any real team workload.
+- **Failure:** Running NLI inference inside the write path holds the exclusive SQLite
+  write lock for ~300ms+. With 10 concurrent agents: ~3 commits/s maximum throughput.
 - **Mitigation:** Detection is fully decoupled from the write path. The write lock is
   held for <1ms (a single `INSERT`). Detection runs in a background asyncio worker.
   Throughput ceiling is now SQLite's actual insert rate (~10,000/s in WAL mode).
+  v2 upgrade path: Turso/libSQL with MVCC eliminates single-writer entirely.
 
 ### 3. BFT Over-Engineering (REMOVED)
-- **Failure:** Byzantine Fault Tolerance requires O(n²) communication overhead and is
-  designed for open adversarial networks. A permissioned team knowledge base with trusted
-  agents has no Byzantine adversaries. Adding BFT would increase implementation complexity
-  by an order of magnitude while providing zero benefit for the target use case.
-- **Resolution:** Removed entirely. Rate limiting, agent reliability scoring, and
-  source corroboration provide sufficient defense against accidental or low-sophistication
-  poisoning. Full adversarial attack resistance is explicitly out of scope.
+- **Resolution:** Removed entirely. Rate limiting, agent reliability scoring, provenance
+  tracking, and source corroboration provide sufficient defense against accidental or
+  low-sophistication poisoning. Full adversarial attack resistance is explicitly out of
+  scope.
 
-### 4. Graph Database Scope Creep (REMOVED)
-- **Failure:** Round 2's §5 proposed replacing SQLite with a graph database, contradicting
-  the explicit "What Engram Is Not" section. Graph databases require external services
-  (Neo4j, Memgraph), new query languages, and operational burden. They provide graph
-  traversal — a capability Engram's use case (consistency checking) does not require.
-- **Resolution:** Removed entirely. `entities` JSON column provides structured entity
-  lookup without any graph infrastructure.
+### 4. Graph Database Scope Creep (REMOVED for v1)
+- **Resolution:** Removed for v1. `entities` JSON column provides structured entity
+  lookup without any graph infrastructure. Acknowledged as a potential v2+ consideration
+  if federation scales beyond ~10 teams or ~100k facts (see Phase 2 notes).
 
-### 5. Uncalibrated Confidence Scoring (ADDRESSED)
-- **Failure:** Four-signal scoring (`0.5 * relevance + 0.2 * recency + 0.15 * reliability
-  + 0.15 * confidence`) includes agent-reported confidence as a ranking signal. LLMs
-  systematically over-report confidence regardless of epistemic state. The weights are
-  ad-hoc and will not be retuned. Including confidence pollutes retrieval with noise.
-- **Mitigation:** Confidence removed from the scoring formula. It is stored as metadata
-  for human inspection, but does not affect retrieval ranking. Scoring uses three signals:
-  relevance (RRF), recency, and agent trust (derived from conflict history — calibrated
-  by actual outcomes, not self-reported).
+### 5. Uncalibrated Confidence Scoring (DEFERRED)
+- **Failure:** LLMs systematically over-report confidence. Raw confidence pollutes
+  retrieval with noise.
+- **Mitigation:** Confidence excluded from scoring formula until calibration data exists.
+  Once sufficient `flagged_commits` data accumulates per agent per confidence bucket,
+  calibrated confidence can be reintroduced. Confidence is stored and returned as
+  metadata in the interim.
 
 ### 6. Quorum Commits Breaking Single-Developer Use (REMOVED)
-- **Failure:** Round 2 proposed quorum-based commits for "sensitive scopes," requiring
-  multiple agents to ratify a fact before it's trusted. For solo developers (the primary
-  initial user), this makes Engram unusable: no quorum is ever achievable.
-- **Resolution:** Removed. Source corroboration (the number of independent agents whose
-  facts align) is tracked as metadata and used as a downweight signal in query scoring.
-  This achieves the semantic goal (single-source facts are lower-confidence) without
-  the mechanism that would gate solo usage.
+- **Resolution:** Removed. Source corroboration tracked as metadata and used as a
+  downweight signal in query scoring.
 
 ### 7. Missing Point-in-Time Queryability (ADDRESSED)
-- **Failure:** Round 2 had no mechanism to query the knowledge base as it was on a
-  specific past date. The `facts_archive` table actively destroyed this capability by
-  moving old facts out of the main query path.
 - **Mitigation:** The `valid_from`/`valid_until` temporal model makes this a free
-  predicate on the main `facts` table. `engram_query(topic, as_of="2025-12-01")` works
-  without any additional infrastructure.
+  predicate. `engram_query(topic, as_of="2025-12-01")` works without additional
+  infrastructure.
 
-### 8. Silent Retrieval Corruption on Embedding Upgrade (UNCHANGED — Already Addressed)
+### 8. Silent Retrieval Corruption on Embedding Upgrade (ADDRESSED)
 - Embedding model + version stored with each fact.
 - Re-indexing tool provided.
 - At startup, validate configured model against newest rows.
+- In team mode, server is the single source of embeddings (Round 6).
 
-### 9. Regex Entity Extraction Recall Failure (CRITICAL — Addressed in Round 5)
-- **Failure:** The plan assumed "a regex/rule engine can extract numerics, version
-  numbers, and capitalized service names from codebase facts reliably." This is false.
-  Natural language codebase facts use written-out numbers ("a thousand"), abbreviations
-  ("1k/s"), multi-value sentences ("bumped from 30 to 60"), and negation ("doesn't use
-  rate limiting"). Regex catches clean patterns but misses the majority of entities in
-  natural prose. Since Tier 0 (the highest-confidence detection tier) depends entirely
-  on entity extraction, low recall means the most reliable detection path fires rarely,
-  silently falling through to the less reliable NLI path.
-- **Mitigation:** Hybrid extraction pipeline: regex first (< 1ms, catches ~40-60%),
-  then lightweight NER model (< 50ms, lifts to ~80-90%), with optional LLM extraction
-  for high-stakes scopes. The AGENTS.md template also guides agents to write
-  well-structured facts with explicit values, improving extraction quality at the source.
+### 9. Regex Entity Extraction Recall Failure (CRITICAL — Addressed)
+- **Failure:** Regex alone misses the majority of entities in natural prose.
+- **Mitigation:** Hybrid extraction pipeline: regex first (< 1ms), then lightweight
+  NER model (< 50ms, primary extractor), with optional LLM extraction for high-stakes
+  scopes. No unsupported recall percentage claims — actual recall depends on fact
+  structure, which the AGENTS.md template influences but cannot guarantee.
 
-### 10. Cross-Scope Contradictions Invisible to Detection (CRITICAL — Addressed in Round 5)
-- **Failure:** The entire detection pipeline filtered candidates by `scope`. This means
-  "The payments service uses PostgreSQL" (scope: `payments`) is never compared against
-  "All services use MySQL" (scope: `infra/database`). Cross-scope contradictions are
-  the most dangerous class — they represent systemic misunderstandings about the
-  codebase, not local disagreements — and the system was completely blind to them.
-- **Mitigation:** Tier 2b cross-scope entity detection queries the `entities` column
-  across all scopes. When the same entity name appears in different scopes with
-  different values, the pair is injected into the NLI candidate set for semantic
-  comparison. Cross-scope conflicts default to `severity = 'high'`.
+### 10. Cross-Scope Contradictions Invisible to Detection (CRITICAL — Addressed)
+- **Failure:** Scope-filtered detection misses contradictions spanning scopes.
+- **Mitigation:** Tier 2b cross-scope entity detection queries across all scopes.
+  Cross-scope conflicts default to `severity = 'high'`.
+
+### 11. Memory Injection via Prompt-Injected Agents (NEW — Round 6)
+- **Failure:** MINJA demonstrates >95% injection success rate through normal agent
+  interactions. A prompt-injected agent could commit poisoned facts that propagate
+  to other agents via `engram_query`.
+- **Mitigation:** Provenance tracking (verified/unverified), agent reliability scoring,
+  rate limiting, fact type differentiation, and AGENTS.md guidance. See §Memory
+  Injection Defense for the full defense model.
+
+### 12. Detection Latency Mismatch on CPU (NEW — Round 6)
+- **Failure:** Original plan claimed ~500ms total detection. On CPU with DeBERTa-base,
+  actual latency is 6–12 seconds for 30 candidates.
+- **Mitigation:** Default to MiniLM2-L6 on CPU (~80ms/pair). After Tier 0/2 dedup,
+  typical candidate set is 5–15 pairs → 400ms–1.2s. DeBERTa-base available via
+  `--high-accuracy` flag for GPU servers. ONNX quantization as optional dependency.
+
+### 13. Fact Staleness Without Expiry (NEW — Round 6)
+- **Failure:** Facts committed months ago about rate limits or API contracts may no
+  longer be true but are never superseded because nobody re-checks them.
+- **Mitigation:** Optional `ttl_days` parameter on `engram_commit`. When set,
+  `valid_until` is automatically set to `valid_from + ttl_days`. Dashboard surfaces
+  expiring facts as "needs re-verification." The `recency` signal in query scoring
+  also naturally downweights old facts.
+
+### 14. Accidental Secret Leakage (NEW — Round 6)
+- **Failure:** Agents may commit facts containing API keys, JWT tokens, or connection
+  strings despite tool description warnings.
+- **Mitigation:** Deterministic regex scanner at commit time rejects content matching
+  common secret patterns. This is enforcement, not advisory.
 
 ---
 
 ## Key Design Constraints (Refined)
 
 **1. Temporal Validity is the Only Versioning Primitive**  
-Every state change — supersession, correction, archival, expiry — is expressed as
+Every state change — supersession, correction, archival, expiry, TTL — is expressed as
 setting `valid_until`. No other versioning mechanism exists. This is the invariant
 that makes the schema simple and the logic predictable.
 
 **2. Hybrid Retrieval is Non-Negotiable**  
-Embedding retrieval alone is blind to negation. BM25 retrieval alone misses paraphrases.
-Entity-based lookup handles exact structured matches. All three are required for
-comprehensive conflict candidate generation.
+Embedding retrieval alone is blind to negation. FTS5 BM25 retrieval alone misses
+paraphrases. Entity-based lookup handles exact structured matches. All three are
+required for comprehensive conflict candidate generation.
 
 **3. Detection is Decoupled from the Write Path**  
 Conflict detection is always async. The committing agent never waits for detection.
@@ -1108,13 +1341,20 @@ This is the only design choice that keeps SQLite viable as the storage backend.
 For technical codebase facts, domain-specific rules (entity exact-match, numeric
 comparison) produce higher-confidence determinations than a general-domain NLI model.
 NLI fills the gap for natural language semantic contradictions. Its threshold is
-calibrated, not fixed.
+calibrated, not fixed. Its model is sized for the deployment target (CPU vs GPU).
 
 **5. Complexity Budget: Prefer Deletion**  
 Every component added to Engram must either remove another component (generalization)
 or address a documented failure mode. The Round 3 rewrite removed 4 components
 (BFT, graph DB, quorum commits, `facts_archive` table) and replaced 4 mechanisms
-with 1 temporal invariant.
+with 1 temporal invariant. Round 6 added 4 features (provenance, TTL, secret scan,
+fact typing) but removed 1 dependency (`rank_bm25` → FTS5) and corrected 2 false
+claims (latency, regex recall).
+
+**6. Honest Performance Claims**  
+All latency and throughput numbers are stated for the default deployment target (CPU,
+MiniLM2-L6, SQLite WAL). GPU numbers are stated separately. No benchmark-only claims
+are presented as production expectations.
 
 ---
 
@@ -1122,10 +1362,13 @@ with 1 temporal invariant.
 
 - **Parametric memory:** No weight updates to the LLMs it interacts with.
 - **Cache-level protocols:** No sharing of LLM KV caches.
-- **Graph traversal:** Entity relationships are tracked in JSON, not a graph database.
+- **Graph traversal (v1):** Entity relationships are tracked in JSON, not a graph
+  database. Lightweight embedded graph (Kùzu) is a v2+ consideration if federation
+  scales beyond ~100k facts.
 - **Full adversarial security:** BFT and quorum commits are not implemented.
-  Engram protects against accidental inconsistency; a determined attacker with write
-  access can still poison the store.
+  Engram protects against accidental inconsistency and makes poisoning detectable
+  via provenance tracking; a determined attacker with write access can still poison
+  the store.
 - **RL-driven memory management:** Out of scope.
 - **Multimodal memory:** Text facts only in v1.
 - **General agent orchestration:** Letta, Agent-MCP handle this. Engram is the
@@ -1138,7 +1381,13 @@ Long-term: other systems store and retrieve; Engram asks "are these facts cohere
 This complementary positioning keeps the implementation focused on the one thing no
 other system does, and makes Engram composable with the existing ecosystem.
 
-### What the MCP Ecosystem Taught Us (Round 4)
+The competitive landscape is converging. Mem0 (38k+ stars) now frames multi-agent
+contradiction as a core problem. Cipher ships team-level memory sharing. SAMEP proposes
+a formal exchange protocol. Agent KB provides cross-domain experience sharing. None of
+them have conflict *detection*. That is Engram's moat, and Phase 3 is the phase that
+builds it.
+
+### What the MCP Ecosystem Taught Us (Rounds 4 + 6)
 
 The successful MCP servers (Context7, GitHub MCP, Playwright MCP) and the broader AAIF
 ecosystem (MCP + AGENTS.md + Goose, all now under the Linux Foundation) share patterns
@@ -1146,58 +1395,36 @@ that Engram adopts:
 
 **1. Solve one problem exceptionally well.**
 Context7 does documentation freshness. GitHub MCP does repo management. Engram does
-consistency. No feature creep. The AAIF's standardization of MCP, AGENTS.md, and Goose
-as three separate, complementary projects — not one monolith — validates this positioning.
+consistency. No feature creep.
 
 **2. Minimal tool surface (empirically enforced).**
-Context7 has 2 tools. Engram has 4. Research and production experience shows LLM
-tool-selection accuracy degrades significantly when exposed to >30-40 tools. Block's
-principle: "connecting too many servers causes agents to send every tool description
-with every prompt, consuming the context window." Engram's 4-tool surface is the
-correct answer — not a limitation.
+Context7 has 2 tools. Engram has 4. LLM tool-selection accuracy degrades significantly
+when exposed to >30-40 tools.
 
 **3. Tool descriptions are executable LLM prompts.**
-The LLM selects tools based *solely* on names, descriptions, and schemas. Every
-Engram tool description embeds: (a) what state the agent should be in before calling
-it, (b) what it returns and how to interpret it, (c) rate-limit and error-handling
-guidance. This is behavioral guidance, not documentation. Round 4 security finding:
-tool descriptions can also be the attack vector (see Failure Mode 9).
+Every Engram tool description embeds: (a) what state the agent should be in before
+calling it, (b) what it returns and how to interpret it, (c) rate-limit and
+error-handling guidance.
 
 **4. Block's "Discovery → Planning → Execution" pattern.**
-Block learned (from 60+ internal MCP servers) not to expose granular API calls directly.
-Instead: a discovery tool reveals what's available, a planning tool determines the
-necessary steps, and execution tools perform the operations. Engram's tool surface maps
-naturally: `engram_query` = Discovery, `engram_commit` = Execution, `engram_conflicts`
-+ `engram_resolve` = Planning and execution of fixes. This pattern was validated at scale.
+`engram_query` = Discovery, `engram_commit` = Execution, `engram_conflicts` +
+`engram_resolve` = Planning and execution of fixes.
 
-**5. Context7's sub-agent filtering as a model for `engram_query`.**
-Context7's late-2025 architectural shift: add a filtering sub-layer that selects and
-injects only the most relevant, high-precision snippets rather than dumping raw data.
-This reduced token usage while improving accuracy. Engram's `engram_query` already does
-this: RRF scoring + server-side filtering returns 10 scored facts, not all 10,000.
-The lesson: never return raw data when pre-ranked answers will do.
+**5. Server-side intelligence, not client-side computation.**
+NLI scoring, FTS5 ranking, entity extraction, embedding generation — all happen on the
+Engram server. The agent receives pre-ranked, pre-scored results.
 
-**6. Server-side intelligence, not client-side computation.**
-NLI scoring, BM25 ranking, entity extraction, embedding generation — all happen on the
-Engram server. The agent receives `[fact_text, has_conflict: bool, conflict_severity: str]`
-tuples, not raw embeddings or scores to interpret. The LLM does reasoning; Engram does
-data pipeline work.
+**6. Zero-setup deployment.**
+One line of JSON config for local use. `uvx engram-mcp` downloads and runs. No Docker,
+no database setup, no API keys for core features.
 
 **7. AGENTS.md as a first-class integration target.**
-OpenAI's AGENTS.md standard, now under the Linux Foundation, is a markdown-based
-convention that acts as a "README for AI agents" — project-specific guidance that coding
-agents consume at session start. Engram should provide a reference AGENTS.md template
-that tells coding agents: what Engram is, when to call `engram_commit` (after discovering
-a codebase fact, not after every thought), what constitutes a well-formed fact, and how
-to interpret `has_open_conflict` in query results. This is zero-cost distribution: a
-template in the docs that users drop into their repos.
+Engram ships a reference AGENTS.md template that tells coding agents when to query,
+when to commit, and how to interpret conflicts.
 
-**8. Zero-setup deployment.**
-One line of JSON config for local use. `uvx engram-mcp` downloads and runs. No Docker,
-no database setup, no API keys for core features. Google's managed remote MCP model
-(fully-hosted endpoints for BigQuery, Google Maps) shows the aspirational end state:
-team deployment without any server management. Engram's path: `stdio` → `uvx` →
-Streamable HTTP remote → (future) managed cloud endpoint. Each step removes friction.
+**8. Honest about what runs where.**
+CPU-first deployment means CPU-first model selection and CPU-first latency claims.
+GPU is an upgrade, not the default.
 
 ---
 
@@ -1222,10 +1449,14 @@ Call `engram_commit` when you discover or verify something concrete about this c
 Do NOT commit every thought, conclusion, or inference. Commit facts that other agents
 would need to do their work correctly.
 
+Always include provenance (file path, line number, test output) so the fact is marked
+as verified. Use fact_type to distinguish observations from inferences and decisions.
+Set ttl_days for facts about external dependencies or API contracts that may change.
+
 ## Interpreting query results
-If `has_open_conflict: true` is returned for a fact, two agents have committed
-contradictory information. Do not act on a contested fact without calling
-`engram_conflicts` to understand the disagreement.
+- `has_open_conflict: true` — two agents disagree. Call `engram_conflicts` before acting.
+- `verified: false` — no provenance provided. Treat with appropriate skepticism.
+- `fact_type: inference` — concluded from context, not directly observed. Lower weight.
 
 ## Scope convention for this repo
 - `auth/*` — authentication service, JWT, sessions
