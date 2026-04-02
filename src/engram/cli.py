@@ -50,6 +50,7 @@ def serve(
     ))
 
 
+
 async def _serve(
     http: bool, host: str, port: int, db_path: str, logger: logging.Logger,
     auth_enabled: bool = False, rate_limit: int = 50,
@@ -67,14 +68,12 @@ async def _serve(
     server_module._engine = engine
     server_module._storage = storage
 
-    rate_limiter_instance = None
     if auth_enabled:
         set_auth_enabled(True)
         logger.info("JWT auth enabled")
     if rate_limit:
         from engram.auth import RateLimiter
-        rate_limiter_instance = RateLimiter(max_per_hour=rate_limit)
-        set_rate_limiter(rate_limiter_instance)
+        set_rate_limiter(RateLimiter(max_per_hour=rate_limit))
         logger.info("Rate limit: %d commits/agent/hour", rate_limit)
 
     await engine.start()
@@ -85,28 +84,19 @@ async def _serve(
         logger.info("Expired %d TTL facts on startup", expired)
 
     try:
-        if http:
             logger.info("Starting Streamable HTTP on %s:%d", host, port)
+            logger.info("Home: http://%s:%d/", host, port)
             logger.info("Dashboard: http://%s:%d/dashboard", host, port)
-            logger.info(
-                "REST API:  http://%s:%d/api/{commit,query,conflicts,resolve}", host, port
-            )
+            logger.info("Dashboard: http://%s:%d/dashboard", host, port)
             from engram.dashboard import build_dashboard_routes
             from engram.federation import build_federation_routes
-            from engram.rest import build_rest_routes
             from starlette.applications import Starlette
             from starlette.routing import Mount
 
-            dashboard_routes = build_dashboard_routes(storage, engine)
+            dashboard_routes = build_dashboard_routes(storage)
             federation_routes = build_federation_routes(storage)
-            rest_routes = build_rest_routes(
-                engine=engine,
-                storage=storage,
-                auth_enabled=auth_enabled,
-                rate_limiter=rate_limiter_instance,
-            )
             app = Starlette(
-                routes=rest_routes + dashboard_routes + federation_routes + [
+                routes=dashboard_routes + federation_routes + [
                     Mount("/", app=mcp.streamable_http_app()),
                 ],
             )
