@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "engram": {
+      "command": "uvx",
+      "args": ["engram-team@latest"],
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
