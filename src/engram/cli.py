@@ -273,7 +273,7 @@ _MCP_CLIENTS: dict[str, dict] = {
 
 _ENGRAM_MCP_ENTRY = {
     "command": "uvx",
-    "args": ["engram-team@latest"],
+    "args": ["--from", "engram-team@latest", "engram", "serve"],
 }
 
 # ── Agent steering / instructions ────────────────────────────────────
@@ -398,7 +398,7 @@ def install(dry_run: bool) -> None:
                     
                     servers["engram"] = {
                         "command": "uvx",
-                        "args": ["engram-team@latest"],
+                        "args": ["--from", "engram-team@latest", "engram", "serve"],
                     }
                     
                     if not dry_run:
@@ -451,7 +451,7 @@ def install(dry_run: bool) -> None:
     elif not added and not skipped:
         click.echo(
             "\nNo MCP clients detected. Add Engram manually:\n\n"
-            '  {"mcpServers": {"engram": {"command": "uvx", "args": ["engram-team@latest"]}}}'
+            '  {"mcpServers": {"engram": {"command": "uvx", "args": ["--from", "engram-team@latest", "engram", "serve"]}}}'
         )
 
 
@@ -474,12 +474,12 @@ def _try_claude_code_cli(dry_run: bool, added: list, skipped: list) -> None:
             pass
 
     if dry_run:
-        click.echo("[dry-run] Would run: claude mcp add engram --command uvx -- engram-team@latest")
+        click.echo("[dry-run] Would run: claude mcp add engram --command uvx -- --from engram-team@latest engram serve")
         return
 
     try:
         result = subprocess.run(
-            ["claude", "mcp", "add", "engram", "--command", "uvx", "--", "engram-team@latest"],
+            ["claude", "mcp", "add", "engram", "--command", "uvx", "--", "--from", "engram-team@latest", "engram", "serve"],
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
