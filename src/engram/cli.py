@@ -231,21 +231,23 @@ async def _serve(
     # ── Select storage backend ────────────────────────────────────────
     db_url = os.environ.get("ENGRAM_DB_URL", "")
     workspace_id = "local"
+    schema = "engram"
 
-    # Try to read workspace.json for db_url and workspace_id
+    # Try to read workspace.json for db_url, workspace_id, and schema
     try:
         from engram.workspace import read_workspace
         ws = read_workspace()
         if ws and ws.db_url:
             db_url = ws.db_url
             workspace_id = ws.engram_id
+            schema = ws.schema
     except Exception:
         pass
 
     if db_url:
         from engram.postgres_storage import PostgresStorage
-        storage = PostgresStorage(db_url=db_url, workspace_id=workspace_id)
-        logger.info("Team mode: PostgreSQL (workspace: %s)", workspace_id)
+        storage = PostgresStorage(db_url=db_url, workspace_id=workspace_id, schema=schema)
+        logger.info("Team mode: PostgreSQL (workspace: %s, schema: %s)", workspace_id, schema)
     else:
         from engram.storage import SQLiteStorage
         effective_db = db_path or str(DEFAULT_DB_PATH)

@@ -27,6 +27,7 @@ WORKSPACE_PATH = Path.home() / ".engram" / "workspace.json"
 class WorkspaceConfig:
     engram_id: str
     db_url: str          # empty string = local SQLite mode
+    schema: str = "engram"         # PostgreSQL schema name for Engram tables
     anonymous_mode: bool = False   # strip engineer field on every INSERT
     anon_agents: bool = False      # randomize agent_id each session
 
@@ -36,13 +37,17 @@ def read_workspace() -> WorkspaceConfig | None:
     if WORKSPACE_PATH.exists():
         try:
             data = json.loads(WORKSPACE_PATH.read_text())
+            # Backward compatibility: add schema if missing
+            if "schema" not in data:
+                data["schema"] = "engram"
             return WorkspaceConfig(**data)
         except Exception:
             return None
     # Fall back to ENGRAM_DB_URL env var without a workspace file
     db_url = os.environ.get("ENGRAM_DB_URL", "")
+    schema = os.environ.get("ENGRAM_SCHEMA", "engram")
     if db_url:
-        return WorkspaceConfig(engram_id="local", db_url=db_url)
+        return WorkspaceConfig(engram_id="local", db_url=db_url, schema=schema)
     return None
 
 
@@ -128,6 +133,7 @@ def generate_invite_key(
     engram_id: str,
     expires_days: int = 90,
     uses_remaining: int | None = 10,
+    schema: str = "engram",
 ) -> tuple[str, str]:
     """Generate an invite key with db_url encrypted inside it.
 
@@ -141,6 +147,7 @@ def generate_invite_key(
     payload = json.dumps({
         "db_url": db_url,
         "engram_id": engram_id,
+        "schema": schema,
         "expires_at": int(time.time()) + expires_days * 86400,
         "uses_remaining": uses_remaining,
         "created_at": int(time.time()),
@@ -162,7 +169,7 @@ def decode_invite_key(invite_key: str) -> dict[str, Any]:
     No shared secret required — the enc_key is embedded in the token.
     Raises ValueError with a descriptive message on any failure.
 
-    Returns payload dict: {db_url, engram_id, expires_at, uses_remaining, created_at}
+    Returns payload dict: {db_url, engram_id, schema, expires_at, uses_remaining, created_at}
     """
     if not invite_key.startswith("ek_live_"):
         raise ValueError("Invalid invite key format (must start with ek_live_)")
@@ -201,6 +208,10 @@ def decode_invite_key(invite_key: str) -> dict[str, Any]:
     # Check expiry
     if payload.get("expires_at", 0) < int(time.time()):
         raise ValueError("This invite key has expired")
+
+    # Backward compatibility: add schema if missing (old keys)
+    if "schema" not in payload:
+        payload["schema"] = "engram"
 
     return payload
 

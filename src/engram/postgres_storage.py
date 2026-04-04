@@ -28,9 +28,10 @@ logger = logging.getLogger("engram")
 class PostgresStorage(BaseStorage):
     """Async PostgreSQL storage using asyncpg."""
 
-    def __init__(self, db_url: str, workspace_id: str = "local") -> None:
+    def __init__(self, db_url: str, workspace_id: str = "local", schema: str = "engram") -> None:
         self.db_url = db_url
         self.workspace_id = workspace_id
+        self.schema = schema
         self._pool: Any = None  # asyncpg.Pool
 
     async def connect(self) -> None:
@@ -43,9 +44,16 @@ class PostgresStorage(BaseStorage):
             )
         self._pool = await asyncpg.create_pool(self.db_url, min_size=2, max_size=10)
         async with self._pool.acquire() as conn:
+            # Create schema if it doesn't exist
+            await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {self.schema}")
+            
+            # Set search_path to use our schema first
+            await conn.execute(f"SET search_path TO {self.schema}, public")
+            
             # Run schema setup (idempotent CREATE TABLE IF NOT EXISTS)
+            # Tables will be created in the engram schema
             await conn.execute(POSTGRES_SCHEMA_SQL)
-        logger.info("PostgreSQL connected (workspace: %s)", self.workspace_id)
+        logger.info("PostgreSQL connected (workspace: %s, schema: %s)", self.workspace_id, self.schema)
 
     async def close(self) -> None:
         if self._pool:

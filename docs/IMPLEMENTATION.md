@@ -853,6 +853,51 @@ happens at startup by checking for `ENGRAM_DB_URL` (or reading workspace.json).
 - `BLOB` embeddings → `vector` type (pgvector extension)
 - `PRAGMA journal_mode=WAL` → not needed (PostgreSQL MVCC handles this natively)
 
+**Schema isolation (security & organization):**
+
+Engram creates all tables in a dedicated PostgreSQL schema (default: `engram`), enabling
+teams to use their existing application database without table name conflicts. This
+addresses two critical concerns:
+
+1. **Security:** Database credentials are configured via environment variables or `.env`
+   files, never pasted in chat. The agent guides users to set `ENGRAM_DB_URL` outside
+   of the conversation, eliminating credential exposure in chat history.
+
+2. **Isolation:** All Engram tables live in a separate schema namespace. A team can
+   point `ENGRAM_DB_URL` at their production database and Engram will create:
+   ```sql
+   CREATE SCHEMA IF NOT EXISTS engram;
+   SET search_path TO engram, public;
+   -- All tables created in engram schema
+   ```
+   This provides:
+   - Zero table name conflicts with application tables
+   - Easy backup/restore of just Engram data: `pg_dump -n engram`
+   - Clear organizational separation
+   - Single database connection for both app and Engram
+
+The schema name is configurable via `ENGRAM_SCHEMA` environment variable or the `schema`
+parameter in `engram_init()`. The workspace config stores the schema name:
+
+```json
+{
+  "engram_id": "ENG-X7K2-P9M4",
+  "db_url": "postgres://...",
+  "schema": "engram",
+  "anonymous_mode": false,
+  "anon_agents": false
+}
+```
+
+Invite keys include the schema name in their encrypted payload, so teammates joining
+via `engram_join()` automatically use the correct schema without manual configuration.
+
+**Backward compatibility:** Existing installations without schema isolation continue to
+work (tables in public schema). Old invite keys without `schema` default to `"engram"`.
+
+See [DATABASE_SECURITY.md](./DATABASE_SECURITY.md) for security best practices and
+[MIGRATION_SCHEMA.md](./MIGRATION_SCHEMA.md) for migration instructions.
+
 **Round 6 change: `rank_bm25` removed.** SQLite FTS5 provides BM25 ranking natively
 in C, requires zero additional dependencies, and integrates with the existing storage
 layer. The `facts_fts` virtual table replaces the Python-level BM25 library entirely.

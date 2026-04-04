@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
-import secrets
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
@@ -86,6 +86,7 @@ async def engram_status() -> dict[str, Any]:
             "status": "ready",
             "mode": "team",
             "engram_id": ws.engram_id,
+            "schema": ws.schema,
             "anonymous_mode": ws.anonymous_mode,
         }
 
@@ -101,9 +102,11 @@ async def engram_status() -> dict[str, Any]:
         return {
             "status": "db_url_detected",
             "next_prompt": (
-                "I can see a database connection string in your environment. "
+                "I detected a database connection string in your environment.\n\n"
                 "Do you have an Invite Key to join an existing workspace, "
-                "or are you setting up a new one?"
+                "or are you setting up a new one?\n\n"
+                "Note: Engram will create its tables in a separate 'engram' schema "
+                "in your database, so it won't interfere with your application tables."
             ),
         }
 
@@ -113,9 +116,10 @@ async def engram_status() -> dict[str, Any]:
             "Welcome to Engram — shared memory for your team's agents.\n\n"
             "Do you have an Invite Key to join an existing workspace, "
             "or are you setting up a new one?\n\n"
-            "If setting up a new workspace, you'll need a PostgreSQL database "
-            "connection string. You can get a free one at neon.tech, "
-            "supabase.com, or railway.app."
+            "If setting up a new workspace, you'll need a PostgreSQL database. "
+            "You can either:\n"
+            "  • Use your existing app database (Engram creates a separate 'engram' schema)\n"
+            "  • Get a free dedicated database at neon.tech, supabase.com, or railway.app"
         ),
     }
 
@@ -129,6 +133,7 @@ async def engram_init(
     anon_agents: bool = False,
     invite_expires_days: int = 90,
     invite_uses: int = 10,
+    schema: str = "engram",
 ) -> dict[str, Any]:
     """Set up a new Engram workspace (team founder only).
 
@@ -144,20 +149,36 @@ async def engram_init(
     - anon_agents: If true, agent IDs are randomized each session.
     - invite_expires_days: How long the invite key is valid (default 90 days).
     - invite_uses: How many times the invite key can be used (default 10).
+    - schema: PostgreSQL schema name for Engram tables (default "engram").
+      Engram creates all tables in this schema to avoid conflicts with
+      your application tables.
 
     Returns: {status, engram_id, invite_key, next_prompt}
     """
     db_url = os.environ.get("ENGRAM_DB_URL", "")
     if not db_url:
+        # Check if .env file exists in current directory
+        env_file = Path.cwd() / ".env"
+        env_exists = env_file.exists()
+        
         return {
             "status": "awaiting_db",
             "next_prompt": (
-                "Please add your database connection string to your environment "
-                "before we continue:\n\n"
-                "  export ENGRAM_DB_URL='postgres://...'\n\n"
-                "You can get a free PostgreSQL database at neon.tech, "
-                "supabase.com, or railway.app. "
-                "Tell me when it's set."
+                "To set up Engram, add your database connection string to your environment.\n\n"
+                + (
+                    f"I see you have a .env file at {env_file}. Add this line:\n\n"
+                    "  ENGRAM_DB_URL='postgres://user:password@host:port/database'\n\n"
+                    if env_exists else
+                    "Create a .env file in your project root with:\n\n"
+                    "  ENGRAM_DB_URL='postgres://user:password@host:port/database'\n\n"
+                    "Or set it in your shell config (.bashrc, .zshrc, etc.):\n\n"
+                    "  export ENGRAM_DB_URL='postgres://user:password@host:port/database'\n\n"
+                ) +
+                "IMPORTANT: Don't paste your database URL in this chat for security reasons.\n\n"
+                "You can:\n"
+                "  • Use your existing app database (Engram creates a separate 'engram' schema)\n"
+                "  • Get a free dedicated database at neon.tech, supabase.com, or railway.app\n\n"
+                "Once set, restart this chat and I'll detect it automatically."
             ),
         }
 
@@ -179,9 +200,6 @@ async def engram_init(
     # Set up schema and workspace row in the database
     if _storage is not None:
         from datetime import timezone
-        expires_iso = datetime.now(timezone.utc).replace(
-            day=datetime.now(timezone.utc).day
-        ).isoformat()  # calculated properly below
         import time
         expires_ts = datetime.fromtimestamp(
             time.time() + invite_expires_days * 86400, tz=timezone.utc
@@ -199,18 +217,22 @@ async def engram_init(
     config = WorkspaceConfig(
         engram_id=engram_id,
         db_url=db_url,
+        schema=schema,
         anonymous_mode=anonymous_mode,
         anon_agents=anon_agents,
     )
     write_workspace(config)
-    logger.info("Workspace initialized: %s (anonymous=%s)", engram_id, anonymous_mode)
+    logger.info("Workspace initialized: %s (schema: %s, anonymous=%s)", engram_id, schema, anonymous_mode)
 
     return {
         "status": "initialized",
         "engram_id": engram_id,
+        "schema": schema,
         "invite_key": invite_key,
         "next_prompt": (
             f"Your team workspace is ready.\n\n"
+            f"Engram tables are in the '{schema}' schema in your database — "
+            f"completely isolated from your application tables.\n\n"
             f"Share this with teammates via iMessage, WhatsApp, Slack, or any channel:\n\n"
             f"  Invite Key: {invite_key}\n\n"
             f"That's all they need. They install Engram, start a chat, paste the key, "
@@ -235,7 +257,7 @@ async def engram_join(invite_key: str) -> dict[str, Any]:
     Parameters:
     - invite_key: The invite key shared by the workspace founder (e.g. ek_live_...).
 
-    Returns: {status, engram_id, next_prompt}
+    Returns: {status, engram_id, schema, next_prompt}
     """
     from engram.workspace import (
         WorkspaceConfig,
@@ -258,6 +280,7 @@ async def engram_join(invite_key: str) -> dict[str, Any]:
 
     db_url = payload["db_url"]
     engram_id = payload["engram_id"]
+    schema = payload.get("schema", "engram")  # backward compatibility
 
     # Server-side validation: check uses_remaining and expiry in the database
     key_hash = invite_key_hash(invite_key)
@@ -277,17 +300,20 @@ async def engram_join(invite_key: str) -> dict[str, Any]:
     config = WorkspaceConfig(
         engram_id=engram_id,
         db_url=db_url,
+        schema=schema,
         anonymous_mode=False,
         anon_agents=False,
     )
     write_workspace(config)
-    logger.info("Joined workspace: %s", engram_id)
+    logger.info("Joined workspace: %s (schema: %s)", engram_id, schema)
 
     return {
         "status": "joined",
         "engram_id": engram_id,
+        "schema": schema,
         "next_prompt": (
             "You're in. Your agent is now connected to the team's shared memory.\n\n"
+            f"Engram tables are in the '{schema}' schema — isolated from your app.\n\n"
             "I'll query team knowledge before starting any task and commit "
             "discoveries after. You don't need to think about Engram — it's just there."
         ),

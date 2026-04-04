@@ -50,10 +50,14 @@ When two agents develop incompatible beliefs about the same system, Engram detec
    ```
 
 4. Your agent will ask if you're:
-   - **Creating a new workspace** → You'll need a PostgreSQL database URL (get one free at [Neon](https://neon.tech), [Supabase](https://supabase.com), or [Railway](https://railway.app))
+   - **Creating a new workspace** → You'll need a PostgreSQL database URL
+     - Use your existing app database (Engram creates a separate `engram` schema)
+     - Or get a free dedicated database at [Neon](https://neon.tech), [Supabase](https://supabase.com), or [Railway](https://railway.app)
    - **Joining an existing workspace** → You'll need the Invite Key from your workspace founder
 
 5. Done! Your agent now has persistent memory. Share your Invite Key with teammates anytime to enable team collaboration.
+
+**Important:** For security, set your database URL in a `.env` file or environment variable — never paste it in chat.
 
 <br />
 
@@ -64,21 +68,35 @@ Your agent calls `engram_status()` on its first tool use and walks you through s
 **Setting up a new workspace (team founder):**
 
 ```
-Agent: "Do you have a Team ID to join an existing workspace,
+Agent: "Do you have an Invite Key to join an existing workspace,
         or are you setting up a new one?"
 
 You:   "New"
 
-Agent: "Add your database connection string to your environment:
-
+Agent: "Add your database connection string to your environment.
+        
+        Create a .env file in your project root with:
+        
+          ENGRAM_DB_URL='postgres://...'
+        
+        Or set it in your shell config (.bashrc, .zshrc):
+        
           export ENGRAM_DB_URL='postgres://...'
+        
+        IMPORTANT: Don't paste your database URL in this chat.
+        
+        You can:
+          • Use your existing app database (Engram creates a separate 'engram' schema)
+          • Get a free dedicated database at neon.tech, supabase.com, or railway.app
+        
+        Once set, restart this chat and I'll detect it automatically."
 
-        You can get a free PostgreSQL database at neon.tech,
-        supabase.com, or railway.app. Tell me when it's set."
-
-[You set ENGRAM_DB_URL]
+[You set ENGRAM_DB_URL in .env or shell config]
 
 Agent: "Your team workspace is ready.
+        
+        Engram tables are in the 'engram' schema in your database —
+        completely isolated from your application tables.
 
         Share with teammates:
           Invite Key: ek_live_abc123...
@@ -112,8 +130,9 @@ Teammates only need one thing — the Invite Key. The workspace ID and database 
 Engram connects to a PostgreSQL database you provide. Your facts, conflicts, and agent history live in your database — not ours.
 
 - Use [Neon](https://neon.tech), [Supabase](https://supabase.com), [Railway](https://railway.app), or any PostgreSQL instance
+- Use your existing app database — Engram creates all tables in a separate `engram` schema
 - Self-host if you want zero third-party involvement
-- The database URL is never stored by Engram — only in `~/.engram/workspace.json` on your machine (mode 600)
+- The database URL is stored securely in `~/.engram/workspace.json` (mode 600) or environment variables
 - The invite key carries the database URL encrypted inside it — teammates never see it in plaintext
 
 **Privacy settings** (asked once during setup, enforced server-side):
@@ -187,7 +206,9 @@ Start with your own personal workspace — you can share with teammates later.
 
 **Recommended: PostgreSQL**
 - Get a free database at [Neon](https://neon.tech), [Supabase](https://supabase.com), or [Railway](https://railway.app)
-- During setup, choose "new" and provide your database URL
+- Or use your existing app database — Engram creates a separate `engram` schema
+- Set `ENGRAM_DB_URL` in a `.env` file or environment variable (never paste in chat)
+- During setup, choose "new" and your agent will detect the database URL automatically
 - Share your Invite Key with teammates anytime to enable collaboration
 
 **For local development only: SQLite**
