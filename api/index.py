@@ -313,9 +313,10 @@ def _render_landing() -> str:
           <div id="setup-prompt">Set up Engram for my team</div>
         </div>
         <p class="note" style="margin-top: 1.5rem;">
-          Your agent will guide you through setup. You'll need either:
-          <br>• A PostgreSQL database URL (if creating a new team workspace)
-          <br>• An Invite Key (if joining an existing workspace)
+          Your agent will guide you through setup. You'll need:
+          <br>• A PostgreSQL database URL (get one free at neon.tech, supabase.com, or railway.app)
+          <br>• Or an Invite Key (if joining an existing workspace)
+          <br><br>Start solo or with a team — you can always share your Invite Key later to add teammates.
         </p>
       </div>
     </div>

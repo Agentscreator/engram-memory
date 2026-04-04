@@ -50,10 +50,10 @@ When two agents develop incompatible beliefs about the same system, Engram detec
    ```
 
 4. Your agent will ask if you're:
-   - **Creating a new team workspace** → You'll need a PostgreSQL database URL (get one free at [Neon](https://neon.tech), [Supabase](https://supabase.com), or [Railway](https://railway.app))
-   - **Joining an existing workspace** → You'll need the Invite Key from your team founder
+   - **Creating a new workspace** → You'll need a PostgreSQL database URL (get one free at [Neon](https://neon.tech), [Supabase](https://supabase.com), or [Railway](https://railway.app))
+   - **Joining an existing workspace** → You'll need the Invite Key from your workspace founder
 
-5. Done! Your agent now has persistent team memory.
+5. Done! Your agent now has persistent memory. Share your Invite Key with teammates anytime to enable team collaboration.
 
 <br />
 
@@ -172,8 +172,8 @@ Commits return instantly. Detection completes in the background. The write lock 
 │  Tier 3: LLM escalation (rare)          │
 ├──────────────────────────────────────────┤
 │          Storage Layer                   │
-│  Local:  SQLite  (~/.engram/)            │
-│  Team:   PostgreSQL (your ENGRAM_DB_URL) │
+│  PostgreSQL (your ENGRAM_DB_URL)         │
+│  Personal or team workspace              │
 └──────────────────────────────────────────┘
 ```
 
@@ -181,22 +181,19 @@ Team sharing works through the shared database — no HTTP server, no port forwa
 
 <br />
 
-## Solo use (no team)
+## Solo use (personal workspace)
 
-No database needed. Engram defaults to local SQLite:
+Start with your own personal workspace — you can share with teammates later.
 
-```json
-{
-  "mcpServers": {
-    "engram": {
-      "command": "uvx",
-      "args": ["engram-team@latest"]
-    }
-  }
-}
-```
+**Recommended: PostgreSQL**
+- Get a free database at [Neon](https://neon.tech), [Supabase](https://supabase.com), or [Railway](https://railway.app)
+- During setup, choose "new" and provide your database URL
+- Share your Invite Key with teammates anytime to enable collaboration
 
-Facts persist in `~/.engram/knowledge.db`. Add `ENGRAM_DB_URL` later to upgrade to team mode — the agent handles migration automatically.
+**For local development only: SQLite**
+- Engram will use `~/.engram/knowledge.db` if no database URL is provided
+- Good for testing, but limited to single-machine use
+- No team sharing or federation support
 
 <br />
 
