@@ -14,23 +14,31 @@ Persistent memory that survives across sessions and detects when agents contradi
 
 ---
 
-
-
 ## What It Does
 
 When one agent discovers something important — a hidden side effect, a failed approach, an undocumented constraint — it commits that fact. Every other agent on your team can query it instantly.
 
 When two agents develop incompatible beliefs, Engram detects the contradiction and surfaces it for review.
 
-**You own your data.** Engram connects to your PostgreSQL database. Your facts live in your database, not ours.
+**Your data is private.** Facts live in our database, isolated by workspace. We don't read, analyze, or redistribute your team's memory. Ever.
 
 ---
 
 ## Quick Start
 
+**macOS / Linux:**
 ```bash
-pip install engram-team
-engram install
+curl -fsSL https://engram.app/install | sh
+```
+
+**Windows PowerShell:**
+```powershell
+irm https://engram.app/install.ps1 | iex
+```
+
+**Windows CMD:**
+```cmd
+curl -fsSL https://engram.app/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
 
 Restart your editor, then ask your agent:
@@ -38,9 +46,7 @@ Restart your editor, then ask your agent:
 "Set up Engram for my team"
 ```
 
-Your agent handles the rest. Works with Claude Code, Claude Desktop, Cursor, Windsurf, VS Code, and any MCP-compatible IDE.
-
-**Security note:** Set your database URL in a `.env` file or environment variable — never paste it in chat.
+Your agent handles the rest — no database setup, no configuration files, no environment variables. Works with Claude Code, Claude Desktop, Cursor, Windsurf, VS Code, and any MCP-compatible IDE.
 
 ---
 
@@ -58,33 +64,14 @@ Your agent handles the rest. Works with Claude Code, Claude Desktop, Cursor, Win
 
 > 🤖 **Agent**
 >
-> Do you already have a PostgreSQL database for this project?
->
-> - **Yes** → Engram will auto-detect it and create a separate `engram` schema. Your app tables are untouched.
-> - **No** → No problem. You can get a free one in under a minute:
->   - [Neon](https://neon.tech) — Serverless Postgres
->   - [Supabase](https://supabase.com) — Open source Firebase alternative
->   - [Railway](https://railway.app) — Deploy in minutes
-> - **Just testing locally?** → Skip the database entirely. Engram runs on SQLite by default — no setup needed.
-
-> 👤 **You**
->
-> I have one already
-
-> 🤖 **Agent**
->
-> ✅ Auto-detected `ENGRAM_DB_URL` from your environment.
->
-> If I didn't find it, just add it to your `.env` or shell config and restart — I'll pick it up automatically.
->
-> Your team workspace is ready. Engram tables are in the `engram` schema — fully isolated from your app.
+> ✅ Your team workspace is ready.
 >
 > Share this Invite Key with teammates:
 > ```
 > ek_live_abc123...
 > ```
 >
-> That's all they need — the database connection is encrypted inside it.
+> That's all they need — one key, nothing else to configure.
 >
 > Should commits show who made them, or stay anonymous?
 
@@ -104,18 +91,7 @@ Your agent handles the rest. Works with Claude Code, Claude Desktop, Cursor, Win
 >
 > You're in. I'll query team memory before starting work on anything.
 
-**That's it.** Teammates only need the Invite Key. No database URL, no Team ID, no configuration. Everything is encrypted inside the key.
-
----
-
-## Do I Need My Own Database?
-
-| Situation | What to do |
-|---|---|
-| **I have a PostgreSQL database for this project** | Point `ENGRAM_DB_URL` at it. Engram creates a separate `engram` schema — your app tables are untouched. |
-| **I don't have a database yet** | Grab a free one from [Neon](https://neon.tech), [Supabase](https://supabase.com), or [Railway](https://railway.app). Takes under a minute. |
-| **I'm just trying it out locally** | Do nothing. Engram defaults to SQLite (`~/.engram/knowledge.db`) — no database needed. |
-| **A teammate invited me** | Just paste the Invite Key. The database connection is encrypted inside it — you don't need to set up anything. |
+**That's it.** Teammates only need the Invite Key. No database URL, no Team ID, no configuration.
 
 ---
 
@@ -135,28 +111,23 @@ Your agent handles the rest. Works with Claude Code, Claude Desktop, Cursor, Win
 │  Tier 2: Numeric/temporal rules          │
 │  Tier 3: LLM escalation (rare)           │
 ├──────────────────────────────────────────┤
-│          Storage                         │
-│  Your PostgreSQL database                │
-│  (or SQLite for local mode)              │
+│          Hosted Storage                  │
+│  Managed Postgres — zero setup           │
+│  Isolated per workspace                  │
 └──────────────────────────────────────────┘
 ```
 
-Team sharing works through the shared database — no HTTP server, no port forwarding, no firewall rules.
+No database to provision, no servers to run, no ports to open. Install and go.
 
 ---
 
 ## Privacy & Security
 
-**You own your data:**
-- Connect to your own PostgreSQL database
-- Use your existing app database with schema isolation
-- Self-host if you want zero third-party involvement
-- Database URL stored securely (mode 600) or in environment variables
-- Invite keys encrypt credentials — teammates never see them
-
-**Privacy settings** (asked once during setup):
+- Facts are isolated per workspace — no cross-workspace access
+- Invite keys use encrypted payloads — teammates never see raw credentials
 - **Anonymous mode** — Strip engineer names from all commits
 - **Anonymous agents** — Randomize agent IDs each session
+- We don't read, analyze, or redistribute your data
 
 ---
 
@@ -190,8 +161,6 @@ Commits return instantly. Detection completes in the background (~2-10s on CPU).
 ## Memory That Forgets on Purpose
 
 Engram doesn't just accumulate — it actively forgets what doesn't earn its place.
-
-> Persistent memory helps until it starts introducing assumptions you never explicitly designed.
 
 - **Ephemeral memory** — Scratchpad facts auto-expire in 24h unless queried twice ("proved useful more than once")
 - **Importance decay** — Unverified inferences expire after 30 days. Unverified observations expire after 90 days.
