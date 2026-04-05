@@ -512,22 +512,22 @@ def _render_landing() -> str:
   <div class="card reveal">
     <div class="feature-grid">
       <div class="feature-item">
-        <div class="feature-icon">💡</div>
+        <div class="feature-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v8l4-2"/><circle cx="12" cy="14" r="8"/></svg></div>
         <h3>Commit discoveries</h3>
         <p>When an agent finds a hidden side effect, a failed approach, or an undocumented constraint — it commits that fact to shared memory.</p>
       </div>
       <div class="feature-item">
-        <div class="feature-icon">🔍</div>
+        <div class="feature-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg></div>
         <h3>Query before working</h3>
         <p>Every agent queries team memory before starting work. No duplicated effort, no rediscovering what someone already found.</p>
       </div>
       <div class="feature-item">
-        <div class="feature-icon">⚡</div>
+        <div class="feature-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
         <h3>Detect contradictions</h3>
         <p>When two agents develop incompatible beliefs, Engram detects the contradiction and surfaces it for review.</p>
       </div>
       <div class="feature-item">
-        <div class="feature-icon">🧠</div>
+        <div class="feature-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4m0 4a4 4 0 100 8 4 4 0 000-8z"/><path d="M12 16v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M4 12H2"/><path d="M22 12h-2"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg></div>
         <h3>Forget on purpose</h3>
         <p>Ephemeral facts auto-expire unless proven useful. Old context stops crowding out what matters now.</p>
       </div>
@@ -649,35 +649,35 @@ def _render_landing() -> str:
 
     <div class="privacy-grid">
       <div class="privacy-item">
-        <div class="privacy-icon">🔒</div>
+        <div class="privacy-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
         <div>
           <h3>Encrypted everywhere</h3>
           <p>All data encrypted in transit and at rest. Invite keys use encrypted payloads — teammates never see raw credentials.</p>
         </div>
       </div>
       <div class="privacy-item">
-        <div class="privacy-icon">🔐</div>
+        <div class="privacy-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
         <div>
           <h3>Fully isolated</h3>
           <p>Every workspace is completely isolated. No cross-workspace access, no shared tables, no data leakage between teams.</p>
         </div>
       </div>
       <div class="privacy-item">
-        <div class="privacy-icon">🚫</div>
+        <div class="privacy-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M4.93 4.93l14.14 14.14"/></svg></div>
         <div>
           <h3>Never read, never analyzed</h3>
           <p>We don't read your facts. We don't analyze your memory. We don't train on your data. We don't sell it. No analytics pipeline touches your content.</p>
         </div>
       </div>
       <div class="privacy-item">
-        <div class="privacy-icon">🛡️</div>
+        <div class="privacy-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></div>
         <div>
           <h3>Never redistributed</h3>
           <p>Your team's knowledge never leaves your workspace. Never shared with other users, teams, or third parties. Not now, not ever.</p>
         </div>
       </div>
       <div class="privacy-item">
-        <div class="privacy-icon">⚙️</div>
+        <div class="privacy-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></div>
         <div>
           <h3>You control everything</h3>
           <p>Delete your workspace and everything is gone. Anonymous mode strips names. Anonymous agents randomize IDs. You decide what's visible.</p>
@@ -951,7 +951,7 @@ function renderGraph(data) {
       { selector: 'edge[kind = "conflict"]', style: {
         'line-color': '#ef4444', 'line-style': 'dashed',
         'width': 2, 'opacity': 0.7, 'curve-style': 'bezier',
-        'label': '⚡', 'font-size': '12px', 'text-rotation': 'autorotate',
+        'label': '×', 'font-size': '12px', 'text-rotation': 'autorotate',
       }},
       { selector: ':selected', style: { 'border-color': '#34d399', 'border-width': 2.5 }},
     ],
