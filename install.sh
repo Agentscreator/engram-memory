@@ -50,7 +50,18 @@ patch_mcpservers_url() {
   python3 - "$1" "$MCP_URL" "$INVITE_KEY" << 'PYEOF'
 import json, sys, os
 f, u, k = sys.argv[1], sys.argv[2], sys.argv[3]
-c = json.load(open(f)) if os.path.exists(f) else {}
+
+def load_json_or_empty(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+
+c = load_json_or_empty(f)
 os.makedirs(os.path.dirname(f), exist_ok=True)
 c.setdefault("mcpServers", {})
 e = {"url": u}
@@ -66,7 +77,16 @@ patch_windsurf() {
   python3 - "$1" "$MCP_URL" "$INVITE_KEY" << 'PYEOF'
 import json, sys, os
 f, u, k = sys.argv[1], sys.argv[2], sys.argv[3]
-c = json.load(open(f)) if os.path.exists(f) else {}
+def load_json_or_empty(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+c = load_json_or_empty(f)
 os.makedirs(os.path.dirname(f), exist_ok=True)
 c.setdefault("mcpServers", {})
 e = {"serverUrl": u}
@@ -82,7 +102,16 @@ patch_vscode() {
   python3 - "$1" "$MCP_URL" "$INVITE_KEY" << 'PYEOF'
 import json, sys, os
 f, u, k = sys.argv[1], sys.argv[2], sys.argv[3]
-c = json.load(open(f)) if os.path.exists(f) else {}
+def load_json_or_empty(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+c = load_json_or_empty(f)
 os.makedirs(os.path.dirname(f), exist_ok=True)
 c.setdefault("servers", {})
 e = {"type": "http", "url": u}
@@ -98,7 +127,16 @@ patch_claude_code() {
   python3 - "$1" "$MCP_URL" "$INVITE_KEY" << 'PYEOF'
 import json, sys, os
 f, u, k = sys.argv[1], sys.argv[2], sys.argv[3]
-c = json.load(open(f)) if os.path.exists(f) else {}
+def load_json_or_empty(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+c = load_json_or_empty(f)
 c.setdefault("mcpServers", {})
 e = {"type": "http", "url": u}
 if k: e["headers"] = {"Authorization": f"Bearer {k}"}
@@ -113,7 +151,16 @@ patch_claude_desktop() {
   python3 - "$1" "$MCP_URL" "$INVITE_KEY" << 'PYEOF'
 import json, sys, os
 f, u, k = sys.argv[1], sys.argv[2], sys.argv[3]
-c = json.load(open(f)) if os.path.exists(f) else {}
+def load_json_or_empty(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+c = load_json_or_empty(f)
 os.makedirs(os.path.dirname(f), exist_ok=True)
 c.setdefault("mcpServers", {})
 a = ["-y", "mcp-remote@latest", u]
@@ -129,7 +176,16 @@ patch_opencode() {
   python3 - "$1" "$MCP_URL" "$INVITE_KEY" << 'PYEOF'
 import json, sys, os
 f, u, k = sys.argv[1], sys.argv[2], sys.argv[3]
-c = json.load(open(f)) if os.path.exists(f) else {}
+def load_json_or_empty(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+c = load_json_or_empty(f)
 os.makedirs(os.path.dirname(f), exist_ok=True)
 c.setdefault("mcp", {})
 e = {"type": "remote", "url": u, "enabled": True}
@@ -145,7 +201,16 @@ patch_zed() {
   python3 - "$1" "$MCP_URL" "$INVITE_KEY" << 'PYEOF'
 import json, sys, os
 f, u, k = sys.argv[1], sys.argv[2], sys.argv[3]
-c = json.load(open(f)) if os.path.exists(f) else {}
+def load_json_or_empty(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+c = load_json_or_empty(f)
 os.makedirs(os.path.dirname(f), exist_ok=True)
 c.setdefault("context_servers", {})
 e = {"url": u}
