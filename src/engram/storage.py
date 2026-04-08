@@ -107,9 +107,7 @@ class BaseStorage(ABC):
     async def conflict_exists(self, fact_a_id: str, fact_b_id: str) -> bool: ...
 
     @abstractmethod
-    async def get_conflicts(
-        self, scope: str | None = None, status: str = "open"
-    ) -> list[dict]: ...
+    async def get_conflicts(self, scope: str | None = None, status: str = "open") -> list[dict]: ...
 
     @abstractmethod
     async def resolve_conflict(
@@ -183,12 +181,23 @@ class BaseStorage(ABC):
     async def get_facts_by_lineage(self, lineage_id: str) -> list[dict]: ...
 
     @abstractmethod
-    async def get_active_facts_with_embeddings(
-        self, scope: str, limit: int = 20
-    ) -> list[dict]: ...
+    async def get_active_facts_with_embeddings(self, scope: str, limit: int = 20) -> list[dict]: ...
 
     @abstractmethod
     async def update_fact_embedding(self, fact_id: str, embedding: bytes) -> None: ...
+
+    @abstractmethod
+    async def get_distinct_embedding_models(self) -> list[str]: ...
+
+    @abstractmethod
+    async def get_facts_by_embedding_model(
+        self, embedding_model: str, limit: int = 100, offset: int = 0
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    async def update_fact_embedding_with_model(
+        self, fact_id: str, embedding: bytes, embedding_model: str, embedding_ver: str
+    ) -> None: ...
 
     @abstractmethod
     async def get_facts_since(
@@ -214,9 +223,7 @@ class BaseStorage(ABC):
     async def get_expiring_facts(self, days_ahead: int = 7) -> list[dict]: ...
 
     @abstractmethod
-    async def get_fact_timeline(
-        self, scope: str | None = None, limit: int = 100
-    ) -> list[dict]: ...
+    async def get_fact_timeline(self, scope: str | None = None, limit: int = 100) -> list[dict]: ...
 
     @abstractmethod
     async def get_detection_feedback_stats(self) -> dict[str, int]: ...
@@ -229,7 +236,9 @@ class BaseStorage(ABC):
 
     # ── Workspace / invite key methods (Phase 0) ─────────────────────
 
-    async def ensure_workspace(self, engram_id: str, anonymous_mode: bool, anon_agents: bool) -> None:
+    async def ensure_workspace(
+        self, engram_id: str, anonymous_mode: bool, anon_agents: bool
+    ) -> None:
         """Create workspace row if it doesn't exist. Default no-op for local mode."""
 
     async def get_workspace(self, engram_id: str) -> dict | None:
@@ -291,6 +300,7 @@ class SQLiteStorage(BaseStorage):
             # Existing database: run migrations first so columns exist
             # before SCHEMA_SQL tries to create indexes on them.
             from engram.schema import MIGRATIONS
+
             current_version = int(row["value"])
             for version in range(current_version + 1, SCHEMA_VERSION + 1):
                 for stmt in MIGRATIONS.get(version, []):
@@ -331,12 +341,29 @@ class SQLiteStorage(BaseStorage):
     async def insert_fact(self, fact: dict[str, Any]) -> int:
         """Insert a fact row. Returns the rowid for FTS5 sync."""
         cols = [
-            "id", "lineage_id", "content", "content_hash", "scope",
-            "confidence", "fact_type", "agent_id", "engineer", "provenance",
-            "keywords", "entities", "artifact_hash", "embedding",
-            "embedding_model", "embedding_ver", "committed_at",
-            "valid_from", "valid_until", "ttl_days",
-            "memory_op", "supersedes_fact_id", "durability",
+            "id",
+            "lineage_id",
+            "content",
+            "content_hash",
+            "scope",
+            "confidence",
+            "fact_type",
+            "agent_id",
+            "engineer",
+            "provenance",
+            "keywords",
+            "entities",
+            "artifact_hash",
+            "embedding",
+            "embedding_model",
+            "embedding_ver",
+            "committed_at",
+            "valid_from",
+            "valid_until",
+            "ttl_days",
+            "memory_op",
+            "supersedes_fact_id",
+            "durability",
         ]
         defaults = {"memory_op": "add", "durability": "durable"}
         placeholders = ", ".join(["?"] * len(cols))
@@ -558,8 +585,15 @@ class SQLiteStorage(BaseStorage):
 
     async def insert_conflict(self, conflict: dict[str, Any]) -> None:
         cols = [
-            "id", "fact_a_id", "fact_b_id", "detected_at", "detection_tier",
-            "nli_score", "explanation", "severity", "status",
+            "id",
+            "fact_a_id",
+            "fact_b_id",
+            "detected_at",
+            "detection_tier",
+            "nli_score",
+            "explanation",
+            "severity",
+            "status",
         ]
         placeholders = ", ".join(["?"] * len(cols))
         col_names = ", ".join(cols)
@@ -579,9 +613,7 @@ class SQLiteStorage(BaseStorage):
         )
         return await cursor.fetchone() is not None
 
-    async def get_conflicts(
-        self, scope: str | None = None, status: str = "open"
-    ) -> list[dict]:
+    async def get_conflicts(self, scope: str | None = None, status: str = "open") -> list[dict]:
         conditions = []
         params: list[Any] = []
 
@@ -640,9 +672,7 @@ class SQLiteStorage(BaseStorage):
         return cursor.rowcount > 0
 
     async def get_conflict_by_id(self, conflict_id: str) -> dict | None:
-        cursor = await self.db.execute(
-            "SELECT * FROM conflicts WHERE id = ?", (conflict_id,)
-        )
+        cursor = await self.db.execute("SELECT * FROM conflicts WHERE id = ?", (conflict_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
 
@@ -737,9 +767,7 @@ class SQLiteStorage(BaseStorage):
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    async def insert_detection_feedback(
-        self, conflict_id: str, feedback: str
-    ) -> None:
+    async def insert_detection_feedback(self, conflict_id: str, feedback: str) -> None:
         await self.db.execute(
             "INSERT INTO detection_feedback(conflict_id, feedback, recorded_at) VALUES (?, ?, ?)",
             (conflict_id, feedback, _now_iso()),
@@ -773,17 +801,13 @@ class SQLiteStorage(BaseStorage):
         await self.db.commit()
 
     async def get_agent(self, agent_id: str) -> dict | None:
-        cursor = await self.db.execute(
-            "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
-        )
+        cursor = await self.db.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
 
     # ── Scope permissions ────────────────────────────────────────────
 
-    async def get_scope_permission(
-        self, agent_id: str, scope: str
-    ) -> dict | None:
+    async def get_scope_permission(self, agent_id: str, scope: str) -> dict | None:
         cursor = await self.db.execute(
             "SELECT * FROM scope_permissions WHERE agent_id = ? AND scope = ?",
             (agent_id, scope),
@@ -806,8 +830,16 @@ class SQLiteStorage(BaseStorage):
                ON CONFLICT(agent_id, scope) DO UPDATE SET
                    can_read = ?, can_write = ?, valid_from = ?, valid_until = ?""",
             (
-                agent_id, scope, int(can_read), int(can_write), valid_from, valid_until,
-                int(can_read), int(can_write), valid_from, valid_until,
+                agent_id,
+                scope,
+                int(can_read),
+                int(can_write),
+                valid_from,
+                valid_until,
+                int(can_read),
+                int(can_write),
+                valid_from,
+                valid_until,
             ),
         )
         await self.db.commit()
@@ -821,9 +853,7 @@ class SQLiteStorage(BaseStorage):
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    async def get_active_facts_with_embeddings(
-        self, scope: str, limit: int = 20
-    ) -> list[dict]:
+    async def get_active_facts_with_embeddings(self, scope: str, limit: int = 20) -> list[dict]:
         """Return active facts in scope that have embeddings (for auto-update scoring)."""
         cursor = await self.db.execute(
             """SELECT * FROM facts
@@ -847,6 +877,40 @@ class SQLiteStorage(BaseStorage):
         await self.db.execute(
             "UPDATE facts SET embedding = ? WHERE id = ?",
             (embedding, fact_id),
+        )
+        await self.db.commit()
+
+    async def get_distinct_embedding_models(self) -> list[str]:
+        """Return list of distinct embedding_model values in the workspace."""
+        cursor = await self.db.execute(
+            "SELECT DISTINCT embedding_model FROM facts WHERE embedding_model IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+        return [row["embedding_model"] for row in rows]
+
+    async def get_facts_by_embedding_model(
+        self, embedding_model: str, limit: int = 100, offset: int = 0
+    ) -> list[dict]:
+        """Return facts with a specific embedding_model for re-embedding."""
+        cursor = await self.db.execute(
+            """SELECT * FROM facts
+               WHERE embedding_model = ? AND valid_until IS NULL
+               ORDER BY committed_at DESC
+               LIMIT ? OFFSET ?""",
+            (embedding_model, limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def update_fact_embedding_with_model(
+        self, fact_id: str, embedding: bytes, embedding_model: str, embedding_ver: str
+    ) -> None:
+        """Update embedding, model, and version for a fact."""
+        await self.db.execute(
+            """UPDATE facts 
+               SET embedding = ?, embedding_model = ?, embedding_ver = ?
+               WHERE id = ?""",
+            (embedding, embedding_model, embedding_ver, fact_id),
         )
         await self.db.commit()
 
@@ -900,9 +964,7 @@ class SQLiteStorage(BaseStorage):
         return row["cnt"] if row else 0
 
     async def get_agents(self) -> list[dict]:
-        cursor = await self.db.execute(
-            "SELECT * FROM agents ORDER BY last_seen DESC"
-        )
+        cursor = await self.db.execute("SELECT * FROM agents ORDER BY last_seen DESC")
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
@@ -932,9 +994,7 @@ class SQLiteStorage(BaseStorage):
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    async def get_fact_timeline(
-        self, scope: str | None = None, limit: int = 100
-    ) -> list[dict]:
+    async def get_fact_timeline(self, scope: str | None = None, limit: int = 100) -> list[dict]:
         """Get facts ordered by valid_from for timeline view."""
         conditions: list[str] = []
         params: list[Any] = []
@@ -996,9 +1056,7 @@ class SQLiteStorage(BaseStorage):
         await self.db.commit()
 
     async def get_workspace(self, engram_id: str) -> dict | None:
-        cursor = await self.db.execute(
-            "SELECT * FROM workspaces WHERE engram_id = ?", (engram_id,)
-        )
+        cursor = await self.db.execute("SELECT * FROM workspaces WHERE engram_id = ?", (engram_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
 
@@ -1053,9 +1111,7 @@ class SQLiteStorage(BaseStorage):
         return await self.get_key_generation(engram_id)
 
     async def revoke_all_invite_keys(self, engram_id: str) -> None:
-        await self.db.execute(
-            "DELETE FROM invite_keys WHERE engram_id = ?", (engram_id,)
-        )
+        await self.db.execute("DELETE FROM invite_keys WHERE engram_id = ?", (engram_id,))
         await self.db.commit()
 
 

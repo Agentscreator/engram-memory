@@ -39,21 +39,20 @@ class PostgresStorage(BaseStorage):
             import asyncpg
         except ImportError:
             raise RuntimeError(
-                "asyncpg is required for team mode. "
-                "Install it with: pip install engram-team[team]"
+                "asyncpg is required for team mode. Install it with: pip install engram-team[team]"
             )
-        self._pool = await asyncpg.create_pool(self.db_url, min_size=2, max_size=10)
-        async with self._pool.acquire() as conn:
-            # Create schema if it doesn't exist
-            await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {self.schema}")
-            
-            # Set search_path to use our schema first
+
+        async def _set_path(conn: Any) -> None:
             await conn.execute(f"SET search_path TO {self.schema}, public")
-            
-            # Run schema setup (idempotent CREATE TABLE IF NOT EXISTS)
-            # Tables will be created in the engram schema
+
+        self._pool = await asyncpg.create_pool(self.db_url, min_size=2, max_size=10, init=_set_path)
+        async with self._pool.acquire() as conn:
+            await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {self.schema}")
+            await conn.execute(f"SET search_path TO {self.schema}, public")
             await conn.execute(POSTGRES_SCHEMA_SQL)
-        logger.info("PostgreSQL connected (workspace: %s, schema: %s)", self.workspace_id, self.schema)
+        logger.info(
+            "PostgreSQL connected (workspace: %s, schema: %s)", self.workspace_id, self.schema
+        )
 
     async def close(self) -> None:
         if self._pool:
@@ -66,18 +65,58 @@ class PostgresStorage(BaseStorage):
             raise RuntimeError("PostgresStorage not connected. Call connect() first.")
         return self._pool
 
+    class _ConnectionWrapper:
+        def __init__(self, pool: Any, postgres_storage: "PostgresStorage"):
+            self._pool = pool
+            self._ps = postgres_storage
+            self._conn = None
+
+        async def __aenter__(self) -> Any:
+            self._conn = await self._pool.acquire()
+            await self._conn.execute(f"SET search_path TO {self._ps.schema}, public")
+            return self._conn
+
+        async def __aexit__(self, *args: Any) -> None:
+            if self._conn:
+                await self._pool.release(self._conn)
+
+    def acquire(self) -> _ConnectionWrapper:
+        return self._ConnectionWrapper(self._pool, self)
+
+    @property
+    def connected(self) -> bool:
+        return self._pool is not None
+
     # ── Fact operations ──────────────────────────────────────────────
 
     async def insert_fact(self, fact: dict[str, Any]) -> int:
         cols = [
-            "id", "lineage_id", "content", "content_hash", "scope",
-            "confidence", "fact_type", "agent_id", "engineer", "provenance",
-            "keywords", "entities", "artifact_hash", "embedding",
-            "embedding_model", "embedding_ver", "committed_at",
-            "valid_from", "valid_until", "ttl_days",
-            "memory_op", "supersedes_fact_id", "workspace_id", "durability",
+            "id",
+            "lineage_id",
+            "content",
+            "content_hash",
+            "scope",
+            "confidence",
+            "fact_type",
+            "agent_id",
+            "engineer",
+            "provenance",
+            "keywords",
+            "entities",
+            "artifact_hash",
+            "embedding",
+            "embedding_model",
+            "embedding_ver",
+            "committed_at",
+            "valid_from",
+            "valid_until",
+            "ttl_days",
+            "memory_op",
+            "supersedes_fact_id",
+            "workspace_id",
+            "durability",
         ]
-        placeholders = ", ".join(f"${i+1}" for i in range(len(cols)))
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(cols)))
         col_names = ", ".join(cols)
 
         # entities must be a JSON string for asyncpg to handle as jsonb
@@ -94,20 +133,20 @@ class PostgresStorage(BaseStorage):
                     v = None
             values.append(v)
 
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             # asyncpg returns the row; we use id as the "rowid" equivalent
-            await conn.execute(
-                f"INSERT INTO facts ({col_names}) VALUES ({placeholders})", *values
-            )
+            await conn.execute(f"INSERT INTO facts ({col_names}) VALUES ({placeholders})", *values)
             # For FTS compatibility, return 0 (PostgreSQL uses generated tsvector)
             return 0
 
     async def find_duplicate(self, content_hash: str, scope: str) -> str | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id FROM facts WHERE content_hash = $1 AND scope = $2 "
                 "AND valid_until IS NULL AND workspace_id = $3",
-                content_hash, scope, self.workspace_id,
+                content_hash,
+                scope,
+                self.workspace_id,
             )
         return row["id"] if row else None
 
@@ -115,29 +154,35 @@ class PostgresStorage(BaseStorage):
         self, *, lineage_id: str | None = None, fact_id: str | None = None
     ) -> None:
         now = _now_ts()
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             if lineage_id:
                 await conn.execute(
                     "UPDATE facts SET valid_until = $1 WHERE lineage_id = $2 "
                     "AND valid_until IS NULL AND workspace_id = $3",
-                    now, lineage_id, self.workspace_id,
+                    now,
+                    lineage_id,
+                    self.workspace_id,
                 )
             elif fact_id:
                 await conn.execute(
                     "UPDATE facts SET valid_until = $1 WHERE id = $2 "
                     "AND valid_until IS NULL AND workspace_id = $3",
-                    now, fact_id, self.workspace_id,
+                    now,
+                    fact_id,
+                    self.workspace_id,
                 )
 
     async def expire_ttl_facts(self) -> int:
         now = _now_ts()
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
+            await conn.execute(f"SET search_path TO {self.schema}, public")
             result = await conn.execute(
                 "UPDATE facts SET valid_until = $1 "
                 "WHERE ttl_days IS NOT NULL AND valid_until IS NULL "
                 "AND workspace_id = $2 "
                 "AND valid_from + (ttl_days * INTERVAL '1 day') < $1",
-                now, self.workspace_id,
+                now,
+                self.workspace_id,
             )
         # asyncpg returns "UPDATE N"
         return int(result.split()[-1])
@@ -181,7 +226,7 @@ class PostgresStorage(BaseStorage):
 
         params.append(limit)
         where = " AND ".join(conditions)
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT * FROM facts WHERE {where} ORDER BY committed_at DESC LIMIT ${idx}",
                 *params,
@@ -190,13 +235,15 @@ class PostgresStorage(BaseStorage):
 
     async def fts_search(self, query: str, limit: int = 20) -> list[int]:
         """Full-text search using tsvector. Returns a list of pseudo-rowids (not used in PG)."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, ts_rank(search_vector, plainto_tsquery('english', $1)) AS rank "
                 "FROM facts WHERE search_vector @@ plainto_tsquery('english', $1) "
                 "AND workspace_id = $2 AND valid_until IS NULL "
                 "ORDER BY rank DESC LIMIT $3",
-                query, self.workspace_id, limit,
+                query,
+                self.workspace_id,
+                limit,
             )
         # Return ids as a list (PostgreSQL doesn't use integer rowids like SQLite)
         return [r["id"] for r in rows]
@@ -205,28 +252,28 @@ class PostgresStorage(BaseStorage):
         """In PostgreSQL mode rowids are actually fact IDs (strings) from fts_search."""
         if not rowids:
             return []
-        placeholders = ", ".join(f"${i+1}" for i in range(len(rowids)))
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"SELECT * FROM facts WHERE id IN ({placeholders})", *rowids
-            )
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(rowids)))
+        async with self.acquire() as conn:
+            rows = await conn.fetch(f"SELECT * FROM facts WHERE id IN ({placeholders})", *rowids)
         return [_row_to_dict(r) for r in rows]
 
     async def get_fact_by_id(self, fact_id: str) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM facts WHERE id = $1 AND workspace_id = $2",
-                fact_id, self.workspace_id,
+                fact_id,
+                self.workspace_id,
             )
         return _row_to_dict(row) if row else None
 
     async def promote_fact(self, fact_id: str) -> bool:
         """Promote an ephemeral fact to durable. Returns True if promoted."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute(
                 "UPDATE facts SET durability = 'durable' "
                 "WHERE id = $1 AND durability = 'ephemeral' AND workspace_id = $2",
-                fact_id, self.workspace_id,
+                fact_id,
+                self.workspace_id,
             )
         return result.split()[-1] != "0"
 
@@ -234,20 +281,22 @@ class PostgresStorage(BaseStorage):
         """Increment query_hits counter for the given fact IDs."""
         if not fact_ids:
             return
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE facts SET query_hits = query_hits + 1 "
                 "WHERE id = ANY($1::text[]) AND workspace_id = $2",
-                fact_ids, self.workspace_id,
+                fact_ids,
+                self.workspace_id,
             )
 
     async def get_promotable_ephemeral_facts(self, min_hits: int = 2) -> list[dict]:
         """Return ephemeral facts that have been queried enough times to auto-promote."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM facts WHERE durability = 'ephemeral' AND valid_until IS NULL "
                 "AND query_hits >= $1 AND workspace_id = $2",
-                min_hits, self.workspace_id,
+                min_hits,
+                self.workspace_id,
             )
         return [_row_to_dict(r) for r in rows]
 
@@ -255,7 +304,7 @@ class PostgresStorage(BaseStorage):
         """Retire stale, low-value facts via importance-based decay."""
         now = _now_ts()
         total = 0
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             # 1. Unverified inferences older than 30 days
             result = await conn.execute(
                 "UPDATE facts SET valid_until = $1 "
@@ -265,7 +314,8 @@ class PostgresStorage(BaseStorage):
                 "AND corroborating_agents = 0 "
                 "AND workspace_id = $2 "
                 "AND committed_at + INTERVAL '30 days' < $1",
-                now, self.workspace_id,
+                now,
+                self.workspace_id,
             )
             total += int(result.split()[-1])
 
@@ -278,7 +328,8 @@ class PostgresStorage(BaseStorage):
                 "AND corroborating_agents = 0 "
                 "AND workspace_id = $2 "
                 "AND committed_at + INTERVAL '90 days' < $1",
-                now, self.workspace_id,
+                now,
+                self.workspace_id,
             )
             total += int(result.split()[-1])
 
@@ -289,7 +340,7 @@ class PostgresStorage(BaseStorage):
     async def find_entity_conflicts(
         self, entity_name: str, entity_type: str, entity_value: str, scope: str, exclude_id: str
     ) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT f.* FROM facts f,
                    jsonb_array_elements(f.entities) AS e
@@ -301,14 +352,19 @@ class PostgresStorage(BaseStorage):
                      AND e->>'type' = $5
                      AND e->>'value' IS NOT NULL
                      AND e->>'value' != $6""",
-                self.workspace_id, exclude_id, scope, entity_name, entity_type, str(entity_value),
+                self.workspace_id,
+                exclude_id,
+                scope,
+                entity_name,
+                entity_type,
+                str(entity_value),
             )
         return [_row_to_dict(r) for r in rows]
 
     async def find_cross_scope_entity_matches(
         self, entity_name: str, entity_type: str, entity_value: str, exclude_id: str
     ) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT f.* FROM facts f,
                    jsonb_array_elements(f.entities) AS e
@@ -318,7 +374,11 @@ class PostgresStorage(BaseStorage):
                      AND e->>'name' = $3
                      AND e->>'type' = $4
                      AND (e->>'value' IS NULL OR e->>'value' != $5)""",
-                self.workspace_id, exclude_id, entity_name, entity_type, str(entity_value),
+                self.workspace_id,
+                exclude_id,
+                entity_name,
+                entity_type,
+                str(entity_value),
             )
         return [_row_to_dict(r) for r in rows]
 
@@ -326,30 +386,38 @@ class PostgresStorage(BaseStorage):
 
     async def insert_conflict(self, conflict: dict[str, Any]) -> None:
         cols = [
-            "id", "fact_a_id", "fact_b_id", "detected_at", "detection_tier",
-            "nli_score", "explanation", "severity", "status", "workspace_id",
+            "id",
+            "fact_a_id",
+            "fact_b_id",
+            "detected_at",
+            "detection_tier",
+            "nli_score",
+            "explanation",
+            "severity",
+            "status",
+            "workspace_id",
         ]
-        placeholders = ", ".join(f"${i+1}" for i in range(len(cols)))
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(cols)))
         col_names = ", ".join(cols)
         values = [conflict.get(c, self.workspace_id if c == "workspace_id" else None) for c in cols]
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 f"INSERT INTO conflicts ({col_names}) VALUES ({placeholders})", *values
             )
 
     async def conflict_exists(self, fact_a_id: str, fact_b_id: str) -> bool:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT 1 FROM conflicts WHERE "
                 "((fact_a_id = $1 AND fact_b_id = $2) OR (fact_a_id = $2 AND fact_b_id = $1)) "
                 "AND workspace_id = $3",
-                fact_a_id, fact_b_id, self.workspace_id,
+                fact_a_id,
+                fact_b_id,
+                self.workspace_id,
             )
         return row is not None
 
-    async def get_conflicts(
-        self, scope: str | None = None, status: str = "open"
-    ) -> list[dict]:
+    async def get_conflicts(self, scope: str | None = None, status: str = "open") -> list[dict]:
         conditions = ["c.workspace_id = $1"]
         params: list[Any] = [self.workspace_id]
         idx = 2
@@ -368,7 +436,7 @@ class PostgresStorage(BaseStorage):
             idx += 1
 
         where = " AND ".join(conditions)
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 f"""SELECT c.*,
                            fa.content AS fact_a_content, fa.scope AS fact_a_scope,
@@ -395,26 +463,32 @@ class PostgresStorage(BaseStorage):
     ) -> bool:
         now = _now_ts()
         new_status = "dismissed" if resolution_type == "dismissed" else "resolved"
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute(
                 "UPDATE conflicts SET status=$1, resolution_type=$2, resolution=$3, "
                 "resolved_by=$4, resolved_at=$5 "
                 "WHERE id=$6 AND status='open' AND workspace_id=$7",
-                new_status, resolution_type, resolution, resolved_by, now,
-                conflict_id, self.workspace_id,
+                new_status,
+                resolution_type,
+                resolution,
+                resolved_by,
+                now,
+                conflict_id,
+                self.workspace_id,
             )
         return result == "UPDATE 1"
 
     async def get_conflict_by_id(self, conflict_id: str) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM conflicts WHERE id = $1 AND workspace_id = $2",
-                conflict_id, self.workspace_id,
+                conflict_id,
+                self.workspace_id,
             )
         return _row_to_dict(row) if row else None
 
     async def get_conflict_with_facts(self, conflict_id: str) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """SELECT c.*,
                           fa.content AS fact_a_content, fa.scope AS fact_a_scope,
@@ -425,7 +499,8 @@ class PostgresStorage(BaseStorage):
                    JOIN facts fa ON c.fact_a_id = fa.id
                    JOIN facts fb ON c.fact_b_id = fb.id
                    WHERE c.id = $1 AND c.workspace_id = $2""",
-                conflict_id, self.workspace_id,
+                conflict_id,
+                self.workspace_id,
             )
         return _row_to_dict(row) if row else None
 
@@ -438,13 +513,18 @@ class PostgresStorage(BaseStorage):
         suggestion_reasoning: str,
         suggestion_generated_at: str,
     ) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE conflicts SET suggested_resolution=$1, suggested_resolution_type=$2, "
                 "suggested_winning_fact_id=$3, suggestion_reasoning=$4, "
                 "suggestion_generated_at=$5 WHERE id=$6 AND workspace_id=$7",
-                suggested_resolution, suggested_resolution_type, suggested_winning_fact_id,
-                suggestion_reasoning, suggestion_generated_at, conflict_id, self.workspace_id,
+                suggested_resolution,
+                suggested_resolution_type,
+                suggested_winning_fact_id,
+                suggestion_reasoning,
+                suggestion_generated_at,
+                conflict_id,
+                self.workspace_id,
             )
 
     async def auto_resolve_conflict(
@@ -457,77 +537,93 @@ class PostgresStorage(BaseStorage):
     ) -> bool:
         now = _now_ts()
         new_status = "dismissed" if resolution_type == "dismissed" else "resolved"
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             result = await conn.execute(
                 "UPDATE conflicts SET status=$1, resolution_type=$2, resolution=$3, "
                 "resolved_by=$4, resolved_at=$5, auto_resolved=1, escalated_at=$6 "
                 "WHERE id=$7 AND status='open' AND workspace_id=$8",
-                new_status, resolution_type, resolution, resolved_by, now,
-                escalated_at, conflict_id, self.workspace_id,
+                new_status,
+                resolution_type,
+                resolution,
+                resolved_by,
+                now,
+                escalated_at,
+                conflict_id,
+                self.workspace_id,
             )
         return result == "UPDATE 1"
 
     async def get_stale_open_conflicts(self, older_than_hours: int = 72) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM conflicts WHERE status='open' AND workspace_id=$1 "
                 "AND detected_at < NOW() - ($2 * INTERVAL '1 hour') "
                 "ORDER BY detected_at ASC",
-                self.workspace_id, older_than_hours,
+                self.workspace_id,
+                older_than_hours,
             )
         return [_row_to_dict(r) for r in rows]
 
     async def insert_detection_feedback(self, conflict_id: str, feedback: str) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "INSERT INTO detection_feedback(conflict_id, feedback, recorded_at) "
                 "VALUES ($1, $2, $3)",
-                conflict_id, feedback, _now_ts(),
+                conflict_id,
+                feedback,
+                _now_ts(),
             )
 
     # ── Agent operations ─────────────────────────────────────────────
 
     async def upsert_agent(self, agent_id: str, engineer: str = "unknown") -> None:
         now = _now_ts()
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """INSERT INTO agents(agent_id, engineer, registered_at, last_seen, total_commits, workspace_id)
                    VALUES ($1, $2, $3, $3, 0, $4)
                    ON CONFLICT(agent_id) DO UPDATE SET last_seen = $3""",
-                agent_id, engineer, now, self.workspace_id,
+                agent_id,
+                engineer,
+                now,
+                self.workspace_id,
             )
 
     async def increment_agent_commits(self, agent_id: str) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE agents SET total_commits = total_commits + 1 "
                 "WHERE agent_id = $1 AND workspace_id = $2",
-                agent_id, self.workspace_id,
+                agent_id,
+                self.workspace_id,
             )
 
     async def increment_agent_flagged(self, agent_id: str) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE agents SET flagged_commits = flagged_commits + 1 "
                 "WHERE agent_id = $1 AND workspace_id = $2",
-                agent_id, self.workspace_id,
+                agent_id,
+                self.workspace_id,
             )
 
     async def get_agent(self, agent_id: str) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM agents WHERE agent_id = $1 AND workspace_id = $2",
-                agent_id, self.workspace_id,
+                agent_id,
+                self.workspace_id,
             )
         return _row_to_dict(row) if row else None
 
     # ── Scope permissions ────────────────────────────────────────────
 
     async def get_scope_permission(self, agent_id: str, scope: str) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM scope_permissions WHERE agent_id = $1 AND scope = $2",
-                agent_id, scope,
+                agent_id,
+                scope,
             )
         return _row_to_dict(row) if row else None
 
@@ -540,41 +636,89 @@ class PostgresStorage(BaseStorage):
         valid_from: str | None = None,
         valid_until: str | None = None,
     ) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """INSERT INTO scope_permissions(agent_id, scope, can_read, can_write, valid_from, valid_until)
                    VALUES ($1, $2, $3, $4, $5, $6)
                    ON CONFLICT(agent_id, scope) DO UPDATE SET
                        can_read=$3, can_write=$4, valid_from=$5, valid_until=$6""",
-                agent_id, scope, can_read, can_write, valid_from, valid_until,
+                agent_id,
+                scope,
+                can_read,
+                can_write,
+                valid_from,
+                valid_until,
             )
 
     async def get_facts_by_lineage(self, lineage_id: str) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM facts WHERE lineage_id = $1 AND workspace_id = $2 "
                 "ORDER BY committed_at DESC",
-                lineage_id, self.workspace_id,
+                lineage_id,
+                self.workspace_id,
             )
         return [_row_to_dict(r) for r in rows]
 
-    async def get_active_facts_with_embeddings(
-        self, scope: str, limit: int = 20
-    ) -> list[dict]:
-        async with self.pool.acquire() as conn:
+    async def get_active_facts_with_embeddings(self, scope: str, limit: int = 20) -> list[dict]:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM facts WHERE scope = $1 AND valid_until IS NULL "
                 "AND embedding IS NOT NULL AND workspace_id = $2 "
                 "ORDER BY committed_at DESC LIMIT $3",
-                scope, self.workspace_id, limit,
+                scope,
+                self.workspace_id,
+                limit,
             )
         return [_row_to_dict(r) for r in rows]
 
     async def update_fact_embedding(self, fact_id: str, embedding: bytes) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE facts SET embedding = $1 WHERE id = $2 AND workspace_id = $3",
-                embedding, fact_id, self.workspace_id,
+                embedding,
+                fact_id,
+                self.workspace_id,
+            )
+
+    async def get_distinct_embedding_models(self) -> list[str]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT DISTINCT embedding_model FROM facts 
+                   WHERE embedding_model IS NOT NULL AND workspace_id = $1""",
+                self.workspace_id,
+            )
+        return [r["embedding_model"] for r in rows]
+
+    async def get_facts_by_embedding_model(
+        self, embedding_model: str, limit: int = 100, offset: int = 0
+    ) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT * FROM facts
+                   WHERE embedding_model = $1 AND valid_until IS NULL AND workspace_id = $2
+                   ORDER BY committed_at DESC
+                   LIMIT $3 OFFSET $4""",
+                embedding_model,
+                self.workspace_id,
+                limit,
+                offset,
+            )
+        return [_row_to_dict(r) for r in rows]
+
+    async def update_fact_embedding_with_model(
+        self, fact_id: str, embedding: bytes, embedding_model: str, embedding_ver: str
+    ) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """UPDATE facts 
+                   SET embedding = $1, embedding_model = $2, embedding_ver = $3
+                   WHERE id = $4 AND workspace_id = $5""",
+                embedding,
+                embedding_model,
+                embedding_ver,
+                fact_id,
+                self.workspace_id,
             )
 
     async def get_facts_since(
@@ -589,7 +733,7 @@ class PostgresStorage(BaseStorage):
             idx += 1
         params.append(limit)
         where = " AND ".join(conditions)
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT * FROM facts WHERE {where} ORDER BY committed_at ASC LIMIT ${idx}",
                 *params,
@@ -606,13 +750,19 @@ class PostgresStorage(BaseStorage):
     # ── Dashboard helpers ────────────────────────────────────────────
 
     async def count_facts(self, current_only: bool = True) -> int:
-        cond = "WHERE valid_until IS NULL AND workspace_id = $1" if current_only else "WHERE workspace_id = $1"
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(f"SELECT COUNT(*) AS cnt FROM facts {cond}", self.workspace_id)
+        cond = (
+            "WHERE valid_until IS NULL AND workspace_id = $1"
+            if current_only
+            else "WHERE workspace_id = $1"
+        )
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT COUNT(*) AS cnt FROM facts {cond}", self.workspace_id
+            )
         return row["cnt"] if row else 0
 
     async def count_conflicts(self, status: str = "open") -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             if status == "all":
                 row = await conn.fetchrow(
                     "SELECT COUNT(*) AS cnt FROM conflicts WHERE workspace_id = $1",
@@ -621,12 +771,13 @@ class PostgresStorage(BaseStorage):
             else:
                 row = await conn.fetchrow(
                     "SELECT COUNT(*) AS cnt FROM conflicts WHERE status = $1 AND workspace_id = $2",
-                    status, self.workspace_id,
+                    status,
+                    self.workspace_id,
                 )
         return row["cnt"] if row else 0
 
     async def get_agents(self) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM agents WHERE workspace_id = $1 ORDER BY last_seen DESC",
                 self.workspace_id,
@@ -636,28 +787,28 @@ class PostgresStorage(BaseStorage):
     async def get_agents_by_ids(self, agent_ids: set[str]) -> dict[str, dict]:
         if not agent_ids:
             return {}
-        placeholders = ", ".join(f"${i+2}" for i in range(len(agent_ids)))
-        async with self.pool.acquire() as conn:
+        placeholders = ", ".join(f"${i + 2}" for i in range(len(agent_ids)))
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT * FROM agents WHERE workspace_id = $1 AND agent_id IN ({placeholders})",
-                self.workspace_id, *list(agent_ids),
+                self.workspace_id,
+                *list(agent_ids),
             )
         return {r["agent_id"]: _row_to_dict(r) for r in rows}
 
     async def get_expiring_facts(self, days_ahead: int = 7) -> list[dict]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM facts WHERE ttl_days IS NOT NULL AND valid_until IS NOT NULL "
                 "AND valid_until > NOW() "
                 "AND valid_until < NOW() + ($1 * INTERVAL '1 day') "
                 "AND workspace_id = $2 ORDER BY valid_until ASC",
-                days_ahead, self.workspace_id,
+                days_ahead,
+                self.workspace_id,
             )
         return [_row_to_dict(r) for r in rows]
 
-    async def get_fact_timeline(
-        self, scope: str | None = None, limit: int = 100
-    ) -> list[dict]:
+    async def get_fact_timeline(self, scope: str | None = None, limit: int = 100) -> list[dict]:
         conditions = ["workspace_id = $1"]
         params: list[Any] = [self.workspace_id]
         idx = 2
@@ -667,7 +818,7 @@ class PostgresStorage(BaseStorage):
             idx += 1
         params.append(limit)
         where = " AND ".join(conditions)
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT id, lineage_id, content, scope, confidence, fact_type, "
                 f"agent_id, engineer, committed_at, valid_from, valid_until, ttl_days "
@@ -677,7 +828,7 @@ class PostgresStorage(BaseStorage):
         return [_row_to_dict(r) for r in rows]
 
     async def get_detection_feedback_stats(self) -> dict[str, int]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT feedback, COUNT(*) AS cnt FROM detection_feedback "
                 "JOIN conflicts ON detection_feedback.conflict_id = conflicts.id "
@@ -687,7 +838,7 @@ class PostgresStorage(BaseStorage):
         return {r["feedback"]: r["cnt"] for r in rows}
 
     async def get_open_conflict_fact_ids(self) -> set[str]:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT fact_a_id, fact_b_id FROM conflicts "
                 "WHERE status = 'open' AND workspace_id = $1",
@@ -701,11 +852,12 @@ class PostgresStorage(BaseStorage):
 
     async def increment_corroboration(self, fact_id: str) -> None:
         """Increment the corroboration counter for a fact (Phase 2: multi-agent consensus)."""
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE facts SET corroborating_agents = corroborating_agents + 1 "
                 "WHERE id = $1 AND workspace_id = $2",
-                fact_id, self.workspace_id,
+                fact_id,
+                self.workspace_id,
             )
 
     # ── Workspace / invite key methods ───────────────────────────────
@@ -713,19 +865,20 @@ class PostgresStorage(BaseStorage):
     async def ensure_workspace(
         self, engram_id: str, anonymous_mode: bool, anon_agents: bool
     ) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """INSERT INTO workspaces(engram_id, created_at, anonymous_mode, anon_agents)
                    VALUES ($1, $2, $3, $4)
                    ON CONFLICT(engram_id) DO NOTHING""",
-                engram_id, _now_ts(), anonymous_mode, anon_agents,
+                engram_id,
+                _now_ts(),
+                anonymous_mode,
+                anon_agents,
             )
 
     async def get_workspace(self, engram_id: str) -> dict | None:
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM workspaces WHERE engram_id = $1", engram_id
-            )
+        async with self.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM workspaces WHERE engram_id = $1", engram_id)
         return _row_to_dict(row) if row else None
 
     async def insert_invite_key(
@@ -735,15 +888,19 @@ class PostgresStorage(BaseStorage):
         expires_at: str | None,
         uses_remaining: int | None,
     ) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 """INSERT INTO invite_keys(key_hash, engram_id, created_at, expires_at, uses_remaining)
                    VALUES ($1, $2, $3, $4, $5) ON CONFLICT(key_hash) DO NOTHING""",
-                key_hash, engram_id, _now_ts(), expires_at, uses_remaining,
+                key_hash,
+                engram_id,
+                _now_ts(),
+                expires_at,
+                uses_remaining,
             )
 
     async def validate_invite_key(self, key_hash: str) -> dict | None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM invite_keys WHERE key_hash = $1 "
                 "AND (expires_at IS NULL OR expires_at > NOW()) "
@@ -753,7 +910,7 @@ class PostgresStorage(BaseStorage):
         return _row_to_dict(row) if row else None
 
     async def consume_invite_key(self, key_hash: str) -> None:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.execute(
                 "UPDATE invite_keys SET uses_remaining = uses_remaining - 1 "
                 "WHERE key_hash = $1 AND uses_remaining IS NOT NULL",
@@ -761,14 +918,14 @@ class PostgresStorage(BaseStorage):
             )
 
     async def get_key_generation(self, engram_id: str) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT key_generation FROM workspaces WHERE engram_id = $1", engram_id
             )
         return row["key_generation"] if row else 0
 
     async def bump_key_generation(self, engram_id: str) -> int:
-        async with self.pool.acquire() as conn:
+        async with self.acquire() as conn:
             row = await conn.fetchrow(
                 "UPDATE workspaces SET key_generation = key_generation + 1 "
                 "WHERE engram_id = $1 RETURNING key_generation",
@@ -777,10 +934,8 @@ class PostgresStorage(BaseStorage):
         return row["key_generation"] if row else 0
 
     async def revoke_all_invite_keys(self, engram_id: str) -> None:
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM invite_keys WHERE engram_id = $1", engram_id
-            )
+        async with self.acquire() as conn:
+            await conn.execute("DELETE FROM invite_keys WHERE engram_id = $1", engram_id)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
