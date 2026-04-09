@@ -949,6 +949,235 @@ def tail(scope: str | None, limit: int, interval: float, base_url: str) -> None:
         raise click.ClickException(str(exc))
 
 
+# ── engram status ───────────────────────────────────────────────────────
+
+
+@main.command()
+def status() -> None:
+    """Show current workspace status and connection info.
+
+    Displays:
+    - Workspace ID and mode (local/team)
+    - Connection status
+    - Anonymous mode settings
+    - Schema info
+    """
+    import os
+    from engram.workspace import read_workspace, WORKSPACE_PATH
+
+    ws = read_workspace()
+
+    if not ws and not WORKSPACE_PATH.exists():
+        db_url = os.environ.get("ENGRAM_DB_URL", "")
+        if not db_url:
+            click.echo("=== Engram Status ===")
+            click.echo("Status: Not configured")
+            click.echo("\nTo get started:")
+            click.echo("  1. Set ENGRAM_DB_URL (or use engram join <invite-key>)")
+            click.echo("  2. Run: engram setup")
+            return
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: Invalid workspace configuration")
+        return
+
+    mode = "Team (PostgreSQL)" if ws.db_url else "Local (SQLite)"
+    click.echo("=== Engram Status ===")
+    click.echo(f"Workspace ID: {ws.engram_id}")
+    click.echo(f"Mode: {mode}")
+    click.echo(f"Anonymous Mode: {'Enabled' if ws.anonymous_mode else 'Disabled'}")
+    click.echo(f"Anon Agents: {'Enabled' if ws.anon_agents else 'Disabled'}")
+
+    if ws.display_name:
+        click.echo(f"Display Name: {ws.display_name}")
+
+    click.echo(f"\nSchema: {ws.schema}")
+
+
+# ── engram search ─────────────────────────────────────────────────────────
+
+
+@main.command()
+@click.argument("query", required=False, default="")
+@click.option("--scope", default=None, help="Filter by scope prefix.")
+@click.option("--limit", default=10, type=int, help="Max results (default: 10).")
+@click.option("--json", "output_json", is_flag=True, help="Output as JSON for piping.")
+def search(query: str, scope: str | None, limit: int, output_json: bool) -> None:
+    """Query the workspace from the terminal.
+
+    Examples:
+        engram search "payments"
+        engram search "api" --scope backend --limit 20
+        engram search "" --json | jq '.facts[].content'
+    """
+    import urllib.request
+    import urllib.error
+    import os
+
+    ws = None
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+    except Exception:
+        pass
+
+    mcp_url = os.environ.get("ENGRAM_MCP_URL", "http://localhost:7474")
+    base_url = mcp_url.replace("/mcp", "") if "/mcp" in mcp_url else mcp_url
+
+    try:
+        params = f"query={query}&limit={limit}"
+        if scope:
+            params += f"&scope={scope}"
+        url = f"{base_url}/api/query?{params}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+
+            if output_json:
+                click.echo(json.dumps(data, indent=2))
+            else:
+                facts = data.get("facts", [])
+                if not facts:
+                    click.echo("No results found.")
+                    return
+
+                click.echo(f"=== Search Results ({len(facts)}) ===\n")
+                for i, fact in enumerate(facts, 1):
+                    content = fact.get("content", "")[:200]
+                    if len(fact.get("content", "")) > 200:
+                        content += "..."
+                    agent = fact.get("agent_id", "?")
+                    fact_scope = fact.get("scope", "")
+                    confidence = fact.get("confidence", "")
+
+                    click.echo(f"[{i}] {content}")
+                    click.echo(f"    Agent: {agent} | Scope: {fact_scope} | Conf: {confidence}\n")
+    except urllib.error.URLError as e:
+        click.echo(f"Error: Could not connect to Engram server ({e.reason})", err=True)
+        click.echo("Make sure Engram is running: engram serve --http", err=True)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+
+
+# ── engram stats ───────────────────────────────────────────────────────────
+
+
+@main.command()
+@click.option("--json", "output_json", is_flag=True, help="Output as JSON.")
+def stats(output_json: bool) -> None:
+    """Show workspace statistics: fact count, conflicts, agents."""
+    import os
+    import urllib.request
+    import urllib.error
+
+    ws = None
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+    except Exception:
+        pass
+
+    if not ws:
+        click.echo("Error: No workspace configured")
+        return
+
+    mcp_url = os.environ.get("ENGRAM_MCP_URL", "http://localhost:7474")
+    base_url = mcp_url.replace("/mcp", "") if "/mcp" in mcp_url else mcp_url
+
+    try:
+        # Use /api/conflicts to get conflict count
+        url = f"{base_url}/api/conflicts?status=open&limit=1"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+
+            if output_json:
+                click.echo(
+                    json.dumps(
+                        {"workspace_id": ws.engram_id, "conflicts": data.get("conflicts", [])},
+                        indent=2,
+                    )
+                )
+            else:
+                conflicts = data.get("conflicts", [])
+                click.echo("=== Workspace Stats ===")
+                click.echo(f"Workspace: {ws.engram_id}")
+                click.echo(f"Mode: {'Team' if ws.db_url else 'Local'}")
+                click.echo(f"Open Conflicts: {len(conflicts)}")
+    except urllib.error.HTTPError:
+        # Fallback - just show workspace info
+        click.echo("=== Workspace Stats ===")
+        click.echo(f"Workspace: {ws.engram_id}")
+        click.echo(f"Mode: {'Team' if ws.db_url else 'Local'}")
+        click.echo(f"(Run engram serve --http to see full stats)")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+
+
+# ── engram completion ─────────────────────────────────────────────────────
+
+
+@main.command()
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+def completion(shell: str) -> None:
+    """Install shell tab completion for engram.
+
+    Examples:
+        engram completion bash >> ~/.bashrc
+        engram completion zsh >> ~/.zshrc
+        engram completion fish > ~/.config/fish/completions/engram.fish
+    """
+    if shell == "bash":
+        script = """# engram completion for bash
+_engram_completions() {
+    local cur prev
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    commands="install serve verify reembed config tail status search stats completion setup"
+    COMPREPLY=( $(compgen -W "${commands}" -- ${cur}) )
+    return 0
+}
+complete -F _engram_completions engram
+"""
+    elif shell == "zsh":
+        script = """# engram completion for zsh
+engram() {
+    local -a commands
+    commands=(
+        'install:auto-detect MCP clients and add Engram config'
+        'serve:start the Engram MCP server'
+        'verify:verify Engram installation'
+        'reembed:re-embed facts when embedding model changes'
+        'config:view and update workspace configuration'
+        'tail:live stream of workspace commits'
+        'status:show workspace status'
+        'search:query the workspace'
+        'stats:show workspace statistics'
+        'completion:install shell tab completion'
+        'setup:one-command setup'
+    )
+    _describe 'command' commands
+}
+"""
+    else:  # fish
+        script = """# engram completion for fish
+complete -c engram -n "__fish_use_subcommand" -a "install serve verify reembed config tail status search stats completion setup" -d "Engram command"
+"""
+
+    click.echo(script)
+    click.echo(f"\n# Add to your shell config:")
+    if shell == "bash":
+        click.echo("  engram completion bash >> ~/.bashrc")
+    elif shell == "zsh":
+        click.echo("  engram completion zsh >> ~/.zshrc")
+    else:
+        click.echo("  engram completion fish > ~/.config/fish/completions/engram.fish")
+
+
 # ── engram verify ────────────────────────────────────────────────────
 
 
