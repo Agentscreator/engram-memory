@@ -170,6 +170,39 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         facts = await storage.get_expiring_facts(days_ahead=days)
         return HTMLResponse(_render_expiring(facts, days))
 
+    async def settings_view(request: Request) -> HTMLResponse:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        workspace_info = None
+
+        if ws:
+            workspace_info = {
+                "engram_id": ws.engram_id,
+                "schema": ws.schema,
+                "anonymous_mode": ws.anonymous_mode,
+                "anon_agents": ws.anon_agents,
+                "is_creator": ws.is_creator,
+            }
+
+            # Get invite keys from storage
+            try:
+                if ws.db_url:
+                    from engram.postgres_storage import PostgresStorage
+
+                    pg_storage = PostgresStorage(
+                        db_url=ws.db_url, workspace_id=ws.engram_id, schema=ws.schema
+                    )
+                    await pg_storage.connect()
+                    workspace_info["invite_keys"] = await pg_storage.get_invite_keys()
+                    await pg_storage.close()
+                else:
+                    workspace_info["invite_keys"] = await storage.get_invite_keys()
+            except Exception:
+                workspace_info["invite_keys"] = []
+
+        return HTMLResponse(_render_settings(workspace_info))
+
     return [
         Route("/", landing, methods=["GET"]),
         Route("/dashboard", index, methods=["GET"]),
@@ -180,6 +213,7 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         Route("/dashboard/timeline", timeline, methods=["GET"]),
         Route("/dashboard/agents", agents_view, methods=["GET"]),
         Route("/dashboard/expiring", expiring_view, methods=["GET"]),
+        Route("/dashboard/settings", settings_view, methods=["GET"]),
     ]
 
 
@@ -369,6 +403,10 @@ _DASH_STYLE = """
   .resolution-note { font-size: 0.75rem; color: #5a8a5a; padding-top: 0.5rem;
                      border-top: 1px solid #e2f2e2; margin-top: 0.75rem; }
 
+  /* Theme toggle */
+  .theme-toggle { background: #fff; border: 1px solid #c6e9c6; border-radius: 8px;
+                  padding: 0.4rem 0.6rem; cursor: pointer; font-size: 1rem; }
+
   @media (max-width: 640px) {
     .stats { grid-template-columns: repeat(2, 1fr); }
     .content-cell { max-width: 180px; }
@@ -379,9 +417,20 @@ _DASH_STYLE = """
 """
 
 
-def _dash_layout(title: str, body: str, active: str = "") -> str:
+def _dash_layout(title: str, body: str, active: str = "", dark_mode: bool = False) -> str:
     def _nav_cls(name: str) -> str:
         return ' class="active"' if name == active else ""
+
+    theme_class = "dark" if dark_mode else ""
+    theme_script = f"""
+    <script>
+      (function() {{
+        const saved = localStorage.getItem('engram-theme');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const isDark = saved === 'dark' || (!saved && prefersDark);
+        if (isDark) document.documentElement.classList.add('dark');
+      }})();
+    </script>"""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -393,16 +442,22 @@ def _dash_layout(title: str, body: str, active: str = "") -> str:
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   {_HTMX_SCRIPT}
+  {theme_script}
   {_DASH_STYLE}
 </head>
-<body>
+<body class="{theme_class}">
   <div class="container">
     <div class="dash-header">
       <div class="dash-title">
         <div class="dot"></div>
         <h1>Engram Dashboard</h1>
       </div>
-      <a href="/" class="back-link">&larr; Back to home</a>
+      <div style="display:flex;gap:1rem;align-items:center;">
+        <button onclick="toggleTheme()" class="theme-toggle" title="Toggle dark mode">
+          {"☀️" if dark_mode else "🌙"}
+        </button>
+        <a href="/" class="back-link">&larr; Back</a>
+      </div>
     </div>
     <nav>
       <a href="/dashboard"{_nav_cls("overview")}>Overview</a>
@@ -411,9 +466,18 @@ def _dash_layout(title: str, body: str, active: str = "") -> str:
       <a href="/dashboard/timeline"{_nav_cls("timeline")}>Timeline</a>
       <a href="/dashboard/agents"{_nav_cls("agents")}>Agents</a>
       <a href="/dashboard/expiring"{_nav_cls("expiring")}>Expiring</a>
+      <a href="/dashboard/settings"{_nav_cls("settings")}>Settings</a>
     </nav>
     {body}
   </div>
+  <script>
+    function toggleTheme() {{
+      const html = document.documentElement;
+      const isDark = html.classList.contains('dark');
+      html.classList.toggle('dark');
+      localStorage.setItem('engram-theme', isDark ? 'light' : 'dark');
+    }}
+  </script>
 </body>
 </html>"""
 
@@ -879,6 +943,92 @@ def _render_expiring(facts: list[dict], days: int) -> str:
     </div>
     <p class="count-note">{len(facts)} fact(s) expiring within {days} day(s)</p>"""
     return _dash_layout("Expiring Facts", body, active="expiring")
+
+
+def _render_settings(workspace_info: dict | None) -> str:
+    """Render workspace settings page."""
+    if not workspace_info:
+        body = """
+        <div style="text-align:center;padding:2rem;">
+            <p>No workspace configured.</p>
+            <p>Run <code>engram setup</code> or <code>engram init</code> to create a workspace.</p>
+        </div>"""
+        return _dash_layout("Settings", body, active="settings")
+
+    engram_id = workspace_info.get("engram_id", "Unknown")
+    schema = workspace_info.get("schema", "engram")
+    anonymous_mode = workspace_info.get("anonymous_mode", False)
+    anon_agents = workspace_info.get("anon_agents", False)
+    is_creator = workspace_info.get("is_creator", False)
+    invite_keys = workspace_info.get("invite_keys", [])
+
+    # Render invite keys
+    invite_keys_html = ""
+    if invite_keys:
+        rows = ""
+        for key in invite_keys:
+            expires = key.get("expires_at", "N/A")[:10] if key.get("expires_at") else "Never"
+            uses = f"{key.get('uses', 0)}/{key.get('max_uses', '∞')}"
+            status = "active" if key.get("is_valid", True) else "revoked"
+            rows += f"""
+            <tr>
+                <td style="font-family:monospace;">{_esc(key.get("key", "")[:20])}...</td>
+                <td>{expires}</td>
+                <td>{uses}</td>
+                <td><span class="badge badge-{status}">{status}</span></td>
+                <td>
+                    <button class="btn-dismiss" disabled style="opacity:0.5;">Revoke</button>
+                </td>
+            </tr>"""
+        invite_keys_html = f"""
+        <table style="width:100%;">
+            <tr><th>Key</th><th>Expires</th><th>Uses</th><th>Status</th><th>Action</th></tr>
+            {rows}
+        </table>"""
+    else:
+        invite_keys_html = "<p style='color:#6b7280;'>No invite keys found.</p>"
+
+    body = f"""
+    <h2>Workspace Settings</h2>
+    
+    <div style="margin-bottom:2rem;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Workspace ID</h3>
+        <code style="background:#f3f4f6;padding:0.5rem;border-radius:4px;">{engram_id}</code>
+    </div>
+    
+    <div style="margin-bottom:2rem;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Database Schema</h3>
+        <code style="background:#f3f4f6;padding:0.5rem;border-radius:4px;">{schema}</code>
+    </div>
+    
+    <div style="margin-bottom:2rem;padding:1rem;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.75rem;">Privacy Settings</h3>
+        <div style="display:flex;flex-direction:column;gap:0.5rem;">
+            <label style="display:flex;align-items:center;gap:0.5rem;">
+                <input type="checkbox" {"checked" if anonymous_mode else ""} disabled>
+                <span>Anonymous mode (hide engineer names)</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:0.5rem;">
+                <input type="checkbox" {"checked" if anon_agents else ""} disabled>
+                <span>Randomize agent IDs each session</span>
+            </label>
+        </div>
+        <p style="font-size:0.85rem;color:#6b7280;margin-top:0.5rem;">Settings can only be changed via CLI.</p>
+    </div>
+    
+    <div style="margin-bottom:2rem;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.75rem;">Invite Keys</h3>
+        <p style="font-size:0.85rem;color:#6b7280;margin-bottom:1rem;">Share these keys with teammates to join your workspace.</p>
+        <div class="table-wrap">{invite_keys_html}</div>
+    </div>
+    
+    <div style="margin-bottom:2rem;padding:1rem;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;">
+        <h3 style="font-size:1rem;color:#dc2626;margin-bottom:0.75rem;">⚠ Danger Zone</h3>
+        <p style="font-size:0.85rem;color:#991b1b;margin-bottom:1rem;">Deleting your workspace will remove all facts, conflicts, and history. This cannot be undone.</p>
+        <button class="btn-dismiss" style="background:#fee2e2;color:#dc2626;border-color:#fecaca;">Delete Workspace</button>
+    </div>"""
+
+    return _dash_layout("Settings", body, active="settings")
 
 
 def _esc(s: Any) -> str:

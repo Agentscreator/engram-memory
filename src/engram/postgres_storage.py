@@ -1095,6 +1095,15 @@ class PostgresStorage(BaseStorage):
         async with self.acquire() as conn:
             await conn.execute("DELETE FROM invite_keys WHERE engram_id = $1", engram_id)
 
+    async def get_invite_keys(self) -> list[dict]:
+        """Return list of active invite keys."""
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM invite_keys WHERE engram_id = $1 ORDER BY created_at DESC",
+                self.workspace_id,
+            )
+        return [_row_to_dict(r) for r in rows]
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
