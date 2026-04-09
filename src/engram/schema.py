@@ -10,7 +10,7 @@ Two schemas are maintained:
 - POSTGRES_SCHEMA_SQL: PostgreSQL (team mode, asyncpg)
 """
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Incremental ALTER TABLE migrations keyed by target version.
 MIGRATIONS: dict[int, list[str]] = {
@@ -59,6 +59,60 @@ MIGRATIONS: dict[int, list[str]] = {
     7: [
         # Security key rotation: generation counter on workspaces
         "ALTER TABLE workspaces ADD COLUMN key_generation INTEGER NOT NULL DEFAULT 0",
+    ],
+    8: [
+        # Webhooks / Event Subscriptions
+        """CREATE TABLE IF NOT EXISTS webhooks (
+            id           TEXT PRIMARY KEY,
+            url          TEXT NOT NULL,
+            events       TEXT NOT NULL,
+            secret       TEXT,
+            active       INTEGER NOT NULL DEFAULT 1,
+            created_at   TEXT NOT NULL,
+            workspace_id TEXT NOT NULL DEFAULT 'local'
+        )""",
+        """CREATE TABLE IF NOT EXISTS webhook_deliveries (
+            id           TEXT PRIMARY KEY,
+            webhook_id   TEXT NOT NULL,
+            event        TEXT NOT NULL,
+            payload      TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'pending',
+            attempts     INTEGER NOT NULL DEFAULT 0,
+            created_at   TEXT NOT NULL,
+            workspace_id TEXT NOT NULL DEFAULT 'local'
+        )""",
+        # Auto-Resolution Rules Engine
+        """CREATE TABLE IF NOT EXISTS resolution_rules (
+            id               TEXT PRIMARY KEY,
+            scope_prefix     TEXT NOT NULL,
+            condition_type   TEXT NOT NULL,
+            condition_value  TEXT NOT NULL,
+            resolution_type  TEXT NOT NULL,
+            created_at       TEXT NOT NULL,
+            active           INTEGER NOT NULL DEFAULT 1,
+            workspace_id     TEXT NOT NULL DEFAULT 'local'
+        )""",
+        # Scope Registry
+        """CREATE TABLE IF NOT EXISTS scopes (
+            scope            TEXT NOT NULL,
+            description      TEXT,
+            owner_agent_id   TEXT,
+            retention_days   INTEGER,
+            created_at       TEXT NOT NULL,
+            workspace_id     TEXT NOT NULL DEFAULT 'local',
+            PRIMARY KEY (scope, workspace_id)
+        )""",
+        # Audit Trail
+        """CREATE TABLE IF NOT EXISTS audit_log (
+            id           TEXT PRIMARY KEY,
+            operation    TEXT NOT NULL,
+            agent_id     TEXT,
+            fact_id      TEXT,
+            conflict_id  TEXT,
+            extra        TEXT,
+            timestamp    TEXT NOT NULL,
+            workspace_id TEXT NOT NULL DEFAULT 'local'
+        )""",
     ],
 }
 
@@ -203,6 +257,64 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Webhooks (event subscriptions)
+CREATE TABLE IF NOT EXISTS webhooks (
+    id           TEXT PRIMARY KEY,
+    url          TEXT NOT NULL,
+    events       TEXT NOT NULL,
+    secret       TEXT,
+    active       INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'local'
+);
+
+-- Webhook deliveries (outbound event queue)
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id           TEXT PRIMARY KEY,
+    webhook_id   TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'local'
+);
+
+-- Auto-resolution rules engine
+CREATE TABLE IF NOT EXISTS resolution_rules (
+    id               TEXT PRIMARY KEY,
+    scope_prefix     TEXT NOT NULL,
+    condition_type   TEXT NOT NULL,
+    condition_value  TEXT NOT NULL,
+    resolution_type  TEXT NOT NULL,
+    created_at       TEXT NOT NULL,
+    active           INTEGER NOT NULL DEFAULT 1,
+    workspace_id     TEXT NOT NULL DEFAULT 'local'
+);
+
+-- Scope registry
+CREATE TABLE IF NOT EXISTS scopes (
+    scope            TEXT NOT NULL,
+    description      TEXT,
+    owner_agent_id   TEXT,
+    retention_days   INTEGER,
+    created_at       TEXT NOT NULL,
+    workspace_id     TEXT NOT NULL DEFAULT 'local',
+    PRIMARY KEY (scope, workspace_id)
+);
+
+-- Audit log
+CREATE TABLE IF NOT EXISTS audit_log (
+    id           TEXT PRIMARY KEY,
+    operation    TEXT NOT NULL,
+    agent_id     TEXT,
+    fact_id      TEXT,
+    conflict_id  TEXT,
+    extra        TEXT,
+    timestamp    TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'local'
+);
 """
 
 # ── Post-migration indexes (SQLite) ─────────────────────────────────
@@ -340,5 +452,63 @@ CREATE TABLE IF NOT EXISTS invite_keys (
     created_at       TIMESTAMPTZ NOT NULL,
     expires_at       TIMESTAMPTZ,
     uses_remaining   INTEGER
+);
+
+-- Webhooks (event subscriptions)
+CREATE TABLE IF NOT EXISTS webhooks (
+    id           TEXT PRIMARY KEY,
+    url          TEXT NOT NULL,
+    events       JSONB NOT NULL,
+    secret       TEXT,
+    active       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at   TIMESTAMPTZ NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'local'
+);
+
+-- Webhook deliveries
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id           TEXT PRIMARY KEY,
+    webhook_id   TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    payload      JSONB NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    created_at   TIMESTAMPTZ NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'local'
+);
+
+-- Auto-resolution rules engine
+CREATE TABLE IF NOT EXISTS resolution_rules (
+    id               TEXT PRIMARY KEY,
+    scope_prefix     TEXT NOT NULL,
+    condition_type   TEXT NOT NULL,
+    condition_value  TEXT NOT NULL,
+    resolution_type  TEXT NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL,
+    active           BOOLEAN NOT NULL DEFAULT TRUE,
+    workspace_id     TEXT NOT NULL DEFAULT 'local'
+);
+
+-- Scope registry
+CREATE TABLE IF NOT EXISTS scopes (
+    scope            TEXT NOT NULL,
+    description      TEXT,
+    owner_agent_id   TEXT,
+    retention_days   INTEGER,
+    created_at       TIMESTAMPTZ NOT NULL,
+    workspace_id     TEXT NOT NULL DEFAULT 'local',
+    PRIMARY KEY (scope, workspace_id)
+);
+
+-- Audit log
+CREATE TABLE IF NOT EXISTS audit_log (
+    id           TEXT PRIMARY KEY,
+    operation    TEXT NOT NULL,
+    agent_id     TEXT,
+    fact_id      TEXT,
+    conflict_id  TEXT,
+    extra        JSONB,
+    timestamp    TIMESTAMPTZ NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'local'
 );
 """

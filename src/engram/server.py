@@ -1115,3 +1115,71 @@ async def engram_export(
     except Exception as exc:
         logger.exception("engram_export error")
         return {"error": str(exc)}
+
+
+# ── engram_create_webhook ─────────────────────────────────────────────
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def engram_create_webhook(
+    url: str,
+    events: list[str],
+    secret: str | None = None,
+) -> dict[str, Any]:
+    """Register a webhook URL to receive event notifications.
+
+    Events fired: 'fact.committed', 'conflict.detected', 'conflict.resolved',
+    'fact.expired'. Use '*' in events list to subscribe to all.
+
+    Parameters:
+    - url: The HTTPS URL to POST event payloads to.
+    - events: List of event types to subscribe to.
+    - secret: Optional HMAC secret for payload signing (X-Engram-Signature header).
+
+    Returns: {webhook_id, url, events, created_at}
+    """
+    engine = get_engine()
+    from engram.workspace import read_workspace as _rw
+    _ws = _rw()
+    _disc = await _check_key_generation(_ws)
+    if _disc:
+        return _disc
+    return await engine.create_webhook(url=url, events=events, secret=secret)
+
+
+# ── engram_create_rule ────────────────────────────────────────────────
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def engram_create_rule(
+    scope_prefix: str,
+    condition_type: str,
+    condition_value: str,
+    resolution_type: str = "winner",
+) -> dict[str, Any]:
+    """Create an auto-resolution rule for a scope prefix.
+
+    When a conflict is detected in a matching scope, the rule fires and
+    automatically resolves the conflict without human intervention.
+
+    Parameters:
+    - scope_prefix: Scope prefix to match (e.g. 'auth', 'payments/').
+    - condition_type: One of 'latest_wins', 'highest_confidence', 'confidence_delta'.
+    - condition_value: For 'confidence_delta', the minimum delta (e.g. '0.2').
+      For other types, pass an empty string or '1'.
+    - resolution_type: Resolution type to apply (default 'winner').
+
+    Returns: {rule_id, scope_prefix, condition_type, condition_value, resolution_type, created_at}
+    """
+    engine = get_engine()
+    from engram.workspace import read_workspace as _rw
+    _ws = _rw()
+    _disc = await _check_key_generation(_ws)
+    if _disc:
+        return _disc
+    return await engine.create_rule(
+        scope_prefix=scope_prefix,
+        condition_type=condition_type,
+        condition_value=condition_value,
+        resolution_type=resolution_type,
+    )

@@ -123,11 +123,14 @@ engram_commit / engram_query before and after each task.  Example
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 if TYPE_CHECKING:
@@ -558,6 +561,235 @@ def build_rest_routes(
             return _error(str(exc), status=500)
         return JSONResponse(result)
 
+    # ── Webhooks ──────────────────────────────────────────────────────
+
+    async def api_create_webhook(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            return _error("Request body must be valid JSON.")
+        url = body.get("url", "")
+        events = body.get("events")
+        secret = body.get("secret")
+        if not url:
+            return _error("'url' is required.")
+        if not url.startswith(("http://", "https://")):
+            return _error("'url' must be a valid http/https URL.")
+        if not events or not isinstance(events, list) or len(events) == 0:
+            return _error("'events' must be a non-empty array of event type strings.")
+        try:
+            result = await engine.create_webhook(url=url, events=events, secret=secret)
+        except ValueError as exc:
+            return _error(str(exc))
+        except Exception as exc:
+            logger.exception("REST /api/webhooks POST error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result, status_code=201)
+
+    async def api_list_webhooks(request: Request) -> JSONResponse:
+        try:
+            result = await engine.list_webhooks()
+        except Exception as exc:
+            logger.exception("REST /api/webhooks GET error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result)
+
+    async def api_delete_webhook(request: Request) -> JSONResponse:
+        webhook_id = request.path_params.get("webhook_id", "")
+        if not webhook_id:
+            return _error("'webhook_id' is required.")
+        try:
+            result = await engine.delete_webhook(webhook_id)
+        except ValueError as exc:
+            return _error(str(exc), status=404)
+        except Exception as exc:
+            logger.exception("REST /api/webhooks/{webhook_id} DELETE error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result)
+
+    # ── Rules ─────────────────────────────────────────────────────────
+
+    async def api_create_rule(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            return _error("Request body must be valid JSON.")
+        scope_prefix = body.get("scope_prefix", "")
+        condition_type = body.get("condition_type", "")
+        condition_value = body.get("condition_value", "")
+        resolution_type = body.get("resolution_type", "winner")
+        if not scope_prefix:
+            return _error("'scope_prefix' is required.")
+        valid_condition_types = ("latest_wins", "highest_confidence", "confidence_delta")
+        if condition_type not in valid_condition_types:
+            return _error(f"'condition_type' must be one of: {', '.join(valid_condition_types)}.")
+        try:
+            result = await engine.create_rule(
+                scope_prefix=scope_prefix,
+                condition_type=condition_type,
+                condition_value=str(condition_value),
+                resolution_type=resolution_type,
+            )
+        except ValueError as exc:
+            return _error(str(exc))
+        except Exception as exc:
+            logger.exception("REST /api/rules POST error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result, status_code=201)
+
+    async def api_list_rules(request: Request) -> JSONResponse:
+        try:
+            result = await engine.list_rules()
+        except Exception as exc:
+            logger.exception("REST /api/rules GET error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result)
+
+    async def api_delete_rule(request: Request) -> JSONResponse:
+        rule_id = request.path_params.get("rule_id", "")
+        if not rule_id:
+            return _error("'rule_id' is required.")
+        try:
+            result = await engine.delete_rule(rule_id)
+        except ValueError as exc:
+            return _error(str(exc), status=404)
+        except Exception as exc:
+            logger.exception("REST /api/rules/{rule_id} DELETE error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result)
+
+    # ── Export / Import ───────────────────────────────────────────────
+
+    async def api_import(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            return _error("Request body must be valid JSON.")
+        facts = body.get("facts")
+        agent_id = body.get("agent_id")
+        engineer = body.get("engineer")
+        if facts is None:
+            return _error("'facts' is required.")
+        if not isinstance(facts, list):
+            return _error("'facts' must be an array.")
+        try:
+            result = await engine.import_workspace(facts=facts, agent_id=agent_id, engineer=engineer)
+        except Exception as exc:
+            logger.exception("REST /api/import error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result)
+
+    # ── SSE Watch ─────────────────────────────────────────────────────
+
+    async def api_watch(request: Request) -> StreamingResponse:
+        scope = request.query_params.get("scope", "")
+
+        async def event_generator():
+            queue = engine.subscribe(scope_prefix=scope)
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                        payload = json.dumps(event)
+                        yield f"data: {payload}\n\n"
+                    except asyncio.TimeoutError:
+                        # Send keepalive comment
+                        yield ": keepalive\n\n"
+                    except asyncio.CancelledError:
+                        break
+            finally:
+                engine.unsubscribe(queue, scope_prefix=scope)
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    # ── Scopes ────────────────────────────────────────────────────────
+
+    async def api_register_scope(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            return _error("Request body must be valid JSON.")
+        scope = body.get("scope", "")
+        if not scope or not scope.strip():
+            return _error("'scope' is required.")
+        description = body.get("description")
+        owner_agent_id = body.get("owner_agent_id")
+        retention_days = body.get("retention_days")
+        try:
+            result = await engine.register_scope(
+                scope=scope,
+                description=description,
+                owner_agent_id=owner_agent_id,
+                retention_days=retention_days,
+            )
+        except ValueError as exc:
+            return _error(str(exc))
+        except Exception as exc:
+            logger.exception("REST /api/scopes POST error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result, status_code=201)
+
+    async def api_list_scopes(request: Request) -> JSONResponse:
+        try:
+            result = await engine.list_scopes()
+        except Exception as exc:
+            logger.exception("REST /api/scopes GET error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result)
+
+    async def api_get_scope(request: Request) -> JSONResponse:
+        scope_name = request.path_params.get("scope_name", "")
+        if not scope_name:
+            return _error("'scope_name' is required.")
+        try:
+            result = await engine.get_scope_info(scope_name)
+        except Exception as exc:
+            logger.exception("REST /api/scopes/{scope_name} GET error")
+            return _error(str(exc), status=500)
+        if result is None:
+            return _error(f"Scope '{scope_name}' not found.", status=404)
+        return JSONResponse(result)
+
+    # ── Diff ──────────────────────────────────────────────────────────
+
+    async def api_diff(request: Request) -> JSONResponse:
+        fact_id_a = request.path_params.get("fact_id_a", "")
+        fact_id_b = request.path_params.get("fact_id_b", "")
+        if not fact_id_a or not fact_id_b:
+            return _error("Both 'fact_id_a' and 'fact_id_b' are required.")
+        try:
+            result = await engine.diff_facts(fact_id_a, fact_id_b)
+        except ValueError as exc:
+            return _error(str(exc), status=404)
+        except Exception as exc:
+            logger.exception("REST /api/diff error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result)
+
+    # ── Audit ─────────────────────────────────────────────────────────
+
+    async def api_audit(request: Request) -> JSONResponse:
+        agent_id = request.query_params.get("agent_id")
+        operation = request.query_params.get("operation")
+        from_ts = request.query_params.get("from")
+        to_ts = request.query_params.get("to")
+        try:
+            limit = int(request.query_params.get("limit", "100"))
+        except (TypeError, ValueError):
+            limit = 100
+        try:
+            result = await engine.get_audit_log(
+                agent_id=agent_id,
+                operation=operation,
+                from_ts=from_ts,
+                to_ts=to_ts,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.exception("REST /api/audit error")
+            return _error(str(exc), status=500)
+        return JSONResponse(result)
+
     return [
         Route("/api/commit", api_commit, methods=["POST"]),
         Route("/api/query", api_query, methods=["POST"]),
@@ -574,5 +806,25 @@ def build_rest_routes(
         Route("/api/lineage/{lineage_id}", api_lineage, methods=["GET"]),
         Route("/api/expiring", api_expiring, methods=["GET"]),
         Route("/api/conflicts/bulk-dismiss", api_bulk_dismiss, methods=["POST"]),
+        # Webhooks
+        Route("/api/webhooks", api_create_webhook, methods=["POST"]),
+        Route("/api/webhooks", api_list_webhooks, methods=["GET"]),
+        Route("/api/webhooks/{webhook_id}", api_delete_webhook, methods=["DELETE"]),
+        # Rules
+        Route("/api/rules", api_create_rule, methods=["POST"]),
+        Route("/api/rules", api_list_rules, methods=["GET"]),
+        Route("/api/rules/{rule_id}", api_delete_rule, methods=["DELETE"]),
+        # Export / Import
         Route("/api/export", api_export, methods=["GET"]),
+        Route("/api/import", api_import, methods=["POST"]),
+        # SSE Watch
+        Route("/api/watch", api_watch, methods=["GET"]),
+        # Scopes
+        Route("/api/scopes", api_register_scope, methods=["POST"]),
+        Route("/api/scopes", api_list_scopes, methods=["GET"]),
+        Route("/api/scopes/{scope_name}", api_get_scope, methods=["GET"]),
+        # Diff
+        Route("/api/diff/{fact_id_a}/{fact_id_b}", api_diff, methods=["GET"]),
+        # Audit
+        Route("/api/audit", api_audit, methods=["GET"]),
     ]

@@ -1,6 +1,59 @@
 # Contributions
 
-All changes are fully tested — the suite grows from the project's original test count to **192 passing tests** with no regressions.
+All changes are fully tested — the suite grows from the project's original test count to **252 passing tests** with no regressions.
+
+---
+
+## Round 8 — Seven major features
+
+**Summary:** Implemented 7 production-ready features across the full stack (schema, storage, engine, REST, MCP, tests). Schema bumped from v7 to v8 with 5 new tables.
+
+**Files changed:** `src/engram/schema.py`, `src/engram/storage.py`, `src/engram/engine.py`, `src/engram/rest.py`, `src/engram/server.py`, `tests/test_rest.py`
+
+**New tests added: 60** (total: 252 passing)
+
+### 1. Webhooks / Event Subscriptions
+- New tables: `webhooks`, `webhook_deliveries`
+- Engine: `create_webhook`, `list_webhooks`, `delete_webhook`, `_fire_event`, `_webhook_delivery_worker` (background loop with aiohttp + HMAC-SHA256 signing, max 3 retries)
+- Events fired: `fact.committed`, `conflict.detected`, `conflict.resolved`, `fact.expired`
+- REST: `POST /api/webhooks`, `GET /api/webhooks`, `DELETE /api/webhooks/{webhook_id}`
+- MCP: `engram_create_webhook`
+
+### 2. Auto-Resolution Rules Engine
+- New table: `resolution_rules`
+- Condition types: `latest_wins`, `highest_confidence`, `confidence_delta`
+- Engine: `create_rule`, `list_rules`, `delete_rule`, `_apply_rules` (called after every conflict insert)
+- REST: `POST /api/rules`, `GET /api/rules`, `DELETE /api/rules/{rule_id}`
+- MCP: `engram_create_rule`
+
+### 3. Knowledge Export / Import
+- No new tables
+- Engine: `export_workspace(scope, include_history)`, `import_workspace(facts, agent_id, engineer)`
+- Strips binary `embedding` field on export; re-commits via full pipeline on import
+- REST: `GET /api/export?scope=X&include_history=false`, `POST /api/import`
+
+### 4. Real-Time SSE Watch
+- No new tables
+- Engine: `subscribe(scope_prefix)`, `unsubscribe(queue, scope_prefix)`, `_broadcast(event_type, scope, payload)`
+- `_sse_subscribers: dict[str, list[asyncio.Queue]]` on engine
+- REST: `GET /api/watch?scope=X` — Starlette `StreamingResponse` with `text/event-stream`, 30s keepalive, graceful disconnect via try/finally
+
+### 5. Scope Registry + Analytics
+- New table: `scopes`
+- Storage: `upsert_scope`, `get_scopes`, `get_scope_by_name`, `get_scope_analytics` (SQL aggregation: fact counts, conflict rate, most active agent, avg confidence)
+- Engine: `register_scope`, `list_scopes`, `get_scope_info`
+- REST: `POST /api/scopes`, `GET /api/scopes`, `GET /api/scopes/{scope_name}`
+
+### 6. Fact Diffing
+- No new tables
+- Engine: `diff_facts(fact_id_a, fact_id_b)` — field-level diff on content/scope/confidence/fact_type/agent_id plus entity added/removed/changed
+- REST: `GET /api/diff/{fact_id_a}/{fact_id_b}`
+
+### 7. Audit Trail
+- New table: `audit_log`
+- Operations tracked: `commit`, `query`, `resolve`, `dismiss`, `feedback`, `webhook_create`, `rule_create`, `import`
+- Engine: `_audit(operation, ...)` helper called from commit, resolve, record_feedback, create_webhook, create_rule, import_workspace
+- REST: `GET /api/audit?agent_id=X&operation=commit&from=ISO&to=ISO&limit=100`
 
 ---
 

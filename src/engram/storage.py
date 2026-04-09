@@ -295,6 +295,75 @@ class BaseStorage(ABC):
     async def revoke_all_invite_keys(self, engram_id: str) -> None:
         """Delete all invite keys for a workspace. Default no-op."""
 
+    # ── Webhook methods ───────────────────────────────────────────────
+
+    @abstractmethod
+    async def insert_webhook(self, webhook: dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    async def get_webhooks(self) -> list[dict]: ...
+
+    @abstractmethod
+    async def get_webhook_by_id(self, webhook_id: str) -> dict | None: ...
+
+    @abstractmethod
+    async def delete_webhook(self, webhook_id: str) -> bool: ...
+
+    @abstractmethod
+    async def queue_webhook_delivery(self, delivery: dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    async def get_pending_deliveries(self) -> list[dict]: ...
+
+    @abstractmethod
+    async def mark_delivery_done(self, delivery_id: str) -> None: ...
+
+    @abstractmethod
+    async def mark_delivery_failed(self, delivery_id: str) -> None: ...
+
+    # ── Resolution rule methods ───────────────────────────────────────
+
+    @abstractmethod
+    async def insert_rule(self, rule: dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    async def get_rules(self) -> list[dict]: ...
+
+    @abstractmethod
+    async def get_rule_by_id(self, rule_id: str) -> dict | None: ...
+
+    @abstractmethod
+    async def delete_rule(self, rule_id: str) -> bool: ...
+
+    # ── Scope registry methods ────────────────────────────────────────
+
+    @abstractmethod
+    async def upsert_scope(self, scope_data: dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    async def get_scopes(self) -> list[dict]: ...
+
+    @abstractmethod
+    async def get_scope_by_name(self, scope: str) -> dict | None: ...
+
+    @abstractmethod
+    async def get_scope_analytics(self, scope: str) -> dict: ...
+
+    # ── Audit log methods ─────────────────────────────────────────────
+
+    @abstractmethod
+    async def insert_audit_entry(self, entry: dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    async def get_audit_log(
+        self,
+        agent_id: str | None = None,
+        operation: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]: ...
+
 
 class SQLiteStorage(BaseStorage):
     """Async SQLite storage with WAL mode and FTS5."""
@@ -1349,6 +1418,281 @@ class SQLiteStorage(BaseStorage):
     async def revoke_all_invite_keys(self, engram_id: str) -> None:
         await self.db.execute("DELETE FROM invite_keys WHERE engram_id = ?", (engram_id,))
         await self.db.commit()
+
+    # ── Webhook methods ───────────────────────────────────────────────
+
+    async def insert_webhook(self, webhook: dict[str, Any]) -> None:
+        await self.db.execute(
+            """INSERT INTO webhooks(id, url, events, secret, active, created_at, workspace_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                webhook["id"],
+                webhook["url"],
+                webhook["events"],
+                webhook.get("secret"),
+                1,
+                webhook.get("created_at", _now_iso()),
+                self.workspace_id,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_webhooks(self) -> list[dict]:
+        cursor = await self.db.execute(
+            "SELECT * FROM webhooks WHERE workspace_id = ? AND active = 1 ORDER BY created_at DESC",
+            (self.workspace_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_webhook_by_id(self, webhook_id: str) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM webhooks WHERE id = ? AND workspace_id = ?",
+            (webhook_id, self.workspace_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def delete_webhook(self, webhook_id: str) -> bool:
+        cursor = await self.db.execute(
+            "UPDATE webhooks SET active = 0 WHERE id = ? AND workspace_id = ?",
+            (webhook_id, self.workspace_id),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def queue_webhook_delivery(self, delivery: dict[str, Any]) -> None:
+        await self.db.execute(
+            """INSERT INTO webhook_deliveries(id, webhook_id, event, payload, status, attempts, created_at, workspace_id)
+               VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)""",
+            (
+                delivery["id"],
+                delivery["webhook_id"],
+                delivery["event"],
+                delivery["payload"],
+                delivery.get("created_at", _now_iso()),
+                self.workspace_id,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_pending_deliveries(self) -> list[dict]:
+        cursor = await self.db.execute(
+            """SELECT * FROM webhook_deliveries
+               WHERE status = 'pending' AND attempts < 3 AND workspace_id = ?
+               ORDER BY created_at ASC LIMIT 100""",
+            (self.workspace_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def mark_delivery_done(self, delivery_id: str) -> None:
+        await self.db.execute(
+            "UPDATE webhook_deliveries SET status = 'done', attempts = attempts + 1 WHERE id = ?",
+            (delivery_id,),
+        )
+        await self.db.commit()
+
+    async def mark_delivery_failed(self, delivery_id: str) -> None:
+        await self.db.execute(
+            """UPDATE webhook_deliveries
+               SET attempts = attempts + 1,
+                   status = CASE WHEN attempts + 1 >= 3 THEN 'failed' ELSE 'pending' END
+               WHERE id = ?""",
+            (delivery_id,),
+        )
+        await self.db.commit()
+
+    # ── Resolution rule methods ───────────────────────────────────────
+
+    async def insert_rule(self, rule: dict[str, Any]) -> None:
+        await self.db.execute(
+            """INSERT INTO resolution_rules(id, scope_prefix, condition_type, condition_value,
+               resolution_type, created_at, active, workspace_id)
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
+            (
+                rule["id"],
+                rule["scope_prefix"],
+                rule["condition_type"],
+                rule["condition_value"],
+                rule["resolution_type"],
+                rule.get("created_at", _now_iso()),
+                self.workspace_id,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_rules(self) -> list[dict]:
+        cursor = await self.db.execute(
+            "SELECT * FROM resolution_rules WHERE workspace_id = ? AND active = 1 ORDER BY created_at DESC",
+            (self.workspace_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_rule_by_id(self, rule_id: str) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM resolution_rules WHERE id = ? AND workspace_id = ?",
+            (rule_id, self.workspace_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def delete_rule(self, rule_id: str) -> bool:
+        cursor = await self.db.execute(
+            "UPDATE resolution_rules SET active = 0 WHERE id = ? AND workspace_id = ?",
+            (rule_id, self.workspace_id),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    # ── Scope registry methods ────────────────────────────────────────
+
+    async def upsert_scope(self, scope_data: dict[str, Any]) -> None:
+        now = _now_iso()
+        await self.db.execute(
+            """INSERT INTO scopes(scope, description, owner_agent_id, retention_days, created_at, workspace_id)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(scope, workspace_id) DO UPDATE SET
+                   description = COALESCE(excluded.description, description),
+                   owner_agent_id = COALESCE(excluded.owner_agent_id, owner_agent_id),
+                   retention_days = COALESCE(excluded.retention_days, retention_days)""",
+            (
+                scope_data["scope"],
+                scope_data.get("description"),
+                scope_data.get("owner_agent_id"),
+                scope_data.get("retention_days"),
+                now,
+                self.workspace_id,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_scopes(self) -> list[dict]:
+        cursor = await self.db.execute(
+            "SELECT * FROM scopes WHERE workspace_id = ? ORDER BY scope ASC",
+            (self.workspace_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_scope_by_name(self, scope: str) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM scopes WHERE scope = ? AND workspace_id = ?",
+            (scope, self.workspace_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_scope_analytics(self, scope: str) -> dict:
+        """Return analytics for a given scope: fact counts, conflict rate, top agent, avg confidence."""
+        # Total fact count (all, including retired)
+        cur = await self.db.execute(
+            "SELECT COUNT(*) as cnt FROM facts WHERE scope = ? AND workspace_id = ?",
+            (scope, self.workspace_id),
+        )
+        row = await cur.fetchone()
+        fact_count = row["cnt"] if row else 0
+
+        # Active fact count
+        cur = await self.db.execute(
+            "SELECT COUNT(*) as cnt FROM facts WHERE scope = ? AND workspace_id = ? AND valid_until IS NULL",
+            (scope, self.workspace_id),
+        )
+        row = await cur.fetchone()
+        active_fact_count = row["cnt"] if row else 0
+
+        # Conflict count
+        cur = await self.db.execute(
+            """SELECT COUNT(*) as cnt FROM conflicts c
+               JOIN facts fa ON c.fact_a_id = fa.id
+               WHERE fa.scope = ? AND c.workspace_id = ?""",
+            (scope, self.workspace_id),
+        )
+        row = await cur.fetchone()
+        conflict_count = row["cnt"] if row else 0
+
+        conflict_rate = round(conflict_count / fact_count, 4) if fact_count > 0 else 0.0
+
+        # Most active agent
+        cur = await self.db.execute(
+            """SELECT agent_id, COUNT(*) as cnt FROM facts
+               WHERE scope = ? AND workspace_id = ?
+               GROUP BY agent_id ORDER BY cnt DESC LIMIT 1""",
+            (scope, self.workspace_id),
+        )
+        row = await cur.fetchone()
+        most_active_agent = row["agent_id"] if row else None
+
+        # Average confidence
+        cur = await self.db.execute(
+            "SELECT AVG(confidence) as avg_conf FROM facts WHERE scope = ? AND workspace_id = ? AND valid_until IS NULL",
+            (scope, self.workspace_id),
+        )
+        row = await cur.fetchone()
+        avg_confidence = round(float(row["avg_conf"]), 4) if row and row["avg_conf"] is not None else 0.0
+
+        return {
+            "scope": scope,
+            "fact_count": fact_count,
+            "active_fact_count": active_fact_count,
+            "conflict_count": conflict_count,
+            "conflict_rate": conflict_rate,
+            "most_active_agent": most_active_agent,
+            "avg_confidence": avg_confidence,
+        }
+
+    # ── Audit log methods ─────────────────────────────────────────────
+
+    async def insert_audit_entry(self, entry: dict[str, Any]) -> None:
+        await self.db.execute(
+            """INSERT INTO audit_log(id, operation, agent_id, fact_id, conflict_id, extra, timestamp, workspace_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                entry["id"],
+                entry["operation"],
+                entry.get("agent_id"),
+                entry.get("fact_id"),
+                entry.get("conflict_id"),
+                entry.get("extra"),
+                entry.get("timestamp", _now_iso()),
+                self.workspace_id,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_audit_log(
+        self,
+        agent_id: str | None = None,
+        operation: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        conditions = ["workspace_id = ?"]
+        params: list[Any] = [self.workspace_id]
+
+        if agent_id:
+            conditions.append("agent_id = ?")
+            params.append(agent_id)
+        if operation:
+            conditions.append("operation = ?")
+            params.append(operation)
+        if from_ts:
+            conditions.append("timestamp >= ?")
+            params.append(from_ts)
+        if to_ts:
+            conditions.append("timestamp <= ?")
+            params.append(to_ts)
+
+        where = " AND ".join(conditions)
+        params.append(limit)
+        cursor = await self.db.execute(
+            f"SELECT * FROM audit_log WHERE {where} ORDER BY timestamp DESC LIMIT ?",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
 
 
 def _now_iso() -> str:

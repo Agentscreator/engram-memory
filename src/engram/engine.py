@@ -38,9 +38,11 @@ class EngramEngine:
         self._calibration_task: asyncio.Task[None] | None = None
         self._suggestion_task: asyncio.Task[None] | None = None
         self._escalation_task: asyncio.Task[None] | None = None
+        self._webhook_task: asyncio.Task[None] | None = None
         self._nli_model: Any = None
         self._nli_threshold_high: float = 0.85
         self._nli_threshold_low: float = 0.50
+        self._sse_subscribers: dict[str, list[asyncio.Queue]] = {}
 
     async def start(self) -> None:
         """Start the background detection worker and periodic tasks."""
@@ -50,6 +52,7 @@ class EngramEngine:
         self._calibration_task = asyncio.create_task(self._calibration_loop())
         self._suggestion_task = asyncio.create_task(self._suggestion_worker())
         self._escalation_task = asyncio.create_task(self._escalation_loop())
+        self._webhook_task = asyncio.create_task(self._webhook_delivery_worker())
         logger.info("Detection worker started")
 
     async def stop(self) -> None:
@@ -61,6 +64,7 @@ class EngramEngine:
             self._calibration_task,
             self._suggestion_task,
             self._escalation_task,
+            self._webhook_task,
         ):
             if task:
                 task.cancel()
@@ -74,6 +78,7 @@ class EngramEngine:
         self._calibration_task = None
         self._suggestion_task = None
         self._escalation_task = None
+        self._webhook_task = None
 
     # ── engram_commit ────────────────────────────────────────────────
 
@@ -323,7 +328,7 @@ class EngramEngine:
         # Find semantically similar facts from different agents in the same scope
         await self._check_corroboration(fact_id, emb, agent_id, scope)
 
-        return {
+        result = {
             "fact_id": fact_id,
             "committed_at": now,
             "duplicate": False,
@@ -332,6 +337,23 @@ class EngramEngine:
             "supersedes_fact_id": supersedes_fact_id,
             "durability": durability,
         }
+
+        # Audit + fire event (fire-and-forget; errors must not block the commit)
+        try:
+            await self._audit("commit", agent_id=agent_id, fact_id=fact_id)
+        except Exception:
+            pass
+        try:
+            asyncio.ensure_future(self._fire_event("fact.committed", {
+                "fact_id": fact_id,
+                "scope": scope,
+                "agent_id": agent_id,
+                "committed_at": now,
+            }))
+        except Exception:
+            pass
+
+        return result
 
     # ── engram_query ─────────────────────────────────────────────────
 
@@ -800,6 +822,19 @@ class EngramEngine:
             resolution=resolution,
         )
 
+        if success:
+            try:
+                await self._audit("resolve", conflict_id=conflict_id)
+            except Exception:
+                pass
+            try:
+                asyncio.ensure_future(self._fire_event("conflict.resolved", {
+                    "conflict_id": conflict_id,
+                    "resolution_type": resolution_type,
+                }))
+            except Exception:
+                pass
+
         return {
             "resolved": success,
             "conflict_id": conflict_id,
@@ -915,6 +950,10 @@ class EngramEngine:
         if not conflict:
             raise ValueError(f"Conflict '{conflict_id}' not found.")
         await self.storage.insert_detection_feedback(conflict_id, feedback)
+        try:
+            await self._audit("feedback", conflict_id=conflict_id, extra=json.dumps({"feedback": feedback}))
+        except Exception:
+            pass
         return {"recorded": True, "conflict_id": conflict_id, "feedback": feedback}
 
     # ── engram_timeline ───────────────────────────────────────────────
@@ -1235,6 +1274,14 @@ class EngramEngine:
                                     "Suggestion queue full, skipping suggestion for conflict %s",
                                     conflict_id[:12],
                                 )
+                            asyncio.ensure_future(self._apply_rules(conflict_id))
+                            asyncio.ensure_future(self._fire_event("conflict.detected", {
+                                "conflict_id": conflict_id,
+                                "fact_a_id": fact_id,
+                                "fact_b_id": c["id"],
+                                "scope": fact["scope"],
+                                "detection_tier": "tier0_entity",
+                            }))
                             tier0_flagged.add(c["id"])
 
         # ── Tier 2b: Cross-scope entity detection ────────────────────
@@ -1279,6 +1326,14 @@ class EngramEngine:
                                     "Suggestion queue full, skipping suggestion for conflict %s",
                                     conflict_id[:12],
                                 )
+                            asyncio.ensure_future(self._apply_rules(conflict_id))
+                            asyncio.ensure_future(self._fire_event("conflict.detected", {
+                                "conflict_id": conflict_id,
+                                "fact_a_id": fact_id,
+                                "fact_b_id": c["id"],
+                                "scope": fact["scope"],
+                                "detection_tier": "tier2b_cross_scope",
+                            }))
                             tier2b_flagged.add(c["id"])
 
         # ── Tier 2: Numeric and temporal rules (parallel with Tier 1) ────
@@ -1325,6 +1380,14 @@ class EngramEngine:
                                         "Suggestion queue full, skipping suggestion for conflict %s",
                                         conflict_id[:12],
                                     )
+                                asyncio.ensure_future(self._apply_rules(conflict_id))
+                                asyncio.ensure_future(self._fire_event("conflict.detected", {
+                                    "conflict_id": conflict_id,
+                                    "fact_a_id": fact_id,
+                                    "fact_b_id": candidate["id"],
+                                    "scope": fact["scope"],
+                                    "detection_tier": "tier2_numeric",
+                                }))
                                 tier2_flagged.add(candidate["id"])
 
         # ── Tier 1: NLI cross-encoder ────────────────────────────────
@@ -1429,6 +1492,14 @@ class EngramEngine:
                                 "Suggestion queue full, skipping suggestion for conflict %s",
                                 conflict_id[:12],
                             )
+                        asyncio.ensure_future(self._apply_rules(conflict_id))
+                        asyncio.ensure_future(self._fire_event("conflict.detected", {
+                            "conflict_id": conflict_id,
+                            "fact_a_id": fact_id,
+                            "fact_b_id": candidate["id"],
+                            "scope": fact["scope"],
+                            "detection_tier": "tier1_nli",
+                        }))
 
             except Exception:
                 logger.exception("NLI inference failed for pair %s / %s", fact_id, candidate["id"])
@@ -1625,6 +1696,9 @@ class EngramEngine:
                 expired = await self.storage.expire_ttl_facts()
                 if expired:
                     logger.info("TTL expiry: closed %d fact(s)", expired)
+                    asyncio.ensure_future(self._fire_event("fact.expired", {
+                        "count": expired,
+                    }))
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -1688,6 +1762,460 @@ class EngramEngine:
                 break
             except Exception:
                 logger.exception("Calibration loop error")
+
+
+    # ── Webhooks ─────────────────────────────────────────────────────
+
+    async def create_webhook(
+        self,
+        url: str,
+        events: list[str],
+        secret: str | None = None,
+    ) -> dict[str, Any]:
+        """Register a new webhook for event notifications."""
+        if not url or not url.startswith(("http://", "https://")):
+            raise ValueError("url must be a valid http/https URL.")
+        if not events or not isinstance(events, list):
+            raise ValueError("events must be a non-empty list of event type strings.")
+        webhook_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        webhook = {
+            "id": webhook_id,
+            "url": url,
+            "events": json.dumps(events),
+            "secret": secret,
+            "active": 1,
+            "created_at": now,
+        }
+        await self.storage.insert_webhook(webhook)
+        await self._audit("webhook_create", extra=json.dumps({"url": url, "events": events}))
+        return {"webhook_id": webhook_id, "url": url, "events": events, "created_at": now}
+
+    async def list_webhooks(self) -> list[dict[str, Any]]:
+        """Return all active webhooks."""
+        rows = await self.storage.get_webhooks()
+        result = []
+        for r in rows:
+            events = r.get("events", "[]")
+            try:
+                events = json.loads(events)
+            except Exception:
+                pass
+            result.append({
+                "webhook_id": r["id"],
+                "url": r["url"],
+                "events": events,
+                "created_at": r["created_at"],
+            })
+        return result
+
+    async def delete_webhook(self, webhook_id: str) -> dict[str, Any]:
+        """Deactivate a webhook."""
+        ok = await self.storage.delete_webhook(webhook_id)
+        if not ok:
+            raise ValueError(f"Webhook '{webhook_id}' not found.")
+        return {"deleted": True, "webhook_id": webhook_id}
+
+    async def _fire_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Queue webhook deliveries and broadcast to SSE subscribers for an event."""
+        # Broadcast to SSE subscribers
+        scope = payload.get("scope", "")
+        await self._broadcast(event_type, scope, payload)
+
+        # Queue webhook deliveries
+        try:
+            webhooks = await self.storage.get_webhooks()
+        except Exception:
+            return
+        for webhook in webhooks:
+            events_str = webhook.get("events", "[]")
+            try:
+                subscribed = json.loads(events_str)
+            except Exception:
+                subscribed = []
+            if event_type in subscribed or "*" in subscribed:
+                delivery = {
+                    "id": uuid.uuid4().hex,
+                    "webhook_id": webhook["id"],
+                    "event": event_type,
+                    "payload": json.dumps({"event": event_type, "data": payload}),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                try:
+                    await self.storage.queue_webhook_delivery(delivery)
+                except Exception:
+                    logger.warning("Failed to queue webhook delivery for webhook %s", webhook["id"])
+
+    async def _webhook_delivery_worker(self) -> None:
+        """Background worker: polls pending deliveries and POSTs to webhook URLs."""
+        while True:
+            try:
+                await asyncio.sleep(5)
+                try:
+                    deliveries = await self.storage.get_pending_deliveries()
+                except Exception:
+                    continue
+                if not deliveries:
+                    continue
+                try:
+                    import aiohttp
+                except ImportError:
+                    logger.warning("aiohttp not available — webhook delivery disabled.")
+                    continue
+                for delivery in deliveries:
+                    webhook = await self.storage.get_webhook_by_id(delivery["webhook_id"])
+                    if not webhook:
+                        await self.storage.mark_delivery_done(delivery["id"])
+                        continue
+                    url = webhook["url"]
+                    body = delivery["payload"]
+                    secret = webhook.get("secret")
+                    headers: dict[str, str] = {"Content-Type": "application/json"}
+                    if secret:
+                        import hmac
+                        sig = hmac.new(
+                            secret.encode(),
+                            body.encode() if isinstance(body, str) else body,
+                            hashlib.sha256,
+                        ).hexdigest()
+                        headers["X-Engram-Signature"] = f"sha256={sig}"
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.post(
+                                url,
+                                data=body,
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=10),
+                            ) as resp:
+                                if resp.status < 300:
+                                    await self.storage.mark_delivery_done(delivery["id"])
+                                    logger.debug("Webhook delivery %s -> %s OK (%d)", delivery["id"][:8], url, resp.status)
+                                else:
+                                    await self.storage.mark_delivery_failed(delivery["id"])
+                                    logger.warning("Webhook delivery %s -> %s failed (%d)", delivery["id"][:8], url, resp.status)
+                    except Exception as exc:
+                        await self.storage.mark_delivery_failed(delivery["id"])
+                        logger.warning("Webhook delivery %s -> %s error: %s", delivery["id"][:8], url, exc)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Webhook delivery worker error")
+
+    # ── SSE ──────────────────────────────────────────────────────────
+
+    def subscribe(self, scope_prefix: str = "") -> asyncio.Queue:
+        """Create and register an SSE subscriber queue."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        if scope_prefix not in self._sse_subscribers:
+            self._sse_subscribers[scope_prefix] = []
+        self._sse_subscribers[scope_prefix].append(q)
+        return q
+
+    def unsubscribe(self, queue: asyncio.Queue, scope_prefix: str = "") -> None:
+        """Remove an SSE subscriber queue."""
+        subscribers = self._sse_subscribers.get(scope_prefix, [])
+        try:
+            subscribers.remove(queue)
+        except ValueError:
+            pass
+
+    async def _broadcast(self, event_type: str, scope: str, payload: dict[str, Any]) -> None:
+        """Push an event to all matching SSE subscribers."""
+        event = {"event": event_type, "scope": scope, "data": payload}
+        for prefix, queues in list(self._sse_subscribers.items()):
+            if prefix == "" or scope.startswith(prefix):
+                for q in list(queues):
+                    try:
+                        q.put_nowait(event)
+                    except asyncio.QueueFull:
+                        pass  # Slow consumer — drop event
+
+    # ── Auto-Resolution Rules ────────────────────────────────────────
+
+    async def create_rule(
+        self,
+        scope_prefix: str,
+        condition_type: str,
+        condition_value: str,
+        resolution_type: str,
+    ) -> dict[str, Any]:
+        """Create an auto-resolution rule."""
+        valid_condition_types = ("latest_wins", "highest_confidence", "confidence_delta")
+        if condition_type not in valid_condition_types:
+            raise ValueError(
+                f"condition_type must be one of: {', '.join(valid_condition_types)}."
+            )
+        if not scope_prefix:
+            raise ValueError("scope_prefix is required.")
+        rule_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        rule = {
+            "id": rule_id,
+            "scope_prefix": scope_prefix,
+            "condition_type": condition_type,
+            "condition_value": condition_value,
+            "resolution_type": resolution_type,
+            "created_at": now,
+        }
+        await self.storage.insert_rule(rule)
+        await self._audit("rule_create", extra=json.dumps({
+            "scope_prefix": scope_prefix,
+            "condition_type": condition_type,
+        }))
+        return {"rule_id": rule_id, **rule}
+
+    async def list_rules(self) -> list[dict[str, Any]]:
+        """Return all active auto-resolution rules."""
+        return await self.storage.get_rules()
+
+    async def delete_rule(self, rule_id: str) -> dict[str, Any]:
+        """Deactivate an auto-resolution rule."""
+        ok = await self.storage.delete_rule(rule_id)
+        if not ok:
+            raise ValueError(f"Rule '{rule_id}' not found.")
+        return {"deleted": True, "rule_id": rule_id}
+
+    async def _apply_rules(self, conflict_id: str) -> None:
+        """Check active rules and auto-resolve conflict if a matching rule applies."""
+        conflict = await self.storage.get_conflict_by_id(conflict_id)
+        if not conflict or conflict.get("status") != "open":
+            return
+
+        fact_a = await self.storage.get_fact_by_id(conflict["fact_a_id"])
+        fact_b = await self.storage.get_fact_by_id(conflict["fact_b_id"])
+        if not fact_a or not fact_b:
+            return
+
+        scope = fact_a.get("scope", "")
+        rules = await self.storage.get_rules()
+        for rule in rules:
+            if not scope.startswith(rule["scope_prefix"]):
+                continue
+
+            condition_type = rule["condition_type"]
+            condition_value = rule["condition_value"]
+            resolution_type = rule["resolution_type"]
+            resolved = False
+
+            if condition_type == "latest_wins":
+                winner = fact_a if (fact_a.get("committed_at", "") >= fact_b.get("committed_at", "")) else fact_b
+                loser = fact_b if winner is fact_a else fact_a
+                await self.storage.close_validity_window(fact_id=loser["id"])
+                await self.storage.auto_resolve_conflict(
+                    conflict_id=conflict_id,
+                    resolution_type=resolution_type or "winner",
+                    resolution=f"Auto-resolved by rule '{rule['id'][:8]}' (latest_wins)",
+                    resolved_by="system:rules",
+                )
+                resolved = True
+
+            elif condition_type == "highest_confidence":
+                conf_a = float(fact_a.get("confidence", 0))
+                conf_b = float(fact_b.get("confidence", 0))
+                if conf_a != conf_b:
+                    winner = fact_a if conf_a > conf_b else fact_b
+                    loser = fact_b if winner is fact_a else fact_a
+                    await self.storage.close_validity_window(fact_id=loser["id"])
+                    await self.storage.auto_resolve_conflict(
+                        conflict_id=conflict_id,
+                        resolution_type=resolution_type or "winner",
+                        resolution=f"Auto-resolved by rule '{rule['id'][:8]}' (highest_confidence)",
+                        resolved_by="system:rules",
+                    )
+                    resolved = True
+
+            elif condition_type == "confidence_delta":
+                try:
+                    min_delta = float(condition_value)
+                except (TypeError, ValueError):
+                    continue
+                conf_a = float(fact_a.get("confidence", 0))
+                conf_b = float(fact_b.get("confidence", 0))
+                delta = abs(conf_a - conf_b)
+                if delta >= min_delta:
+                    winner = fact_a if conf_a > conf_b else fact_b
+                    loser = fact_b if winner is fact_a else fact_a
+                    await self.storage.close_validity_window(fact_id=loser["id"])
+                    await self.storage.auto_resolve_conflict(
+                        conflict_id=conflict_id,
+                        resolution_type=resolution_type or "winner",
+                        resolution=(
+                            f"Auto-resolved by rule '{rule['id'][:8]}' "
+                            f"(confidence_delta={delta:.2f} >= {min_delta})"
+                        ),
+                        resolved_by="system:rules",
+                    )
+                    resolved = True
+
+            if resolved:
+                logger.info(
+                    "Auto-resolved conflict %s via rule %s (%s)",
+                    conflict_id[:12], rule["id"][:8], condition_type,
+                )
+                return  # Apply at most one rule per conflict
+
+    # ── Knowledge Import ─────────────────────────────────────────────
+
+    async def import_workspace(
+        self,
+        facts: list[dict],
+        agent_id: str | None = None,
+        engineer: str | None = None,
+    ) -> dict[str, Any]:
+        """Import a list of fact dicts by committing each through the pipeline."""
+        total = len(facts)
+        imported = 0
+        duplicates = 0
+        failed = 0
+
+        for fact in facts:
+            try:
+                result = await self.commit(
+                    content=fact.get("content", ""),
+                    scope=fact.get("scope", "general"),
+                    confidence=float(fact.get("confidence", 0.8)),
+                    agent_id=fact.get("agent_id") or agent_id,
+                    engineer=fact.get("engineer") or engineer,
+                    provenance=fact.get("provenance"),
+                    fact_type=fact.get("fact_type", "observation"),
+                    ttl_days=fact.get("ttl_days"),
+                    operation="add",
+                    durability=fact.get("durability", "durable"),
+                )
+                if result.get("duplicate"):
+                    duplicates += 1
+                else:
+                    imported += 1
+            except Exception as exc:
+                logger.warning("Import failed for fact: %s", exc)
+                failed += 1
+
+        await self._audit("import", extra=json.dumps({"total": total, "imported": imported}))
+        return {"total": total, "imported": imported, "duplicates": duplicates, "failed": failed}
+
+    # ── Scope Registry ────────────────────────────────────────────────
+
+    async def register_scope(
+        self,
+        scope: str,
+        description: str | None = None,
+        owner_agent_id: str | None = None,
+        retention_days: int | None = None,
+    ) -> dict[str, Any]:
+        """Register or update a scope in the scope registry."""
+        if not scope or not scope.strip():
+            raise ValueError("scope is required.")
+        await self.storage.upsert_scope({
+            "scope": scope,
+            "description": description,
+            "owner_agent_id": owner_agent_id,
+            "retention_days": retention_days,
+        })
+        return {"scope": scope, "registered": True}
+
+    async def list_scopes(self) -> list[dict[str, Any]]:
+        """Return all registered scopes."""
+        return await self.storage.get_scopes()
+
+    async def get_scope_info(self, scope: str) -> dict[str, Any] | None:
+        """Return scope metadata and analytics."""
+        reg = await self.storage.get_scope_by_name(scope)
+        analytics = await self.storage.get_scope_analytics(scope)
+        return {"registration": reg, "analytics": analytics}
+
+    # ── Fact Diffing ─────────────────────────────────────────────────
+
+    async def diff_facts(self, fact_id_a: str, fact_id_b: str) -> dict[str, Any]:
+        """Compute a field-level and entity-level diff between two facts."""
+        fact_a = await self.storage.get_fact_by_id(fact_id_a)
+        if not fact_a:
+            raise ValueError(f"Fact '{fact_id_a}' not found.")
+        fact_b = await self.storage.get_fact_by_id(fact_id_b)
+        if not fact_b:
+            raise ValueError(f"Fact '{fact_id_b}' not found.")
+
+        # Field-level diff
+        diff_fields = ("content", "scope", "confidence", "fact_type", "agent_id")
+        changes = []
+        for field in diff_fields:
+            val_a = fact_a.get(field)
+            val_b = fact_b.get(field)
+            if val_a != val_b:
+                changes.append({"field": field, "old": val_a, "new": val_b})
+
+        # Entity diff
+        def _parse_entities(fact: dict) -> list[dict]:
+            raw = fact.get("entities") or "[]"
+            try:
+                return json.loads(raw) if isinstance(raw, str) else (raw or [])
+            except Exception:
+                return []
+
+        entities_a = {e.get("name"): e for e in _parse_entities(fact_a)}
+        entities_b = {e.get("name"): e for e in _parse_entities(fact_b)}
+
+        added = [e for name, e in entities_b.items() if name not in entities_a]
+        removed = [e for name, e in entities_a.items() if name not in entities_b]
+        changed = []
+        for name in entities_a:
+            if name in entities_b and entities_a[name] != entities_b[name]:
+                changed.append({"name": name, "old": entities_a[name], "new": entities_b[name]})
+
+        # Strip binary embedding from returned facts
+        def _clean(f: dict) -> dict:
+            c = dict(f)
+            if "embedding" in c:
+                c["embedding"] = None
+            return c
+
+        return {
+            "fact_a": _clean(fact_a),
+            "fact_b": _clean(fact_b),
+            "changes": changes,
+            "entity_changes": {"added": added, "removed": removed, "changed": changed},
+        }
+
+    # ── Audit Trail ──────────────────────────────────────────────────
+
+    async def _audit(
+        self,
+        operation: str,
+        agent_id: str | None = None,
+        fact_id: str | None = None,
+        conflict_id: str | None = None,
+        extra: str | None = None,
+    ) -> None:
+        """Insert an audit log entry."""
+        try:
+            await self.storage.insert_audit_entry({
+                "id": uuid.uuid4().hex,
+                "operation": operation,
+                "agent_id": agent_id,
+                "fact_id": fact_id,
+                "conflict_id": conflict_id,
+                "extra": extra,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            logger.warning("Audit log insert failed for operation '%s'", operation)
+
+    async def get_audit_log(
+        self,
+        agent_id: str | None = None,
+        operation: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return audit log entries with optional filters."""
+        limit = max(1, min(limit, 1000))
+        return await self.storage.get_audit_log(
+            agent_id=agent_id,
+            operation=operation,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            limit=limit,
+        )
 
 
 def _content_hash(content: str) -> str:

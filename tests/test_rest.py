@@ -6,6 +6,8 @@ rather than propagating the request to the engine and returning a 500.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 from starlette.testclient import TestClient
@@ -43,6 +45,22 @@ def _build_client(
     engine.bulk_dismiss = AsyncMock(
         return_value={"total": 0, "dismissed": 0, "failed": 0, "results": []}
     )
+    # Round 8: new engine methods
+    engine.create_webhook = AsyncMock(return_value={"webhook_id": "wh1", "url": "https://example.com/hook", "events": ["fact.committed"], "created_at": "2024-01-01T00:00:00+00:00"})
+    engine.list_webhooks = AsyncMock(return_value=[])
+    engine.delete_webhook = AsyncMock(return_value={"deleted": True, "webhook_id": "wh1"})
+    engine.create_rule = AsyncMock(return_value={"rule_id": "r1", "scope_prefix": "auth", "condition_type": "latest_wins", "condition_value": "", "resolution_type": "winner", "created_at": "2024-01-01T00:00:00+00:00"})
+    engine.list_rules = AsyncMock(return_value=[])
+    engine.delete_rule = AsyncMock(return_value={"deleted": True, "rule_id": "r1"})
+    engine.export_workspace = AsyncMock(return_value=[])
+    engine.import_workspace = AsyncMock(return_value={"total": 0, "imported": 0, "duplicates": 0, "failed": 0})
+    engine.subscribe = MagicMock(return_value=asyncio.Queue())
+    engine.unsubscribe = MagicMock()
+    engine.register_scope = AsyncMock(return_value={"scope": "auth", "registered": True})
+    engine.list_scopes = AsyncMock(return_value=[])
+    engine.get_scope_info = AsyncMock(return_value={"registration": None, "analytics": {"scope": "auth", "fact_count": 0, "active_fact_count": 0, "conflict_count": 0, "conflict_rate": 0.0, "most_active_agent": None, "avg_confidence": 0.0}})
+    engine.diff_facts = AsyncMock(return_value={"fact_a": {}, "fact_b": {}, "changes": [], "entity_changes": {"added": [], "removed": [], "changed": []}})
+    engine.get_audit_log = AsyncMock(return_value=[])
 
     storage = MagicMock()
     storage.count_facts = AsyncMock(return_value=0)
@@ -1053,3 +1071,285 @@ def test_bulk_dismiss_invalid_json():
         "/api/conflicts/bulk-dismiss", content=b"bad", headers={"Content-Type": "application/json"}
     )
     assert resp.status_code == 400
+
+
+# ── Round 8: /api/webhooks ────────────────────────────────────────────
+
+
+def test_create_webhook_success():
+    client, engine = _build_client()
+    resp = client.post("/api/webhooks", json={
+        "url": "https://example.com/hook",
+        "events": ["fact.committed"],
+    })
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["webhook_id"] == "wh1"
+    engine.create_webhook.assert_called_once()
+
+
+def test_create_webhook_missing_url():
+    client, _ = _build_client()
+    resp = client.post("/api/webhooks", json={"events": ["fact.committed"]})
+    assert resp.status_code == 400
+    assert "url" in resp.json()["error"].lower()
+
+
+def test_create_webhook_invalid_url():
+    client, _ = _build_client()
+    resp = client.post("/api/webhooks", json={
+        "url": "ftp://bad.url",
+        "events": ["fact.committed"],
+    })
+    assert resp.status_code == 400
+    assert "url" in resp.json()["error"].lower()
+
+
+def test_create_webhook_missing_events():
+    client, _ = _build_client()
+    resp = client.post("/api/webhooks", json={"url": "https://example.com/hook"})
+    assert resp.status_code == 400
+    assert "events" in resp.json()["error"].lower()
+
+
+def test_create_webhook_empty_events():
+    client, _ = _build_client()
+    resp = client.post("/api/webhooks", json={
+        "url": "https://example.com/hook",
+        "events": [],
+    })
+    assert resp.status_code == 400
+    assert "events" in resp.json()["error"].lower()
+
+
+def test_list_webhooks_success():
+    client, engine = _build_client()
+    engine.list_webhooks = AsyncMock(return_value=[
+        {"webhook_id": "wh1", "url": "https://x.com", "events": ["fact.committed"], "created_at": "2024-01-01T00:00:00+00:00"},
+    ])
+    resp = client.get("/api/webhooks")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+def test_delete_webhook_success():
+    client, engine = _build_client()
+    resp = client.delete("/api/webhooks/wh1")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+
+
+def test_delete_webhook_not_found():
+    client, engine = _build_client()
+    engine.delete_webhook = AsyncMock(side_effect=ValueError("Webhook 'wh_miss' not found."))
+    resp = client.delete("/api/webhooks/wh_miss")
+    assert resp.status_code == 404
+
+
+# ── Round 8: /api/rules ───────────────────────────────────────────────
+
+
+def test_create_rule_success():
+    client, engine = _build_client()
+    resp = client.post("/api/rules", json={
+        "scope_prefix": "auth",
+        "condition_type": "latest_wins",
+        "condition_value": "",
+        "resolution_type": "winner",
+    })
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["rule_id"] == "r1"
+
+
+def test_create_rule_invalid_condition():
+    client, _ = _build_client()
+    resp = client.post("/api/rules", json={
+        "scope_prefix": "auth",
+        "condition_type": "magic_rule",
+        "condition_value": "0.5",
+    })
+    assert resp.status_code == 400
+    assert "condition_type" in resp.json()["error"].lower()
+
+
+def test_create_rule_missing_scope_prefix():
+    client, _ = _build_client()
+    resp = client.post("/api/rules", json={
+        "condition_type": "latest_wins",
+        "condition_value": "",
+    })
+    assert resp.status_code == 400
+    assert "scope_prefix" in resp.json()["error"].lower()
+
+
+def test_list_rules_success():
+    client, engine = _build_client()
+    engine.list_rules = AsyncMock(return_value=[
+        {"id": "r1", "scope_prefix": "auth", "condition_type": "latest_wins"},
+    ])
+    resp = client.get("/api/rules")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+def test_delete_rule_success():
+    client, engine = _build_client()
+    resp = client.delete("/api/rules/r1")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+
+
+def test_delete_rule_not_found():
+    client, engine = _build_client()
+    engine.delete_rule = AsyncMock(side_effect=ValueError("Rule 'r_miss' not found."))
+    resp = client.delete("/api/rules/r_miss")
+    assert resp.status_code == 404
+
+
+# ── Round 8: /api/export and /api/import ─────────────────────────────
+
+
+def test_export_returns_facts():
+    client, engine = _build_client()
+    engine.export_workspace = AsyncMock(return_value={
+        "facts": [{"id": "f1", "content": "test fact", "scope": "auth", "confidence": 0.9}],
+        "metadata": {"workspace_id": "local", "exported_at": "2026-01-01T00:00:00Z"},
+    })
+    resp = client.get("/api/export")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "facts" in data or isinstance(data, dict)
+
+
+def test_export_with_scope_filter():
+    client, engine = _build_client()
+    engine.export_workspace = AsyncMock(return_value={"facts": [], "metadata": {}})
+    resp = client.get("/api/export?scope=auth&format=json")
+    assert resp.status_code == 200
+    engine.export_workspace.assert_called_once_with(format="json", scope="auth")
+
+
+def test_import_success():
+    client, engine = _build_client()
+    engine.import_workspace = AsyncMock(return_value={"total": 1, "imported": 1, "duplicates": 0, "failed": 0})
+    resp = client.post("/api/import", json={"facts": [{"content": "test", "scope": "auth", "confidence": 0.9}]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["imported"] == 1
+
+
+def test_import_invalid_data():
+    client, _ = _build_client()
+    resp = client.post("/api/import", json={"facts": "not-a-list"})
+    assert resp.status_code == 400
+    assert "array" in resp.json()["error"].lower()
+
+
+def test_import_missing_facts():
+    client, _ = _build_client()
+    resp = client.post("/api/import", json={})
+    assert resp.status_code == 400
+    assert "facts" in resp.json()["error"].lower()
+
+
+# ── Round 8: /api/scopes ─────────────────────────────────────────────
+
+
+def test_register_scope_success():
+    client, engine = _build_client()
+    resp = client.post("/api/scopes", json={"scope": "auth", "description": "Auth scope"})
+    assert resp.status_code == 201
+    assert resp.json()["scope"] == "auth"
+
+
+def test_register_scope_missing_scope():
+    client, _ = _build_client()
+    resp = client.post("/api/scopes", json={"description": "no scope"})
+    assert resp.status_code == 400
+    assert "scope" in resp.json()["error"].lower()
+
+
+def test_list_scopes_success():
+    client, engine = _build_client()
+    engine.list_scopes = AsyncMock(return_value=[
+        {"scope": "auth", "description": "Auth scope", "workspace_id": "local"},
+    ])
+    resp = client.get("/api/scopes")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+def test_get_scope_success():
+    client, engine = _build_client()
+    resp = client.get("/api/scopes/auth")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "analytics" in data
+
+
+def test_get_scope_not_found():
+    client, engine = _build_client()
+    engine.get_scope_info = AsyncMock(return_value=None)
+    resp = client.get("/api/scopes/nonexistent")
+    assert resp.status_code == 404
+
+
+# ── Round 8: /api/diff ────────────────────────────────────────────────
+
+
+def test_diff_success():
+    client, engine = _build_client()
+    engine.diff_facts = AsyncMock(return_value={
+        "fact_a": {"id": "f1", "content": "old", "scope": "auth", "confidence": 0.7},
+        "fact_b": {"id": "f2", "content": "new", "scope": "auth", "confidence": 0.9},
+        "changes": [{"field": "content", "old": "old", "new": "new"}],
+        "entity_changes": {"added": [], "removed": [], "changed": []},
+    })
+    resp = client.get("/api/diff/f1/f2")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["changes"]) == 1
+    assert data["changes"][0]["field"] == "content"
+
+
+def test_diff_fact_not_found():
+    client, engine = _build_client()
+    engine.diff_facts = AsyncMock(side_effect=ValueError("Fact 'missing' not found."))
+    resp = client.get("/api/diff/missing/f2")
+    assert resp.status_code == 404
+
+
+# ── Round 8: /api/audit ───────────────────────────────────────────────
+
+
+def test_audit_returns_log():
+    client, engine = _build_client()
+    engine.get_audit_log = AsyncMock(return_value=[
+        {"id": "a1", "operation": "commit", "agent_id": "agent-1", "timestamp": "2024-01-01T00:00:00+00:00"},
+    ])
+    resp = client.get("/api/audit")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+    assert resp.json()[0]["operation"] == "commit"
+
+
+def test_audit_with_filters():
+    client, engine = _build_client()
+    engine.get_audit_log = AsyncMock(return_value=[])
+    resp = client.get("/api/audit?agent_id=agent-1&operation=commit&limit=50")
+    assert resp.status_code == 200
+    engine.get_audit_log.assert_called_once_with(
+        agent_id="agent-1",
+        operation="commit",
+        from_ts=None,
+        to_ts=None,
+        limit=50,
+    )
+
+
+def test_audit_empty_returns_list():
+    client, _ = _build_client()
+    resp = client.get("/api/audit")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
