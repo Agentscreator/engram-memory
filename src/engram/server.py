@@ -99,10 +99,22 @@ async def _check_key_generation(ws: Any) -> dict[str, Any] | None:
 async def engram_status() -> dict[str, Any]:
     """Check whether Engram is configured and get the next setup step.
 
-    Call this FIRST in every new session. If status is 'ready', proceed
-    to engram_query. If not, read 'next_prompt' and say it to the user.
+    **Precondition:** Call this FIRST in every new session before any other tool.
 
-    Returns: {status, next_prompt?, engram_id?, mode?}
+    **When to call:**
+    - At the start of every agent session
+    - After any error or unexpected state
+
+    **Returns:** {status, next_prompt?, engram_id?, mode?, schema?, anonymous_mode?}
+
+    Example: {"status": "ready", "mode": "team", "engram_id": "ENG-XXXXXX", "schema": "engram"}
+
+    **What NOT to do:**
+    - Don't skip this and call engram_query directly — you may be disconnected
+    - Don't assume status is 'ready' without checking first
+
+    **Common mistake:** Starting tasks without calling engram_status first, leading to
+    "disconnected" errors mid-task.
     """
     from engram.workspace import read_workspace, WORKSPACE_PATH
 
@@ -501,6 +513,21 @@ async def engram_commit(
 ) -> dict[str, Any]:
     """Commit a claim about the codebase to shared team memory.
 
+    **Precondition:** Call engram_status first to ensure workspace is ready.
+
+    **When to call:**
+    - After discovering something worth preserving (side effects, failures, constraints)
+    - When making architectural decisions
+    - After tests reveal behavior not documented elsewhere
+
+    **What NOT to do:**
+    - Don't commit speculative claims — only verified discoveries
+    - Don't commit secrets, API keys, or credentials (will be rejected)
+    - Don't call more than 5 times per task; batch related facts
+
+    **Common mistake:** Forgetting to commit discoveries, leaving the next
+    agent to re-discover the same information.
+
     Use this when your agent discovers something worth preserving:
     a hidden side effect, a failed approach, an undocumented constraint,
     an architectural decision, or a configuration detail.
@@ -638,18 +665,20 @@ async def engram_query(
 ) -> list[dict[str, Any]]:
     """Query what your team's agents collectively know about a topic.
 
-    Call this BEFORE starting work on any area of the codebase. It returns
-    claims from all agents across all engineers, ordered by relevance.
+    **Precondition:** Call engram_status first to ensure workspace is ready.
 
-    IMPORTANT: Claims marked with has_open_conflict=true are disputed.
-    Do not treat them as settled facts. Check the conflict details before
-    relying on them.
+    **When to call:**
+    - BEFORE starting any task or feature work
+    - When you encounter an error and need context
+    - Before making architectural decisions
 
-    IMPORTANT: Claims marked with verified=false lack provenance. Treat
-    them with appropriate skepticism.
+    **What NOT to do:**
+    - Don't call this AFTER you've already started working — you wasted context
+    - Don't make multiple broad queries; be specific with your topic
+    - Don't treat disputed claims (has_open_conflict=true) as settled facts
 
-    IMPORTANT: Do not call this tool more than 3 times per task. Refine
-    your query to be specific rather than making multiple broad queries.
+    **Common mistake:** Starting work without engram_query, then rediscovering
+    what another agent already documented.
 
     Parameters:
     - topic: What you want to know about. Be specific. BAD: "auth".
@@ -722,6 +751,18 @@ async def engram_conflicts(
     status: str = "open",
 ) -> list[dict[str, Any]]:
     """See where agents disagree about the codebase.
+
+    **When to call:**
+    - Before making architectural decisions
+    - When setting up a new service or feature
+    - After any major refactoring that might affect shared contracts
+
+    **What NOT to do:**
+    - Don't ignore conflicts — they indicate the team has contradictory beliefs
+    - Don't rely on claims with has_open_conflict=true without resolving them
+
+    **Common mistake:** Making decisions without checking conflicts first, leading
+    to conflicting implementations by different team members.
 
     Returns pairs of claims that contradict each other. Each conflict
     includes both claims, the detection method, severity, and an
