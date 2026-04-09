@@ -288,7 +288,7 @@ def build_rest_routes(
             return _error(str(exc), status=500)
 
         return JSONResponse(results)
-    
+
     async def api_tail(request: Request) -> JSONResponse:
         after = request.query_params.get("after")
         if not after:

@@ -109,5 +109,8 @@ def test_tail_command_prints_fact_and_stops(monkeypatch):
 
     assert result.exit_code == 0
     assert "Starting tail stream. Press Ctrl+C to stop." in result.output
-    assert "[agent/josh] [payments] The Stripe webhook timeout is 30s. (confidence: 0.95)" in result.output
+    assert (
+        "[agent/josh] [payments] The Stripe webhook timeout is 30s. (confidence: 0.95)"
+        in result.output
+    )
     assert "Stopped." in result.output

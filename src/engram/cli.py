@@ -853,6 +853,7 @@ def search(topic: str, scope: str | None, limit: int, as_json: bool) -> None:
 
     click.echo(output)
 
+
 # ── engram tail ──────────────────────────────────────────────────────
 
 
@@ -946,8 +947,8 @@ def tail(scope: str | None, limit: int, interval: float, base_url: str) -> None:
         click.echo("\nStopped.")
     except Exception as exc:
         raise click.ClickException(str(exc))
-    
-    
+
+
 # ── engram verify ────────────────────────────────────────────────────
 
 
