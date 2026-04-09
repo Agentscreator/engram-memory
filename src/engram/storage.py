@@ -1427,6 +1427,11 @@ class SQLiteStorage(BaseStorage):
         """Return list of active invite keys."""
         cursor = await self.db.execute(
             "SELECT * FROM invite_keys WHERE engram_id = ? ORDER BY created_at DESC",
+            (self.engram_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
     # ── Webhook methods ───────────────────────────────────────────────
 
     async def insert_webhook(self, webhook: dict[str, Any]) -> None:
