@@ -1051,6 +1051,160 @@ def stats(output_json: bool) -> None:
         click.echo(f"Error: {e}", err=True)
 
 
+# ── engram whoami ───────────────────────────────────────────────────────────
+
+
+@main.command()
+def whoami() -> None:
+    """Show current user identity and agent info.
+
+    Displays:
+    - Current engineer ID (if set)
+    - Agent ID (if set)
+    - Anonymous mode status
+    """
+    from engram.workspace import read_workspace
+    import os
+
+    ws = read_workspace()
+
+    if not ws:
+        click.echo("=== Engram Identity ===")
+        click.echo("Status: Not configured")
+        return
+
+    engineer = os.environ.get("ENGRAM_ENGINEER", os.environ.get("USER", "unknown"))
+    agent_id = os.environ.get("ENGRAM_AGENT_ID", "auto-generated")
+
+    click.echo("=== Engram Identity ===")
+    click.echo(f"Engineer: {engineer}")
+    click.echo(f"Agent ID: {agent_id}")
+    click.echo(f"Anonymous Mode: {'Enabled' if ws.anonymous_mode else 'Disabled'}")
+
+    if ws.anon_agents:
+        click.echo("Note: Agent ID is randomized each session")
+
+
+# ── engram info ───────────────────────────────────────────────────────────────
+
+
+@main.command()
+def info() -> None:
+    """Display detailed workspace information and connection status.
+
+    Combines output from status, whoami, and config show in one command.
+    """
+    from engram.workspace import read_workspace, WORKSPACE_PATH
+    import os
+
+    ws = read_workspace()
+
+    if not ws and not WORKSPACE_PATH.exists():
+        db_url = os.environ.get("ENGRAM_DB_URL", "")
+        if not db_url:
+            click.echo("=== Engram Info ===")
+            click.echo("Status: Not configured")
+            click.echo("\nTo get started:")
+            click.echo("  1. Set ENGRAM_DB_URL or use engram join <invite-key>")
+            click.echo("  2. Run: engram setup")
+            return
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: Invalid workspace configuration")
+        return
+
+    engineer = os.environ.get("ENGRAM_ENGINEER", os.environ.get("USER", "unknown"))
+    agent_id = os.environ.get("ENGRAM_AGENT_ID", "auto-generated")
+
+    click.echo("=== Engram Workspace Info ===")
+    click.echo(f"Workspace ID: {ws.engram_id}")
+    click.echo(f"Mode: {'Team (PostgreSQL)' if ws.db_url else 'Local (SQLite)'}")
+    click.echo(f"Schema: {ws.schema}")
+    if ws.display_name:
+        click.echo(f"Display Name: {ws.display_name}")
+    click.echo("")
+    click.echo("=== Identity ===")
+    click.echo(f"Engineer: {engineer}")
+    click.echo(f"Agent ID: {agent_id}")
+    click.echo("")
+    click.echo("=== Privacy ===")
+    click.echo(f"Anonymous Mode: {'Enabled' if ws.anonymous_mode else 'Disabled'}")
+    click.echo(f"Anon Agents: {'Enabled' if ws.anon_agents else 'Disabled'}")
+    click.echo("")
+    click.echo("=== Connection ===")
+    if ws.db_url:
+        click.echo(
+            f"Database: {ws.db_url[:40]}..." if len(ws.db_url) > 40 else f"Database: {ws.db_url}"
+        )
+    else:
+        click.echo("Storage: Local SQLite")
+        click.echo(f"Location: {DEFAULT_DB_PATH}")
+
+
+# ── engram completion ─────────────────────────────────────────────────────
+
+
+@main.command()
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+def completion(shell: str) -> None:
+    """Install shell tab completion for engram.
+
+    Examples:
+        engram completion bash >> ~/.bashrc
+        engram completion zsh >> ~/.zshrc
+        engram completion fish > ~/.config/fish/completions/engram.fish
+    """
+    if shell == "bash":
+        script = """# engram completion for bash
+_engram_completions() {
+    local cur prev
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    commands="install serve verify reembed config tail status search stats completion setup whoami info"
+    COMPREPLY=( $(compgen -W "${commands}" -- ${cur}) )
+    return 0
+}
+complete -F _engram_completions engram
+"""
+    elif shell == "zsh":
+        script = """# engram completion for zsh
+engram() {
+    local -a commands
+    commands=(
+        'install:auto-detect MCP clients and add Engram config'
+        'serve:start the Engram MCP server'
+        'verify:verify Engram installation'
+        'reembed:re-embed facts when embedding model changes'
+        'config:view and update workspace configuration'
+        'tail:live stream of workspace commits'
+        'status:show workspace status'
+        'search:query the workspace'
+        'stats:show workspace statistics'
+        'completion:install shell tab completion'
+        'setup:one-command setup'
+        'whoami:show current user identity'
+        'info:display detailed workspace info'
+    )
+    _describe 'command' commands
+}
+"""
+    else:  # fish
+        script = """# engram completion for fish
+complete -c engram -n "__fish_use_subcommand" -a "install serve verify reembed config tail status search stats completion setup" -d "Engram command"
+"""
+
+    click.echo(script)
+    click.echo(f"\n# Add to your shell config:")
+    if shell == "bash":
+        click.echo("  engram completion bash >> ~/.bashrc")
+    elif shell == "zsh":
+        click.echo("  engram completion zsh >> ~/.zshrc")
+    else:
+        click.echo("  engram completion fish > ~/.config/fish/completions/engram.fish")
+
+
 # ── engram verify ────────────────────────────────────────────────────
 
 

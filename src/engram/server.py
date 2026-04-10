@@ -46,8 +46,11 @@ mcp = FastMCP(
 # Engine and storage are initialized at startup via cli.py
 _engine: EngramEngine | None = None
 _storage: BaseStorage | None = None
-_auth_enabled: bool = False
 _rate_limiter: Any = None
+
+# In-memory query tracking for loop detection (Issue #66)
+# Tracks queries per agent per session to detect repeated queries
+_query_history: dict[str, list[str]] = {}  # agent_id -> list of query topics
 
 
 def get_engine() -> EngramEngine:
@@ -718,6 +721,27 @@ async def engram_query(
     _disc = await _check_key_generation(_ws)
     if _disc:
         return _disc
+
+    # Query loop detection (Issue #66)
+    # Track queries per agent to detect repeated queries without new results
+    effective_agent = agent_id or "anonymous"
+    topic_key = topic.lower().strip()
+
+    # Initialize agent's query history if needed
+    if effective_agent not in _query_history:
+        _query_history[effective_agent] = []
+
+    # Count how many times this topic has been queried
+    topic_count = _query_history[effective_agent].count(topic_key)
+    _query_history[effective_agent].append(topic_key)
+
+    # Log warning if query repeated 3+ times
+    if topic_count >= 2:  # 3rd+ time
+        logger.warning(
+            f"Query loop detected: agent '{effective_agent}' queried topic '{topic}' "
+            f"{topic_count + 1} times this session with no new commits. "
+            "Consider committing findings or reframing the question."
+        )
 
     # Scope read permission check when auth is enabled and scope is specified
     if _auth_enabled and _storage is not None and agent_id and scope:

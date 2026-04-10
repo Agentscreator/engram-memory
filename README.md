@@ -177,6 +177,25 @@ Your memory is yours. This isn't a footnote — it's the foundation Engram is bu
 | `engram_resolve` | Settle disagreements |
 | `engram_promote` | Graduate ephemeral memory to durable |
 
+### CLI Commands
+
+```bash
+engram install              # Auto-detect IDEs and configure MCP
+engram serve               # Start MCP server (stdio mode)
+engram serve --http        # Start MCP server (HTTP mode)
+engram setup              # One-command workspace setup
+engram status             # Show workspace status
+engram info               # Display detailed workspace info
+engram whoami             # Show current user identity
+engram search <query>     # Query workspace from terminal
+engram stats              # Show workspace statistics
+engram config show        # Display configuration
+engram config set <key>   # Update configuration
+engram tail               # Live stream of workspace commits
+engram verify             # Verify installation
+engram completion <shell> # Install shell tab completion
+```
+
 ---
 
 ## Conflict Detection
