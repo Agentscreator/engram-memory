@@ -1254,15 +1254,95 @@ def setup(
     click.echo("\n=== Engram Setup ===")
     click.echo("Starting one-command setup...\n")
 
-    # Step 1: Get database URL
+    # Step 1: Choose backend (interactive when no --db-url given)
     if not db_url:
         db_url = os.environ.get("ENGRAM_DB_URL", "")
 
+    backend_mode: str | None = None  # "cloud", "self-hosted", "local"
+
     if not db_url and not dry_run:
-        click.echo("❌ Database URL required.")
-        click.echo("  Set ENGRAM_DB_URL env var or pass --db-url")
-        click.echo("  Get a free database at: neon.tech, supabase.com, or railway.app")
-        return
+        try:
+            import questionary
+        except ImportError:
+            click.echo("❌ questionary is required for interactive setup.")
+            click.echo("  Run: pip install questionary")
+            click.echo("  Or pass --db-url directly.")
+            return
+
+        choice = questionary.select(
+            "Which database would you like to use for storing team memory?",
+            choices=[
+                questionary.Choice(
+                    "Engram Cloud (Recommended)  —  Hosted backend, dashboard included, invite key"
+                    " required. Zero infrastructure setup.",
+                    value="cloud",
+                ),
+                questionary.Choice(
+                    "Self-hosted (PostgreSQL + pgvector)  —  Run your own server."
+                    " Full control, multi-machine.",
+                    value="self-hosted",
+                ),
+                questionary.Choice(
+                    "Local only (SQLite)  —  No dashboard, no cross-agent sync."
+                    " Single machine, offline.",
+                    value="local",
+                ),
+                questionary.Choice(
+                    "Chat about this",
+                    value="chat",
+                ),
+            ],
+            use_arrow_keys=True,
+        ).ask()
+
+        if choice is None:
+            # User hit Ctrl-C
+            return
+
+        if choice == "chat":
+            click.echo("")
+            click.echo("Engram storage options:")
+            click.echo("")
+            click.echo("  Engram Cloud  (Recommended for most teams)")
+            click.echo("    • Hosted backend managed by the Engram team")
+            click.echo("    • Dashboard and invite-key sharing included")
+            click.echo("    • Join with:  engram join <invite-key>")
+            click.echo("    • No servers to run or maintain")
+            click.echo("")
+            click.echo("  Self-hosted PostgreSQL + pgvector")
+            click.echo("    • You control the database (Neon, Supabase, Railway, or your own)")
+            click.echo("    • Required for on-prem / air-gapped environments")
+            click.echo("    • Pass your URL:  engram setup --db-url postgres://...")
+            click.echo("")
+            click.echo("  Local only (SQLite)")
+            click.echo("    • Zero config — works offline immediately")
+            click.echo("    • Knowledge stays on this machine (no cross-agent sync)")
+            click.echo("    • Run:  engram setup --local")
+            click.echo("")
+            return
+
+        backend_mode = choice
+
+        if backend_mode == "cloud":
+            click.echo("")
+            click.echo("Engram Cloud backend selected.")
+            click.echo("  To join an existing workspace:  engram join <invite-key>")
+            click.echo("  (Cloud workspaces are provisioned via invite key — no DB URL needed.)")
+            return
+
+        if backend_mode == "self-hosted":
+            db_url = questionary.text(
+                "PostgreSQL connection URL:",
+                placeholder="postgres://user:password@host:5432/dbname",
+            ).ask()
+            if not db_url:
+                click.echo("❌ No database URL provided. Aborting.")
+                return
+
+        if backend_mode == "local":
+            click.echo("")
+            click.echo("Local SQLite mode selected — no database URL needed.")
+            db_url = ""  # empty string = local mode throughout
 
     # Step 2: Detect and configure MCP clients
     if skip_mcp:
@@ -1306,8 +1386,11 @@ def setup(
 
             display_name = f"{hostname}-{int(time.time())}"
 
-        # Set env for initialization
-        os.environ["ENGRAM_DB_URL"] = db_url
+        # Set env for initialization (only when using PostgreSQL)
+        if db_url:
+            os.environ["ENGRAM_DB_URL"] = db_url
+        else:
+            os.environ.pop("ENGRAM_DB_URL", None)
 
         async def init_workspace():
             # Import server to get engram_init
