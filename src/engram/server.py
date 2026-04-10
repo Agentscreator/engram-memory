@@ -595,7 +595,7 @@ async def engram_commit(
                      or context that hasn't proven its value yet.
 
     Returns: {fact_id, committed_at, duplicate, conflicts_detected,
-              memory_op, supersedes_fact_id, durability}
+              memory_op, supersedes_fact_id, durability, suggestions}
     """
     engine = get_engine()
 

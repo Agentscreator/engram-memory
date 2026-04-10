@@ -80,6 +80,54 @@ class EngramEngine:
         self._escalation_task = None
         self._webhook_task = None
 
+    def _build_commit_suggestions(
+        self,
+        content: str,
+        scope: str,
+        keywords: list[str] | None = None,
+        entities: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
+        text = content.lower()
+        suggestions: list[str] = []
+
+        def add(msg: str) -> None:
+            if msg not in suggestions and len(suggestions) < 2:
+                suggestions.append(msg)
+
+        if "rate limit" in text or "rate-limit" in text:
+            add("Consider also committing the retry strategy.")
+            add("Consider also committing the circuit breaker threshold.")
+
+        if "retry" in text or "backoff" in text:
+            add("Consider also committing the max retry count.")
+            add("Consider also committing the timeout behavior.")
+
+        if "timeout" in text:
+            add("Consider also committing the retry policy.")
+            add("Consider also committing the circuit breaker threshold.")
+
+        if "webhook" in text:
+            add("Consider also committing the retry behavior.")
+            add("Consider also committing the signature validation rule.")
+
+        if "cache" in text:
+            add("Consider also committing the cache TTL.")
+            add("Consider also committing the invalidation strategy.")
+
+        if "queue" in text or "worker" in text:
+            add("Consider also committing the retry policy.")
+            add("Consider also committing the dead-letter queue behavior.")
+
+        if "database" in text or "postgres" in text or "mysql" in text:
+            add("Consider also committing the connection pool settings.")
+            add("Consider also committing the migration or schema dependency.")
+
+        if "auth" in text or "token" in text or "jwt" in text:
+            add("Consider also committing the token expiry behavior.")
+            add("Consider also committing the refresh or revocation flow.")
+
+        return suggestions
+
     # ── engram_commit ────────────────────────────────────────────────
 
     async def commit(
@@ -135,6 +183,7 @@ class EngramEngine:
                 "duplicate": False,
                 "conflicts_detected": False,
                 "memory_op": "none",
+                "suggestions": [],
             }
 
         # delete — close an existing lineage and return without a new fact
@@ -152,6 +201,7 @@ class EngramEngine:
                 "conflicts_detected": False,
                 "memory_op": "delete",
                 "deleted_lineage": corrects_lineage,
+                "suggestions": [],
             }
 
         if not content or not content.strip():
@@ -199,6 +249,7 @@ class EngramEngine:
                 "committed_at": datetime.now(timezone.utc).isoformat(),
                 "duplicate": True,
                 "conflicts_detected": False,
+                "suggestions": [],
             }
 
         # Step 5: Generate embedding
@@ -208,6 +259,13 @@ class EngramEngine:
         # Step 6: Extract keywords and entities
         keywords = extract_keywords(content)
         entities = extract_entities(content)
+
+        suggestions = self._build_commit_suggestions(
+            content=content,
+            scope=scope,
+            keywords=keywords,
+            entities=entities,
+        )
 
         # Step 7: Determine agent_id
         if not agent_id:
@@ -336,6 +394,7 @@ class EngramEngine:
             "memory_op": operation,
             "supersedes_fact_id": supersedes_fact_id,
             "durability": durability,
+            "suggestions": suggestions,
         }
 
         # Audit + fire event (fire-and-forget; errors must not block the commit)

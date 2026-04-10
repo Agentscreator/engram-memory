@@ -22,6 +22,24 @@ async def test_commit_basic(engine: EngramEngine):
     assert result["duplicate"] is False
     assert "fact_id" in result
     assert "committed_at" in result
+    assert "suggestions" in result
+    assert isinstance(result["suggestions"], list)
+    assert len(result["suggestions"]) <= 2
+
+
+@pytest.mark.asyncio
+async def test_commit_returns_proactive_suggestions_for_rate_limit(engine: EngramEngine):
+    result = await engine.commit(
+        content="The auth service rate limit is 1000 req/s per IP",
+        scope="auth",
+        confidence=0.9,
+        agent_id="agent-1",
+    )
+
+    assert "suggestions" in result
+    assert isinstance(result["suggestions"], list)
+    assert len(result["suggestions"]) <= 2
+    assert any("retry" in s.lower() for s in result["suggestions"])
 
 
 @pytest.mark.asyncio
@@ -39,6 +57,21 @@ async def test_commit_dedup(engine: EngramEngine):
         agent_id="agent-2",
     )
     assert result2["duplicate"] is True
+    assert result2["suggestions"] == []
+
+
+@pytest.mark.asyncio
+async def test_commit_none_operation_returns_empty_suggestions(engine: EngramEngine):
+    result = await engine.commit(
+        content="No new fact to add",
+        scope="general",
+        confidence=0.8,
+        operation="none",
+    )
+
+    assert result["memory_op"] == "none"
+    assert result["fact_id"] is None
+    assert result["suggestions"] == []
 
 
 @pytest.mark.asyncio
@@ -362,6 +395,7 @@ async def test_commit_delete_operation(engine: EngramEngine):
     )
     assert result["memory_op"] == "delete"
     assert result["deleted_lineage"] == lineage
+    assert result["suggestions"] == []
 
     # Original fact must be retired
     retired = await engine.storage.get_fact_by_id(r1["fact_id"])
