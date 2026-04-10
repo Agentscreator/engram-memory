@@ -1,0 +1,421 @@
+{
+    "5ire": {
+        "path": "5ire/mcp_config.json",
+        "server_type_key": "mcpServers",
+        "family": "Desktop",
+        "config_path": {
+            "appdata": true,
+            "appsupport": true,
+            "xdg": false,
+            "syshome": false
+        }
+    },
+    "Aider": {
+        "path": ".aider/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "CLI agents",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Amazon Q Developer CLI": {
+        "path": ".aws/amazonq/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "CLI agents",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Augment Code": {
+        "path": ".augment/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "AI-native",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "BoltAI": {
+        "path": "BoltAI/mcp_config.json",
+        "server_type_key": "mcpServers",
+        "family": "Desktop",
+        "config_path": {
+            "appdata": true,
+            "appsupport": true,
+            "xdg": false,
+            "syshome": false
+        }
+    },
+    "ChatBox": {
+        "path": "xyz.chatboxapp.app/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "Desktop",
+        "config_path": {
+            "appdata": true,
+            "appsupport": true,
+            "xdg": false,
+            "syshome": false
+        }
+    },
+    "Cherry Studio": {
+        "path": "CherryStudio/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "Desktop",
+        "config_path": {
+            "appdata": true,
+            "appsupport": true,
+            "xdg": false,
+            "syshome": false
+        }
+    },
+    "Claude Code": {
+        "path": ".claude/settings.json",
+        "server_type_key": "mcpServers",
+        "family": "Anthropic",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Claude Desktop": {
+        "path": "Claude/claude_desktop_config.json",
+        "server_type_key": "mcpServers",
+        "family": "Anthropic",
+        "config_path": {
+            "appdata": true,
+            "appsupport": true,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Cline": {
+        "path": ".vscode/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+        "server_type_key": "mcpServers",
+        "family": "VS Code",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Cline (VS Code Insiders)": {
+        "path": ".vscode-insiders/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+        "server_type_key": "mcpServers",
+        "family": "VS Code",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Codex": {
+        "path": ".codex/config.toml",
+        "server_type_key": "mcp_servers",
+        "family": "CLI agents",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        },
+        "format": "toml"
+    },
+    "Cody (Sourcegraph)": {
+        "path": "cody/mcp_servers.json",
+        "server_type_key": "mcpServers",
+        "family": "VS Code",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": true,
+            "syshome": false
+        }
+    },
+    "Continue": {
+        "path": ".continue/config.json",
+        "server_type_key": "mcpServers",
+        "family": "VS Code",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Cursor": {
+        "path": ".cursor/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "AI-native",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Devin CLI": {
+        "path": "devin/config.json",
+        "server_type_key": "mcpServers",
+        "family": "CLI agents",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": true,
+            "syshome": false
+        }
+    },
+    "Dive": {
+        "path": "Dive/mcp_config.json",
+        "server_type_key": "mcpServers",
+        "family": "Desktop",
+        "config_path": {
+            "appdata": true,
+            "appsupport": true,
+            "xdg": false,
+            "syshome": false
+        }
+    },
+    "Emacs (mcp.el)": {
+        "path": ".emacs.d/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "Editor",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Gemini CLI": {
+        "path": ".gemini/settings.json",
+        "server_type_key": "mcpServers",
+        "family": "CLI agents",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "GitHub Copilot CLI": {
+        "path": ".copilot/mcp-config.json",
+        "server_type_key": "mcpServers",
+        "family": "CLI agents",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Highlight AI": {
+        "path": "Highlight/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "Desktop",
+        "config_path": {
+            "appdata": true,
+            "appsupport": true,
+            "xdg": false,
+            "syshome": false
+        }
+    },
+    "HyperChat": {
+        "path": "HyperChat/mcp_config.json",
+        "server_type_key": "mcpServers",
+        "family": "Desktop",
+        "config_path": {
+            "appdata": true,
+            "appsupport": true,
+            "xdg": false,
+            "syshome": false
+        }
+    },
+    "IntelliJ Idea (JetBrains)": {
+        "path": ".idea/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "AI-native",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Kiro (Amazon)": {
+        "path": ".kiro/settings/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "AI-native",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "msty": {
+        "path": "msty/mcp_config.json",
+        "server_type_key": "mcpServers",
+        "family": "Desktop",
+        "config_path": {
+            "appdata": true,
+            "appsupport": true,
+            "xdg": false,
+            "syshome": false
+        }
+    },
+    "Neovim (mcphub.nvim)": {
+        "path": "mcphub/servers.json",
+        "server_type_key": "mcpServers",
+        "family": "Editor",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": true,
+            "syshome": false
+        }
+    },
+    "OpenCode": {
+        "path": "opencode/opencode.json",
+        "server_type_key": "mcp",
+        "family": "CLI agents",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": true,
+            "syshome": false
+        }
+    },
+    "Qwen Code": {
+        "path": ".qwen-code/settings.json",
+        "server_type_key": "mcpServers",
+        "family": "CLI agents",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Refact.ai": {
+        "path": ".refact/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "AI-native",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Roo Code": {
+        "path": ".vscode/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json",
+        "server_type_key": "mcpServers",
+        "family": "VS Code",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Roo Code (VS Code Insiders)": {
+        "path": ".vscode-insiders/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json",
+        "server_type_key": "mcpServers",
+        "family": "VS Code",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Theia IDE": {
+        "path": ".theia/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "AI-native",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Trae": {
+        "path": ".trae/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "AI-native",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "VS Code (Copilot)": {
+        "path": ".vscode/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "VS Code",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "VS Code Insiders (Copilot)": {
+        "path": ".vscode-insiders/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "VS Code",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Warp": {
+        "path": ".warp/mcp.json",
+        "server_type_key": "mcpServers",
+        "family": "Terminal",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Windsurf": {
+        "path": ".codeium/windsurf/mcp_config.json",
+        "server_type_key": "mcpServers",
+        "family": "AI-native",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": false,
+            "syshome": true
+        }
+    },
+    "Zed": {
+        "path": "zed/settings.json",
+        "server_type_key": "context_servers",
+        "family": "AI-native",
+        "config_path": {
+            "appdata": false,
+            "appsupport": false,
+            "xdg": true,
+            "syshome": false
+        }
+    }
+}
