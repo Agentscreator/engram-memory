@@ -52,6 +52,17 @@ Your agent handles the rest.
 
 ---
 
+## First-Class IDE Targets
+
+Engram is currently optimized for MCP-native workflows in:
+
+- [Claude Code](./docs/quickstart/claude-code.md)
+- [Windsurf](./docs/quickstart/windsurf.md)
+- [Zed](./docs/quickstart/zed.md)
+
+Each guide includes the expected MCP config path, restart step, verification flow, and common setup mistakes.
+
+
 ## Running Locally
 
 If you want to run Engram from this repository during development:

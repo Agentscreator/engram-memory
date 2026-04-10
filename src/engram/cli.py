@@ -26,7 +26,11 @@ _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 _PATH_SYSTEM_HOME = Path.home()
 _PATH_APPDATA_DIR = Path(os.environ["APPDATA"]) if "APPDATA" in os.environ else None
 _PATH_APPSUPPORT_DIR = _PATH_SYSTEM_HOME / "Library" / "Application Support"  # Mac only
-_PATH_XDG_DIR = Path(os.environ["XDG_CONFIG_HOME"]) if "XDG_CONFIG_HOME" in os.environ else None
+_PATH_XDG_DIR = (
+    Path(os.environ["XDG_CONFIG_HOME"])
+    if "XDG_CONFIG_HOME" in os.environ
+    else _PATH_SYSTEM_HOME / ".config"
+)
 
 
 @click.group()
@@ -40,28 +44,46 @@ def main() -> None:
 # Read in the list of known client config locations and get their appropriate
 # config file (different systems have them in different places).
 
-_AGENT_CLIENTS = {}
+_MCP_CLIENTS = {}
 with open(os.path.join(_DATA_DIR, "cli-agent-clients.json"), "r") as file:
     agent_clients_json = json.load(file)
     for key in agent_clients_json.keys():
-        _AGENT_CLIENTS[key] = {}
+        _MCP_CLIENTS[key] = {}
         agent_config_path = agent_clients_json[key]["path"]
         if agent_clients_json[key]["config_path"]["appdata"] and _PATH_APPDATA_DIR:
-            _AGENT_CLIENTS[key]["path"] = Path(_PATH_APPDATA_DIR / agent_config_path)
+            _MCP_CLIENTS[key]["path"] = Path(_PATH_APPDATA_DIR / agent_config_path)
         elif agent_clients_json[key]["config_path"]["appsupport"] and _PATH_APPSUPPORT_DIR:
-            _AGENT_CLIENTS[key]["path"] = Path(_PATH_APPSUPPORT_DIR / agent_config_path)
+            _MCP_CLIENTS[key]["path"] = Path(_PATH_APPSUPPORT_DIR / agent_config_path)
         elif agent_clients_json[key]["config_path"]["xdg"] and _PATH_XDG_DIR:
-            _AGENT_CLIENTS[key]["path"] = Path(_PATH_XDG_DIR / agent_config_path)
+            _MCP_CLIENTS[key]["path"] = Path(_PATH_XDG_DIR / agent_config_path)
         elif agent_clients_json[key]["config_path"]["syshome"]:
-            _AGENT_CLIENTS[key]["path"] = Path(_PATH_SYSTEM_HOME / agent_config_path)
-        if "path" not in _AGENT_CLIENTS[key]:
-            _AGENT_CLIENTS[key]["path"] = Path("ValidPathNotFound")
-        _AGENT_CLIENTS[key]["key"] = agent_clients_json[key]["server_type_key"]
+            _MCP_CLIENTS[key]["path"] = Path(_PATH_SYSTEM_HOME / agent_config_path)
+        if "path" not in _MCP_CLIENTS[key]:
+            _MCP_CLIENTS[key]["path"] = Path("ValidPathNotFound")
+        _MCP_CLIENTS[key]["key"] = agent_clients_json[key]["server_type_key"]
 
 _ENGRAM_MCP_ENTRY = {
     "command": "uvx",
     "args": ["--from", "engram-team@latest", "engram", "serve"],
 }
+
+
+def _engram_mcp_entry_for_client(client_name: str) -> dict[str, object]:
+    import os
+
+    mcp_url = os.environ.get("ENGRAM_MCP_URL", "https://mcp.engram.app/mcp")
+
+    if client_name == "Windsurf":
+        return {"serverUrl": mcp_url}
+
+    if client_name == "Zed":
+        return {"url": mcp_url}
+
+    return {
+        "command": "uvx",
+        "args": ["--from", "engram-team@latest", "engram", "serve"],
+    }
+
 
 # ── Agent steering / instructions ────────────────────────────────────
 # After writing the MCP config, we also write agent instruction files so
@@ -159,7 +181,7 @@ def install(dry_run: bool) -> None:
     skipped = []
     steering_written = []
 
-    for client_name, info in _AGENT_CLIENTS.items():
+    for client_name, info in _MCP_CLIENTS.items():
         config_path: Path = info["path"]
         key: str = info["key"]
         fmt = info.get("format", "json")
@@ -211,7 +233,7 @@ def install(dry_run: bool) -> None:
                     steering_written.extend(_write_steering(client_name, dry_run))
                     continue
 
-                servers["engram"] = _ENGRAM_MCP_ENTRY
+                servers["engram"] = _engram_mcp_entry_for_client(client_name)
 
                 if not dry_run:
                     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1002,7 +1024,7 @@ def verify(verbose: bool) -> None:
     detected = []
     missing = []
 
-    for client_name, info in _AGENT_CLIENTS.items():
+    for client_name, info in _MCP_CLIENTS.items():
         config_path: Path = info["path"]
         try:
             if config_path.exists():
@@ -1254,15 +1276,95 @@ def setup(
     click.echo("\n=== Engram Setup ===")
     click.echo("Starting one-command setup...\n")
 
-    # Step 1: Get database URL
+    # Step 1: Choose backend (interactive when no --db-url given)
     if not db_url:
         db_url = os.environ.get("ENGRAM_DB_URL", "")
 
+    backend_mode: str | None = None  # "cloud", "postgres", "sqlite"
+
     if not db_url and not dry_run:
-        click.echo("❌ Database URL required.")
-        click.echo("  Set ENGRAM_DB_URL env var or pass --db-url")
-        click.echo("  Get a free database at: neon.tech, supabase.com, or railway.app")
-        return
+        try:
+            import questionary
+        except ImportError:
+            click.echo("❌ questionary is required for interactive setup.")
+            click.echo("  Run: pip install questionary")
+            click.echo("  Or pass --db-url directly.")
+            return
+
+        choice = questionary.select(
+            "Which storage backend do you want to use?",
+            choices=[
+                questionary.Choice(
+                    "Engram Cloud (Recommended)\n     Hosted backend with dashboard included."
+                    " Requires an invite key. Zero infrastructure setup.",
+                    value="cloud",
+                ),
+                questionary.Choice(
+                    "PostgreSQL (Self-hosted)\n     Run your own server with pgvector."
+                    " Full control, multi-machine support.",
+                    value="postgres",
+                ),
+                questionary.Choice(
+                    "SQLite (Local only)\n     No dashboard, no cross-agent sync."
+                    " Single machine, offline use only.",
+                    value="sqlite",
+                ),
+                questionary.Choice(
+                    "Help me choose",
+                    value="help",
+                ),
+            ],
+            use_arrow_keys=True,
+        ).ask()
+
+        if choice is None:
+            # User hit Ctrl-C
+            return
+
+        if choice == "help":
+            click.echo("")
+            click.echo("Engram storage options:")
+            click.echo("")
+            click.echo("  Engram Cloud  (Recommended)")
+            click.echo("    • Hosted backend managed by the Engram team")
+            click.echo("    • Dashboard and invite-key sharing included")
+            click.echo("    • Join with:  engram join <invite-key>")
+            click.echo("    • No servers to run or maintain")
+            click.echo("")
+            click.echo("  PostgreSQL (Self-hosted)")
+            click.echo("    • You control the database (Neon, Supabase, Railway, or your own)")
+            click.echo("    • Required for on-prem / air-gapped environments")
+            click.echo("    • Pass your URL:  engram setup --db-url postgres://...")
+            click.echo("")
+            click.echo("  SQLite (Local only)")
+            click.echo("    • Zero config — works offline immediately")
+            click.echo("    • Knowledge stays on this machine (no cross-agent sync)")
+            click.echo("    • Run:  engram setup --local")
+            click.echo("")
+            return
+
+        backend_mode = choice
+
+        if backend_mode == "cloud":
+            click.echo("")
+            click.echo("Engram Cloud selected.")
+            click.echo("  To join an existing workspace:  engram join <invite-key>")
+            click.echo("  (Cloud workspaces are provisioned via invite key — no DB URL needed.)")
+            return
+
+        if backend_mode == "postgres":
+            db_url = questionary.text(
+                "PostgreSQL connection URL:",
+                placeholder="postgres://user:password@host:5432/dbname",
+            ).ask()
+            if not db_url:
+                click.echo("❌ No database URL provided. Aborting.")
+                return
+
+        if backend_mode == "sqlite":
+            click.echo("")
+            click.echo("SQLite mode selected — no database URL needed.")
+            db_url = ""  # empty string = SQLite mode throughout
 
     # Step 2: Detect and configure MCP clients
     if skip_mcp:
@@ -1271,7 +1373,7 @@ def setup(
         click.echo("[1/4] Detecting MCP clients...")
         # Reuse the install logic to detect clients
         added = []
-        for client_name, info in _AGENT_CLIENTS.items():
+        for client_name, info in _MCP_CLIENTS.items():
             config_path: Path = info["path"]
             if config_path.exists():
                 added.append(client_name)
@@ -1306,8 +1408,11 @@ def setup(
 
             display_name = f"{hostname}-{int(time.time())}"
 
-        # Set env for initialization
-        os.environ["ENGRAM_DB_URL"] = db_url
+        # Set env for initialization (only when using PostgreSQL)
+        if db_url:
+            os.environ["ENGRAM_DB_URL"] = db_url
+        else:
+            os.environ.pop("ENGRAM_DB_URL", None)
 
         async def init_workspace():
             # Import server to get engram_init
