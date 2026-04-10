@@ -1142,69 +1142,6 @@ def info() -> None:
         click.echo(f"Location: {DEFAULT_DB_PATH}")
 
 
-# ── engram completion ─────────────────────────────────────────────────────
-
-
-@main.command()
-@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
-def completion(shell: str) -> None:
-    """Install shell tab completion for engram.
-
-    Examples:
-        engram completion bash >> ~/.bashrc
-        engram completion zsh >> ~/.zshrc
-        engram completion fish > ~/.config/fish/completions/engram.fish
-    """
-    if shell == "bash":
-        script = """# engram completion for bash
-_engram_completions() {
-    local cur prev
-    COMPREPLY=()
-    cur="${COMP_WORDS[COMP_CWORD]}"
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="install serve verify reembed config tail status search stats completion setup whoami info"
-    COMPREPLY=( $(compgen -W "${commands}" -- ${cur}) )
-    return 0
-}
-complete -F _engram_completions engram
-"""
-    elif shell == "zsh":
-        script = """# engram completion for zsh
-engram() {
-    local -a commands
-    commands=(
-        'install:auto-detect MCP clients and add Engram config'
-        'serve:start the Engram MCP server'
-        'verify:verify Engram installation'
-        'reembed:re-embed facts when embedding model changes'
-        'config:view and update workspace configuration'
-        'tail:live stream of workspace commits'
-        'status:show workspace status'
-        'search:query the workspace'
-        'stats:show workspace statistics'
-        'completion:install shell tab completion'
-        'setup:one-command setup'
-        'whoami:show current user identity'
-        'info:display detailed workspace info'
-    )
-    _describe 'command' commands
-}
-"""
-    else:  # fish
-        script = """# engram completion for fish
-complete -c engram -n "__fish_use_subcommand" -a "install serve verify reembed config tail status search stats completion setup" -d "Engram command"
-"""
-
-    click.echo(script)
-    click.echo(f"\n# Add to your shell config:")
-    if shell == "bash":
-        click.echo("  engram completion bash >> ~/.bashrc")
-    elif shell == "zsh":
-        click.echo("  engram completion zsh >> ~/.zshrc")
-    else:
-        click.echo("  engram completion fish > ~/.config/fish/completions/engram.fish")
-
-
 # ── engram verify ────────────────────────────────────────────────────
 
 
