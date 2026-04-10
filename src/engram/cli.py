@@ -26,7 +26,11 @@ _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 _PATH_SYSTEM_HOME = Path.home()
 _PATH_APPDATA_DIR = Path(os.environ["APPDATA"]) if "APPDATA" in os.environ else None
 _PATH_APPSUPPORT_DIR = _PATH_SYSTEM_HOME / "Library" / "Application Support"  # Mac only
-_PATH_XDG_DIR = Path(os.environ["XDG_CONFIG_HOME"]) if "XDG_CONFIG_HOME" in os.environ else None
+_PATH_XDG_DIR = (
+    Path(os.environ["XDG_CONFIG_HOME"])
+    if "XDG_CONFIG_HOME" in os.environ
+    else _PATH_SYSTEM_HOME / ".config"
+)
 
 
 @click.group()
@@ -40,28 +44,46 @@ def main() -> None:
 # Read in the list of known client config locations and get their appropriate
 # config file (different systems have them in different places).
 
-_AGENT_CLIENTS = {}
+_MCP_CLIENTS = {}
 with open(os.path.join(_DATA_DIR, "cli-agent-clients.json"), "r") as file:
     agent_clients_json = json.load(file)
     for key in agent_clients_json.keys():
-        _AGENT_CLIENTS[key] = {}
+        _MCP_CLIENTS[key] = {}
         agent_config_path = agent_clients_json[key]["path"]
         if agent_clients_json[key]["config_path"]["appdata"] and _PATH_APPDATA_DIR:
-            _AGENT_CLIENTS[key]["path"] = Path(_PATH_APPDATA_DIR / agent_config_path)
+            _MCP_CLIENTS[key]["path"] = Path(_PATH_APPDATA_DIR / agent_config_path)
         elif agent_clients_json[key]["config_path"]["appsupport"] and _PATH_APPSUPPORT_DIR:
-            _AGENT_CLIENTS[key]["path"] = Path(_PATH_APPSUPPORT_DIR / agent_config_path)
+            _MCP_CLIENTS[key]["path"] = Path(_PATH_APPSUPPORT_DIR / agent_config_path)
         elif agent_clients_json[key]["config_path"]["xdg"] and _PATH_XDG_DIR:
-            _AGENT_CLIENTS[key]["path"] = Path(_PATH_XDG_DIR / agent_config_path)
+            _MCP_CLIENTS[key]["path"] = Path(_PATH_XDG_DIR / agent_config_path)
         elif agent_clients_json[key]["config_path"]["syshome"]:
-            _AGENT_CLIENTS[key]["path"] = Path(_PATH_SYSTEM_HOME / agent_config_path)
-        if "path" not in _AGENT_CLIENTS[key]:
-            _AGENT_CLIENTS[key]["path"] = Path("ValidPathNotFound")
-        _AGENT_CLIENTS[key]["key"] = agent_clients_json[key]["server_type_key"]
+            _MCP_CLIENTS[key]["path"] = Path(_PATH_SYSTEM_HOME / agent_config_path)
+        if "path" not in _MCP_CLIENTS[key]:
+            _MCP_CLIENTS[key]["path"] = Path("ValidPathNotFound")
+        _MCP_CLIENTS[key]["key"] = agent_clients_json[key]["server_type_key"]
 
 _ENGRAM_MCP_ENTRY = {
     "command": "uvx",
     "args": ["--from", "engram-team@latest", "engram", "serve"],
 }
+
+
+def _engram_mcp_entry_for_client(client_name: str) -> dict[str, object]:
+    import os
+
+    mcp_url = os.environ.get("ENGRAM_MCP_URL", "https://mcp.engram.app/mcp")
+
+    if client_name == "Windsurf":
+        return {"serverUrl": mcp_url}
+
+    if client_name == "Zed":
+        return {"url": mcp_url}
+
+    return {
+        "command": "uvx",
+        "args": ["--from", "engram-team@latest", "engram", "serve"],
+    }
+
 
 # ── Agent steering / instructions ────────────────────────────────────
 # After writing the MCP config, we also write agent instruction files so
@@ -159,7 +181,7 @@ def install(dry_run: bool) -> None:
     skipped = []
     steering_written = []
 
-    for client_name, info in _AGENT_CLIENTS.items():
+    for client_name, info in _MCP_CLIENTS.items():
         config_path: Path = info["path"]
         key: str = info["key"]
         fmt = info.get("format", "json")
@@ -211,7 +233,7 @@ def install(dry_run: bool) -> None:
                     steering_written.extend(_write_steering(client_name, dry_run))
                     continue
 
-                servers["engram"] = _ENGRAM_MCP_ENTRY
+                servers["engram"] = _engram_mcp_entry_for_client(client_name)
 
                 if not dry_run:
                     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1002,7 +1024,7 @@ def verify(verbose: bool) -> None:
     detected = []
     missing = []
 
-    for client_name, info in _AGENT_CLIENTS.items():
+    for client_name, info in _MCP_CLIENTS.items():
         config_path: Path = info["path"]
         try:
             if config_path.exists():
@@ -1351,7 +1373,7 @@ def setup(
         click.echo("[1/4] Detecting MCP clients...")
         # Reuse the install logic to detect clients
         added = []
-        for client_name, info in _AGENT_CLIENTS.items():
+        for client_name, info in _MCP_CLIENTS.items():
             config_path: Path = info["path"]
             if config_path.exists():
                 added.append(client_name)

@@ -11,6 +11,7 @@ This directory contains step-by-step setup guides for using Engram with differen
 | VS Code (Copilot) | [vscode-copilot.md](./vscode-copilot.md) | ✓ Complete |
 | Claude Desktop | [claude-desktop.md](./claude-desktop.md) | ✓ Complete |
 | Windsurf | [windsurf.md](./windsurf.md) | ✓ Complete |
+| Zed | [zed.md](./zed.md) | ✓ Complete |
 
 ## General Setup (All IDEs)
 
@@ -39,7 +40,7 @@ If you want to use a local Engram server instead of the hosted version:
 
 1. **Start Engram server**
    ```bash
-   cd /home/ismaeldev/Engram
+   cd /path/to/Engram
    source .venv/bin/activate
    python -m engram.cli serve --http
    ```
@@ -55,4 +56,4 @@ If your IDE doesn't detect Engram:
 - Verify Engram is running: `curl http://localhost:7474/`
 - Run `engram verify` to check configuration
 
-See [docs/TROUBLESHOOTING.md](./TROUBLESHOOTING.md) for more help.
+See [docs/TROUBLESHOOTING.md](../TROUBLESHOOTING.md) for more help.
