@@ -159,12 +159,14 @@ async def engram_status() -> dict[str, Any]:
         "status": "unconfigured",
         "next_prompt": (
             "Welcome to Engram — shared memory for your team's agents.\n\n"
-            "Do you have an Invite Key to join an existing workspace, "
-            "or are you setting up a new one?\n\n"
-            "If setting up a new workspace, you'll need a PostgreSQL database. "
-            "You can either:\n"
-            "  • Use your existing app database (Engram creates a separate 'engram' schema)\n"
-            "  • Get a free dedicated database at neon.tech, supabase.com, or railway.app"
+            "How would you like to get started?\n\n"
+            "1. **Engram Cloud** (Recommended) — Quickest setup. Get an invite key from your team admin, "
+            "or sign up at https://engram.us to create a workspace.\n"
+            "2. **PostgreSQL (Self-hosted)** — Use your own database. "
+            "You'll need a PostgreSQL connection URL ready.\n"
+            "3. **SQLite (Local only)** — For solo use or quick experiments. "
+            "No team features available.\n\n"
+            "Type the number of your choice, or paste your Invite Key to join an existing workspace."
         ),
     }
 

@@ -43,6 +43,8 @@ async def _seed_search_db(db_path, monkeypatch) -> None:
 def test_search_prints_formatted_results(monkeypatch, tmp_path):
     db_path = tmp_path / "engram.db"
     monkeypatch.setattr("engram.cli.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("engram.workspace.read_workspace", lambda: None)
+    monkeypatch.setenv("ENGRAM_DB_URL", "")
 
     asyncio.run(_seed_search_db(db_path, monkeypatch))
 
@@ -52,7 +54,7 @@ def test_search_prints_formatted_results(monkeypatch, tmp_path):
         ["search", "payments service", "--scope", "payments", "--limit", "1"],
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, f"Exit code: {result.exit_code}, Output: {result.output}"
     assert 'Results for "payments service" (1):' in result.output
     assert (
         "[payments] Payments service retries failed webhooks with exponential backoff."
@@ -65,6 +67,8 @@ def test_search_prints_formatted_results(monkeypatch, tmp_path):
 def test_search_json_outputs_results(monkeypatch, tmp_path):
     db_path = tmp_path / "engram.db"
     monkeypatch.setattr("engram.cli.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("engram.workspace.read_workspace", lambda: None)
+    monkeypatch.setenv("ENGRAM_DB_URL", "")
 
     asyncio.run(_seed_search_db(db_path, monkeypatch))
 
@@ -87,6 +91,8 @@ def test_search_json_outputs_results(monkeypatch, tmp_path):
 def test_search_limit_applies(monkeypatch, tmp_path):
     db_path = tmp_path / "engram.db"
     monkeypatch.setattr("engram.cli.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("engram.workspace.read_workspace", lambda: None)
+    monkeypatch.setenv("ENGRAM_DB_URL", "")
 
     asyncio.run(_seed_search_db(db_path, monkeypatch))
 
@@ -103,6 +109,8 @@ def test_search_limit_applies(monkeypatch, tmp_path):
 def test_search_no_results_when_scope_has_no_facts(monkeypatch, tmp_path):
     db_path = tmp_path / "engram.db"
     monkeypatch.setattr("engram.cli.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("engram.workspace.read_workspace", lambda: None)
+    monkeypatch.setenv("ENGRAM_DB_URL", "")
 
     asyncio.run(_seed_search_db(db_path, monkeypatch))
 
