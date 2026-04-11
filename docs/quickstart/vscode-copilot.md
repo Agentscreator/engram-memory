@@ -59,6 +59,13 @@ With Copilot + Engram, your AI assistant will:
 engram verify
 ```
 
+**In your IDE:** Ask your agent: "Call engram_status and tell me what it returns."
+
+Expected output:
+```
+{"status": "ready", "mode": "team", "engram_id": "ENG-XXXXXX", "schema": "engram"}
+```
+
 ## Troubleshooting
 
 - Ensure GitHub Copilot is active
