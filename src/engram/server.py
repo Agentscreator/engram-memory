@@ -212,8 +212,9 @@ async def engram_init(
       your application tables.
 
     Returns: {status, engram_id, invite_key, next_prompt}
-    
-    Example success: {"status": "ready", "engram_id": "ENG-XXXXXX", "invite_key": "ek_live_..."}
+
+    Example: {"status": "initialized", "engram_id": "ENG-XXXXXX", "invite_key": "ek_live_..."}
+    """
     db_url = os.environ.get("ENGRAM_DB_URL", "")
     if not db_url:
         # Check if .env file exists in current directory
@@ -336,8 +337,9 @@ async def engram_join(invite_key: str) -> dict[str, Any]:
     - invite_key: The invite key shared by the workspace founder (e.g. ek_live_...).
 
     Returns: {status, engram_id, schema, next_prompt}
-    
-    Example success: {"status": "ready", "engram_id": "ENG-XXXXXX", "schema": "engram"}
+
+    Example: {"status": "ready", "engram_id": "ENG-XXXXXX", "schema": "engram"}
+    """
     from engram.workspace import (
         WorkspaceConfig,
         decode_invite_key,
@@ -446,8 +448,9 @@ async def engram_reset_invite_key(
     - invite_uses: Max number of times the new key can be used (default 10).
 
     Returns: {status, invite_key, key_generation, next_prompt}
-    
+
     Example: {"status": "ready", "invite_key": "ek_live_...", "key_generation": 2}
+    """
     from engram.workspace import (
         WorkspaceConfig,
         generate_invite_key,
@@ -644,8 +647,9 @@ async def engram_commit(
 
     Returns: {fact_id, committed_at, duplicate, conflicts_detected,
               memory_op, supersedes_fact_id, durability, suggestions}
-    
-    Example success: {"fact_id": "fact_xyz789", "committed_at": "2026-04-10T15:30:00Z", "duplicate": false, "conflicts_detected": 0}
+
+    Example: {"fact_id": "fact_xyz789", "committed_at": "2026-04-10T15:30:00Z", "duplicate": false, "conflicts_detected": 0}
+    """
     engine = get_engine()
 
     # Key generation check — block disconnected agents
@@ -757,7 +761,7 @@ async def engram_query(
     Returns: List of claims with content, scope, confidence, agent_id,
     committed_at, has_open_conflict, verified, fact_type, durability,
     adjacent, and provenance metadata.
-    
+
     Example return:
     [
       {
@@ -772,6 +776,7 @@ async def engram_query(
         "fact_type": "observation"
       }
     ]
+    """
     engine = get_engine()
 
     # Key generation check — block disconnected agents
@@ -862,7 +867,7 @@ async def engram_conflicts(
 
     Returns: List of conflicts with claim pairs, severity, detection
     method, and resolution status.
-    
+
     Example return:
     [
       {
@@ -873,6 +878,7 @@ async def engram_conflicts(
         "fact_b": {"content": "Auth uses JWT with 24h expiry", "scope": "auth", "agent_id": "agent2"}
       }
     ]
+    """
     engine = get_engine()
     return await engine.get_conflicts(scope=scope, status=status)
 
@@ -926,8 +932,9 @@ async def engram_resolve(
     - winning_claim_id: Required when resolution_type is "winner".
 
     Returns: {resolved: true, conflict_id, resolution_type}
-    
+
     Example: {"resolved": true, "conflict_id": "conflict_123", "resolution_type": "winner"}
+    """
     engine = get_engine()
     return await engine.resolve(
         conflict_id=conflict_id,
@@ -989,7 +996,7 @@ async def engram_batch_commit(
         {index, status: "ok"|"duplicate"|"error", fact_id?, error?}
       ]
     }
-    
+
     Example: {"total": 5, "committed": 4, "duplicates": 0, "failed": 1, "results": [{"index": 0, "status": "ok", "fact_id": "fact_123"}, {"index": 1, "status": "error", "error": "Secret detected: Email Address"}]}
 
     Limits: Maximum 100 facts per batch.
