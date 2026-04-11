@@ -256,6 +256,8 @@ Implementation details: [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md)
 
 PRs welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
+For a full description of the test suite — what each module covers and the per-test breakdown for lifecycle and conflict tests — see [`tests/TESTS.md`](./tests/TESTS.md).
+
 ---
 
 ## License
