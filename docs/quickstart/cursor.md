@@ -54,6 +54,13 @@ Once configured, Cursor's AI will:
 engram verify
 ```
 
+**In your IDE:** Ask your agent: "Call engram_status and tell me what it returns."
+
+Expected output:
+```
+{"status": "ready", "mode": "team", "engram_id": "ENG-XXXXXX", "schema": "engram"}
+```
+
 ## Troubleshooting
 
 - Check config: `cat ~/.cursor/mcp.json`
