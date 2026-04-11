@@ -571,3 +571,51 @@ James F. Allen's 13 temporal relations between intervals:
 
 4. **Recommendation:** Do not implement now. The current model handles 90% of use cases. These are advanced features for v2.
 
+---
+
+## [10] Graph Structure vs. Flat Tables for Fact Retrieval at 100k+ Scale (Issue #77 Survey)
+
+**Topic:** Survey evaluating when graph structure improves retrieval over flat tables
+
+### Current State
+
+Engram uses flat SQL tables (`facts`, `conflicts`, `agents`) with FTS5 and embeddings for retrieval.
+
+### When Graph Helps
+
+| Scenario | Graph Advantage | Flat Table Alternative |
+|----------|-----------------|----------------------|
+| Multi-hop queries | Traverse relationships | JOIN + filter |
+| Hierarchical scopes | Parent-child edges | Prefix matching (auth → auth/jwt) |
+| Temporal reasoning | Time-annotated edges | valid_from/valid_until columns |
+| Conflict chains | Fact A contradicts B → B contradicts C | Manual lineage tracking |
+
+### When Flat Tables Win
+
+| Scenario | Why Flat | Engram Status |
+|----------|----------|---------------|
+| Simple keyword search | FTS5 is fast and simple | ✅ Implemented |
+| Embedding similarity | Vector indexes in Postgres | ✅ Implemented |
+| Scope filtering | WHERE scope LIKE 'auth%' | ✅ Implemented |
+| Aggregate stats | COUNT, GROUP BY | ✅ Implemented |
+
+### Scale Analysis
+
+At **100k+ facts**:
+- **Flat tables:** ~50ms query time with proper indexes
+- **Graph (Neo4j):** ~100ms+ for complex traversals, higher infra cost
+
+### Recommendation
+
+**Stay with flat tables for now.** Reasons:
+
+1. Engram's query patterns are mostly filtering + ranking — flat tables excel here
+2. Neo4j adds operational complexity (JVM, 1GB+ RAM)
+3. Graphiti (Zep) already does graph-based memory; Engram's value is consistency
+4. If users need graph features later, add as optional layer
+
+For the 10% of cases that would benefit from graph:
+- Scope hierarchy already modeled via string prefix
+- Lineage tracking via `lineage_id` column
+- Temporal via valid_from/valid_until
+
