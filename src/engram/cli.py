@@ -817,27 +817,27 @@ def stats(output_json: bool) -> None:
     base_url = mcp_url.replace("/mcp", "") if "/mcp" in mcp_url else mcp_url
 
     try:
-        # Use /api/conflicts to get conflict count
-        url = f"{base_url}/api/conflicts?status=open&limit=1"
+        url = f"{base_url}/api/stats"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
 
             if output_json:
-                click.echo(
-                    json.dumps(
-                        {"workspace_id": ws.engram_id, "conflicts": data.get("conflicts", [])},
-                        indent=2,
-                    )
-                )
+                click.echo(json.dumps({"workspace_id": ws.engram_id, **data}, indent=2))
             else:
-                conflicts = data.get("conflicts", [])
+                facts = data.get("facts", {})
+                conflicts = data.get("conflicts", {})
+                agents = data.get("agents", {})
                 click.echo("=== Workspace Stats ===")
                 click.echo(f"Workspace: {ws.engram_id}")
                 click.echo(f"Mode: {'Team' if ws.db_url else 'Local'}")
-                click.echo(f"Open Conflicts: {len(conflicts)}")
+                click.echo(f"Total Facts: {facts.get('total', 0)}")
+                click.echo(f"Current Facts: {facts.get('current', 0)}")
+                click.echo(f"Expiring Soon: {facts.get('expiring_soon', 0)}")
+                click.echo(f"Open Conflicts: {conflicts.get('open', 0)}")
+                click.echo(f"Resolved: {conflicts.get('resolved', 0)}")
+                click.echo(f"Total Agents: {agents.get('total', 0)}")
     except urllib.error.HTTPError:
-        # Fallback - just show workspace info
         click.echo("=== Workspace Stats ===")
         click.echo(f"Workspace: {ws.engram_id}")
         click.echo(f"Mode: {'Team' if ws.db_url else 'Local'}")
