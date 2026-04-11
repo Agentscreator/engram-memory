@@ -63,6 +63,39 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
             )
         )
 
+    async def fact_detail(request: Request) -> HTMLResponse:
+        """Render fact detail panel with lineage and version history."""
+        fact_id = request.path_params.get("fact_id", "")
+
+        fact = await storage.get_fact_by_id(fact_id)
+        if not fact:
+            return HTMLResponse(
+                '<div style="padding:2rem;"><h2>Fact not found</h2><a href="/dashboard/facts">Back to Knowledge Base</a></div>',
+                status_code=404,
+            )
+
+        lineage_id = fact.get("lineage_id")
+        lineage = []
+        if lineage_id:
+            lineage = await storage.get_facts_by_lineage(lineage_id)
+
+        return HTMLResponse(_render_fact_detail(fact, lineage))
+
+    async def fact_lineage(request: Request) -> HTMLResponse:
+        """Return lineage version history for a fact (HTMX partial)."""
+        fact_id = request.path_params.get("fact_id", "")
+
+        fact = await storage.get_fact_by_id(fact_id)
+        if not fact:
+            return HTMLResponse("<p>Fact not found</p>", status_code=404)
+
+        lineage_id = fact.get("lineage_id")
+        if not lineage_id:
+            return HTMLResponse("<p>No lineage history available</p>")
+
+        lineage = await storage.get_facts_by_lineage(lineage_id)
+        return HTMLResponse(_render_lineage_timeline(lineage))
+
     async def knowledge_base(request: Request) -> HTMLResponse:
         scope = request.query_params.get("scope")
         fact_type = request.query_params.get("fact_type")
@@ -207,6 +240,8 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         Route("/", landing, methods=["GET"]),
         Route("/dashboard", index, methods=["GET"]),
         Route("/dashboard/facts", knowledge_base, methods=["GET"]),
+        Route("/dashboard/facts/{fact_id}", fact_detail, methods=["GET"]),
+        Route("/dashboard/facts/{fact_id}/lineage", fact_lineage, methods=["GET"]),
         Route("/dashboard/conflicts", conflict_queue, methods=["GET"]),
         Route("/dashboard/conflicts/{conflict_id}/approve", approve_suggestion, methods=["POST"]),
         Route("/dashboard/conflicts/{conflict_id}/dismiss", dismiss_conflict, methods=["POST"]),
@@ -1091,3 +1126,89 @@ def _esc(s: Any) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def _render_fact_detail(fact: dict, lineage: list[dict]) -> str:
+    """Render detailed view of a single fact with lineage."""
+    fact_id = fact.get("id", "")
+    content = _esc(fact.get("content", ""))
+    scope = _esc(fact.get("scope", ""))
+    fact_type = _esc(fact.get("fact_type", ""))
+    confidence = fact.get("confidence", 0.0)
+    agent_id = _esc(fact.get("agent_id", ""))
+    committed_at = fact.get("committed_at", "")[:19]
+    provenance = fact.get("provenance")
+    lineage_id = fact.get("lineage_id", "")
+
+    verified = (
+        '<span class="badge badge-verified">verified</span>'
+        if provenance
+        else '<span class="badge badge-unverified">unverified</span>'
+    )
+
+    lineage_html = ""
+    if lineage_id:
+        lineage_html = f"""
+        <div style="margin-top:1rem;">
+            <h4 style="font-size:0.9rem;color:#6b7280;margin-bottom:0.5rem;">Version History</h4>
+            <div hx-get="/dashboard/facts/{fact_id}/lineage" hx-trigger="load" hx-swap="innerHTML">
+                <p style="color:#9ab89a;font-size:0.85rem;">Loading lineage...</p>
+            </div>
+        </div>
+        """
+
+    body = f"""
+    <div style="max-width:800px;margin:0 auto;">
+        <a href="/dashboard/facts" style="color:#6b7280;text-decoration:none;">&larr; Back to Knowledge Base</a>
+        
+        <div style="margin-top:1.5rem;padding:1.5rem;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb;">
+            <h2 style="font-size:1.25rem;color:#111827;margin-bottom:1rem;">{content}</h2>
+            
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-bottom:1rem;">
+                <div><span style="color:#6b7280;font-size:0.85rem;">Scope</span><div>{scope}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Type</span><div>{fact_type}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Confidence</span><div>{confidence:.2f}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Agent</span><div>{agent_id}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Committed</span><div>{committed_at}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Status</span><div>{verified}</div></div>
+            </div>
+            
+            {lineage_html}
+        </div>
+    </div>
+    """
+    return _dash_layout("Fact Detail", body, active="facts")
+
+
+def _render_lineage_timeline(lineage: list[dict]) -> str:
+    """Render lineage version history as a timeline."""
+    if not lineage:
+        return "<p style='color:#9ab89a;font-size:0.85rem;'>No version history</p>"
+
+    items = []
+    for i, f in enumerate(lineage):
+        content = _esc(f.get("content", ""))[:100]
+        if len(f.get("content", "")) > 100:
+            content += "..."
+        committed = f.get("committed_at", "")[:19]
+        agent = _esc(f.get("agent_id", ""))
+        confidence = f.get("confidence", 0.0)
+        is_current = f.get("is_current", False)
+
+        marker = (
+            '<span class="badge badge-verified">current</span>'
+            if is_current
+            else f"v{len(lineage) - i}"
+        )
+        items.append(
+            f"""<div style="padding:0.75rem;margin-left:1rem;border-left:2px solid #e5e7eb;{"" if i == len(lineage) - 1 else "border-bottom:1px solid #f3f4f6;"}">
+            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;">
+                <span style="font-weight:600;color:#374151;">{marker}</span>
+                <span style="color:#6b7280;font-size:0.8rem;">{committed}</span>
+            </div>
+            <div style="color:#111827;font-size:0.9rem;">{content}</div>
+            <div style="color:#9ca3af;font-size:0.8rem;">agent: {agent} &middot; conf: {confidence:.2f}</div>
+        </div>"""
+        )
+
+    return f"<div style='margin-top:0.5rem;'>{''.join(items)}</div>"
