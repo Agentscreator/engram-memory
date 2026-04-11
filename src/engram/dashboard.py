@@ -546,6 +546,7 @@ def _dash_layout(
       <a href="/dashboard/agents"{_nav_cls("agents")}>Agents</a>
       <a href="/dashboard/expiring"{_nav_cls("expiring")}>Expiring</a>
       <a href="/dashboard/settings"{_nav_cls("settings")}>Settings</a>
+      <a href="#" onclick="showShortcuts();return false;" style="margin-left:auto;font-size:0.75rem;color:#9ab89a;">⌨ Shortcuts</a>
     </nav>
     {body}
   </div>
@@ -555,6 +556,14 @@ def _dash_layout(
       const isDark = html.classList.contains('dark');
       html.classList.toggle('dark');
       localStorage.setItem('engram-theme', isDark ? 'light' : 'dark');
+    }}
+    function showShortcuts() {{
+      alert('Keyboard Shortcuts:\n\n' +
+        'j/k - Navigate conflicts up/down\n' +
+        'a - Approve conflict fact A\n' +
+        'b - Approve conflict fact B\n' +
+        's - Dismiss/skip conflict\n' +
+        '? - Show this help');
     }}
     // Keyboard navigation for conflict queue
     document.addEventListener('keydown', function(e) {{
