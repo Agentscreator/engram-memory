@@ -2380,6 +2380,75 @@ class EngramEngine:
             limit=limit,
         )
 
+    # ── GDPR subject erasure ─────────────────────────────────────────
+
+    async def gdpr_erase_agent(
+        self,
+        agent_id: str,
+        mode: Literal["soft", "hard"],
+        *,
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        """Erase all personal data for a given agent from this workspace.
+
+        Gated to workspace creators only.  Use ``mode='soft'`` to redact
+        attribution fields while keeping fact content intact, or
+        ``mode='hard'`` to also wipe fact content, close validity windows,
+        and cascade-dismiss related open conflicts.
+
+        Args:
+            agent_id: The agent whose data should be erased.
+            mode: ``'soft'`` or ``'hard'``.
+            actor: Identity of the person triggering the erasure (for audit).
+
+        Returns:
+            A summary dict with counts of affected rows per table.
+
+        Raises:
+            ValueError: If agent_id is empty or mode is invalid.
+            PermissionError: If the caller is not a workspace creator.
+        """
+        if not agent_id or not agent_id.strip():
+            raise ValueError("agent_id must be a non-empty string.")
+        if mode not in ("soft", "hard"):
+            raise ValueError("mode must be 'soft' or 'hard'.")
+
+        # Creator-only gate — read local workspace.json
+        try:
+            from engram.workspace import read_workspace
+
+            ws = read_workspace()
+            if ws is None or not ws.is_creator:
+                raise PermissionError(
+                    "GDPR erasure is restricted to the workspace creator. "
+                    "Only the founder who ran engram_init may perform this operation."
+                )
+        except PermissionError:
+            raise
+        except Exception as exc:
+            raise PermissionError(
+                f"Unable to verify workspace creator status: {exc}"
+            ) from exc
+
+        if mode == "soft":
+            stats = await self.storage.gdpr_soft_erase_agent(agent_id)
+        else:
+            stats = await self.storage.gdpr_hard_erase_agent(agent_id)
+
+        await self._audit(
+            "gdpr_erase",
+            agent_id=None,  # do not store the erased agent_id in the audit trail
+            extra=f'{{"mode":"{mode}","facts_updated":{stats["facts_updated"]},'
+                  f'"conflicts_closed":{stats["conflicts_closed"]},'
+                  f'"actor":"{actor or "unknown"}"}}',
+        )
+
+        return {
+            "erased_agent_id": agent_id,
+            "mode": mode,
+            "stats": stats,
+        }
+
 
 def _content_hash(content: str) -> str:
     """SHA-256 of lowercased, whitespace-normalized content."""

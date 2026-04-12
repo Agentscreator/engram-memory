@@ -1105,6 +1105,177 @@ class PostgresStorage(BaseStorage):
             )
         return [_row_to_dict(r) for r in rows]
 
+    # ── GDPR subject-erasure ─────────────────────────────────────────
+
+    async def gdpr_soft_erase_agent(self, agent_id: str) -> dict[str, int]:
+        """Soft-erase: redact engineer/provenance on all facts; scrub related rows.
+
+        All statements run inside a single asyncpg transaction.
+        """
+        wid = self.workspace_id
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                r = await conn.execute(
+                    "UPDATE facts SET engineer = '[redacted]', provenance = NULL "
+                    "WHERE agent_id = $1 AND workspace_id = $2",
+                    agent_id, wid,
+                )
+                facts_updated = int(r.split()[-1])
+
+                r = await conn.execute(
+                    """UPDATE conflicts
+                       SET explanation            = '[redacted]',
+                           suggested_resolution   = NULL,
+                           suggested_resolution_type = NULL,
+                           suggestion_reasoning   = NULL
+                       WHERE workspace_id = $1
+                         AND (fact_a_id IN (SELECT id FROM facts WHERE agent_id = $2 AND workspace_id = $1)
+                              OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = $2 AND workspace_id = $1))""",
+                    wid, agent_id,
+                )
+                conflicts_scrubbed = int(r.split()[-1])
+
+                r = await conn.execute(
+                    "UPDATE agents SET engineer = '[redacted]', label = NULL "
+                    "WHERE agent_id = $1 AND workspace_id = $2",
+                    agent_id, wid,
+                )
+                agents_updated = int(r.split()[-1])
+
+                r = await conn.execute(
+                    "UPDATE audit_log SET agent_id = NULL, extra = '{}' "
+                    "WHERE agent_id = $1 AND workspace_id = $2",
+                    agent_id, wid,
+                )
+                audit_rows_scrubbed = int(r.split()[-1])
+
+        return {
+            "facts_updated": facts_updated,
+            "conflicts_scrubbed": conflicts_scrubbed,
+            "agents_updated": agents_updated,
+            "conflicts_closed": 0,
+            "scope_permissions_deleted": 0,
+            "scopes_updated": 0,
+            "audit_rows_scrubbed": audit_rows_scrubbed,
+        }
+
+    async def gdpr_hard_erase_agent(self, agent_id: str) -> dict[str, int]:
+        """Hard-erase: wipe fact payload, retire current versions, cascade conflicts.
+
+        Postgres search_vector is a GENERATED column so UPDATE on content/keywords
+        automatically refreshes the GIN index — no extra trigger is needed.
+        All statements run inside a single asyncpg transaction.
+        """
+        now = _now_ts()
+        wid = self.workspace_id
+        async with self.acquire() as conn:
+            async with conn.transaction():
+                r = await conn.execute(
+                    """UPDATE facts
+                       SET content      = '[gdpr:erased:' || id || ']',
+                           content_hash = 'gdpr:erased:' || id,
+                           engineer     = '[redacted]',
+                           provenance   = NULL,
+                           keywords     = NULL,
+                           entities     = NULL,
+                           embedding    = NULL,
+                           valid_until  = COALESCE(valid_until, $1)
+                       WHERE agent_id = $2 AND workspace_id = $3""",
+                    now, agent_id, wid,
+                )
+                facts_updated = int(r.split()[-1])
+
+                r = await conn.execute(
+                    """UPDATE conflicts
+                       SET status                    = 'dismissed',
+                           resolution_type           = 'gdpr_erasure',
+                           resolution                = '[gdpr:erased]',
+                           resolved_at               = $1,
+                           resolved_by               = 'gdpr',
+                           explanation               = '[redacted]',
+                           suggested_resolution      = NULL,
+                           suggested_resolution_type = NULL,
+                           suggested_winning_fact_id = NULL,
+                           suggestion_reasoning      = NULL
+                       WHERE workspace_id = $2
+                         AND status = 'open'
+                         AND (fact_a_id IN (SELECT id FROM facts WHERE agent_id = $3 AND workspace_id = $2)
+                              OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = $3 AND workspace_id = $2))""",
+                    now, wid, agent_id,
+                )
+                conflicts_closed = int(r.split()[-1])
+
+                r = await conn.execute(
+                    """UPDATE conflicts
+                       SET explanation               = '[redacted]',
+                           resolution                = '[redacted]',
+                           suggested_resolution      = NULL,
+                           suggested_resolution_type = NULL,
+                           suggestion_reasoning      = NULL
+                       WHERE workspace_id = $1
+                         AND status != 'open'
+                         AND (fact_a_id IN (SELECT id FROM facts WHERE agent_id = $2 AND workspace_id = $1)
+                              OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = $2 AND workspace_id = $1))""",
+                    wid, agent_id,
+                )
+                conflicts_scrubbed = int(r.split()[-1])
+
+                await conn.execute(
+                    """UPDATE conflicts
+                       SET suggested_winning_fact_id = NULL
+                       WHERE workspace_id = $1
+                         AND suggested_winning_fact_id IN
+                             (SELECT id FROM facts WHERE agent_id = $2 AND workspace_id = $1)""",
+                    wid, agent_id,
+                )
+
+                r = await conn.execute(
+                    "UPDATE agents SET engineer = '[redacted]', label = NULL "
+                    "WHERE agent_id = $1 AND workspace_id = $2",
+                    agent_id, wid,
+                )
+                agents_updated = int(r.split()[-1])
+
+                r = await conn.execute(
+                    "DELETE FROM scope_permissions WHERE agent_id = $1",
+                    agent_id,
+                )
+                scope_permissions_deleted = int(r.split()[-1])
+
+                r = await conn.execute(
+                    "UPDATE scopes SET owner_agent_id = NULL "
+                    "WHERE owner_agent_id = $1 AND workspace_id = $2",
+                    agent_id, wid,
+                )
+                scopes_updated = int(r.split()[-1])
+
+                r = await conn.execute(
+                    "UPDATE audit_log SET agent_id = NULL, extra = '{}' "
+                    "WHERE agent_id = $1 AND workspace_id = $2",
+                    agent_id, wid,
+                )
+                audit_actor = int(r.split()[-1])
+
+                r = await conn.execute(
+                    """UPDATE audit_log
+                       SET fact_id = NULL, extra = '{}'
+                       WHERE workspace_id = $1
+                         AND fact_id IN
+                             (SELECT id FROM facts WHERE agent_id = $2 AND workspace_id = $1)""",
+                    wid, agent_id,
+                )
+                audit_fact = int(r.split()[-1])
+
+        return {
+            "facts_updated": facts_updated,
+            "conflicts_closed": conflicts_closed,
+            "conflicts_scrubbed": conflicts_scrubbed,
+            "agents_updated": agents_updated,
+            "scope_permissions_deleted": scope_permissions_deleted,
+            "scopes_updated": scopes_updated,
+            "audit_rows_scrubbed": audit_actor + audit_fact,
+        }
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

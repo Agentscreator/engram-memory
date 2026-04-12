@@ -1683,5 +1683,99 @@ def export_cmd(format: str, output: str | None, scope: str | None) -> None:
         click.echo(f"Error: {e}", err=True)
 
 
+# ── engram gdpr ──────────────────────────────────────────────────────
+
+
+@main.group()
+def gdpr() -> None:
+    """GDPR / legal subject-erasure commands (workspace creator only)."""
+    pass
+
+
+@gdpr.command("erase")
+@click.option("--agent-id", required=True, help="Agent ID whose data should be erased.")
+@click.option(
+    "--mode",
+    type=click.Choice(["soft", "hard"]),
+    required=True,
+    help=(
+        "soft: redact engineer name and provenance only, fact content preserved. "
+        "hard: wipe fact content, close validity windows, cascade-dismiss conflicts."
+    ),
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip interactive confirmation (for non-interactive / scripted use).",
+)
+def gdpr_erase(agent_id: str, mode: str, yes: bool) -> None:
+    """Erase personal data for an agent (GDPR right-to-erasure / right-to-be-forgotten).
+
+    Requires the local workspace to be initialised as a creator workspace.
+    Hard erase is irreversible — always back up your database first.
+    """
+    import asyncio
+
+    if not yes:
+        action = (
+            "SOFT erase (redact attribution fields)"
+            if mode == "soft"
+            else "HARD erase (wipe content, close validity, dismiss conflicts — IRREVERSIBLE)"
+        )
+        click.echo(f"\nAbout to perform: {action}")
+        click.echo(f"Agent ID : {agent_id}")
+        click.confirm("Proceed?", abort=True)
+
+    async def _run() -> None:
+        from engram.engine import EngramEngine
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws is None:
+            raise click.ClickException("No workspace configured. Run 'engram setup' first.")
+        if not ws.is_creator:
+            raise click.ClickException(
+                "GDPR erasure is restricted to the workspace creator."
+            )
+
+        if ws.db_url.startswith("postgres"):
+            from engram.postgres_storage import PostgresStorage
+
+            storage = PostgresStorage(ws.db_url, workspace_id=ws.engram_id, schema=ws.schema)
+        else:
+            from engram.storage import SQLiteStorage
+
+            storage = SQLiteStorage(workspace_id=ws.engram_id)
+
+        await storage.connect()
+        try:
+            engine = EngramEngine(storage)
+            result = await engine.gdpr_erase_agent(agent_id, mode, actor="cli")  # type: ignore[arg-type]
+        finally:
+            await storage.close()
+
+        stats = result["stats"]
+        click.echo(f"\nGDPR {mode} erase complete for agent: {agent_id}")
+        click.echo(f"  Facts updated          : {stats['facts_updated']}")
+        if mode == "hard":
+            click.echo(f"  Conflicts closed       : {stats['conflicts_closed']}")
+        click.echo(f"  Conflicts scrubbed     : {stats['conflicts_scrubbed']}")
+        click.echo(f"  Agents updated         : {stats['agents_updated']}")
+        if mode == "hard":
+            click.echo(f"  Scope permissions del. : {stats['scope_permissions_deleted']}")
+            click.echo(f"  Scopes updated         : {stats['scopes_updated']}")
+        click.echo(f"  Audit rows scrubbed    : {stats['audit_rows_scrubbed']}")
+
+    try:
+        asyncio.run(_run())
+    except click.ClickException:
+        raise
+    except PermissionError as exc:
+        raise click.ClickException(str(exc))
+    except Exception as exc:
+        raise click.ClickException(f"Erasure failed: {exc}")
+
+
 if __name__ == "__main__":
     main()

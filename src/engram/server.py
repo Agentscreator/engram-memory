@@ -1366,6 +1366,71 @@ async def engram_export(
         return {"error": str(exc)}
 
 
+# ── engram_gdpr_erase ─────────────────────────────────────────────────
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True})
+async def engram_gdpr_erase(
+    agent_id: str,
+    mode: Literal["soft", "hard"] = "soft",
+) -> dict[str, Any]:
+    """Erase personal data for an agent (GDPR right-to-erasure). Founder only.
+
+    Use this when a team member leaves and you receive a legal erasure request
+    for an EU / GDPR-covered subject.  Always back up your database before
+    running a hard erase.
+
+    **soft** — Redacts the engineer name and provenance field on every fact
+    version committed by this agent. Conflict explanation strings are scrubbed
+    to avoid leaking the name indirectly. Fact content remains intact so the
+    team's knowledge base stays coherent.
+
+    **hard** — Everything in soft mode, plus: fact content is replaced with a
+    per-row placeholder, keywords, entities, and the embedding vector are
+    cleared (so the fact cannot be retrieved by content or semantic search),
+    the validity window is closed on all still-current facts (retiring them),
+    and every open conflict that references an erased fact is dismissed with
+    resolution_type='gdpr_erasure'. This mode is irreversible.
+
+    In both modes the following are also scrubbed:
+    - agents table: engineer name and label.
+    - scope_permissions (hard only): rows for this agent are deleted.
+    - scopes: owner_agent_id nulled where it matched.
+    - audit_log: agent_id and associated fact_id references are cleared.
+
+    IMPORTANT: This operation is restricted to the workspace creator (founder).
+    IMPORTANT: The anonymous_mode workspace setting is not sufficient for GDPR
+    compliance — it prevents future attribution but does not erase historical
+    data.  Use this tool for legal right-to-erasure requests instead.
+
+    Parameters:
+    - agent_id: The exact agent ID to erase (find it via engram_agents).
+    - mode: 'soft' (redact attribution only) or 'hard' (wipe content too).
+
+    Returns: {erased_agent_id, mode, stats: {facts_updated, conflicts_closed, ...}}
+    """
+    engine = get_engine()
+    from engram.workspace import read_workspace as _rw
+
+    _ws = _rw()
+    if not _ws:
+        return {"error": "Workspace not initialized. Run engram_init first."}
+
+    try:
+        return await engine.gdpr_erase_agent(
+            agent_id=agent_id,
+            mode=mode,
+            actor=None,
+        )
+    except PermissionError as exc:
+        return {"error": str(exc), "status": "forbidden"}
+    except ValueError as exc:
+        return {"error": str(exc), "status": "invalid_request"}
+    except Exception as exc:
+        logger.exception("engram_gdpr_erase error")
+        return {"error": str(exc)}
+
+
 # ── engram_create_webhook ─────────────────────────────────────────────
 
 
