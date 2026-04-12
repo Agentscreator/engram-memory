@@ -846,6 +846,43 @@ def build_rest_routes(
             return _error(str(exc), status=500)
         return JSONResponse(result)
 
+    # ── GDPR erasure ──────────────────────────────────────────────────
+
+    async def api_gdpr_erase(request: Request) -> JSONResponse:
+        """POST /api/gdpr/erase — erase all personal data for an agent.
+
+        Request body: {"agent_id": "...", "mode": "soft"|"hard"}
+        Restricted to workspace creator.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return _error("Request body must be valid JSON.")
+
+        agent_id = body.get("agent_id", "")
+        mode = body.get("mode", "soft")
+
+        if not agent_id:
+            return _error("agent_id is required.")
+        if mode not in ("soft", "hard"):
+            return _error("mode must be 'soft' or 'hard'.")
+
+        try:
+            result = await engine.gdpr_erase_agent(
+                agent_id=agent_id,
+                mode=mode,
+                actor=body.get("actor"),
+            )
+        except PermissionError as exc:
+            return _error(str(exc), status=403)
+        except ValueError as exc:
+            return _error(str(exc), status=400)
+        except Exception as exc:
+            logger.exception("REST /api/gdpr/erase error")
+            return _error(str(exc), status=500)
+
+        return JSONResponse(result)
+
     return [
         Route("/api/commit", api_commit, methods=["POST"]),
         Route("/api/query", api_query, methods=["POST"]),
@@ -884,4 +921,6 @@ def build_rest_routes(
         Route("/api/diff/{fact_id_a}/{fact_id_b}", api_diff, methods=["GET"]),
         # Audit
         Route("/api/audit", api_audit, methods=["GET"]),
+        # GDPR
+        Route("/api/gdpr/erase", api_gdpr_erase, methods=["POST"]),
     ]

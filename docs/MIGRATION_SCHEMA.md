@@ -334,8 +334,50 @@ If you encounter issues:
 3. Check tables: `\dt engram.*` in psql
 4. Open an issue with logs and error messages
 
+## Schema Version History
+
+| Version | What changed |
+|---------|-------------|
+| v2 | Conflict suggestion columns |
+| v3 | `memory_op`, `supersedes_fact_id` on facts |
+| v4 | Multi-tenancy (`workspace_id`), `workspaces` and `invite_keys` tables |
+| v5 | `corroborating_agents` on facts |
+| v6 | `durability`, `query_hits` on facts |
+| v7 | `key_generation` on workspaces |
+| v8 | `webhooks`, `webhook_deliveries`, `resolution_rules`, `scopes`, `audit_log` |
+| v9 | `display_name`, `description` on workspaces |
+| v10 | SQLite `facts_au` AFTER UPDATE trigger (FTS5 consistency for GDPR hard-erase) |
+
+## Schema v10 — GDPR FTS Update Trigger
+
+**New installs:** the `facts_au` trigger is included in `SCHEMA_SQL` automatically.
+
+**Existing SQLite installs:** the trigger is created during the v10 migration that
+runs automatically on next `connect()`.
+
+**PostgreSQL installs:** no migration needed.  The `search_vector` column is a
+`GENERATED ALWAYS AS ... STORED` tsvector, so any `UPDATE` to `content` or
+`keywords` automatically refreshes the GIN index.
+
+The trigger is required by the **GDPR hard-erase path** (`engram gdpr erase --mode hard`)
+which replaces fact `content` and clears `keywords` in a bulk `UPDATE`.  Without
+the trigger, FTS5 shadow tables would retain old content and erased facts would
+still appear in full-text search results.
+
+```sql
+-- Added by v10 migration (SQLite only)
+CREATE TRIGGER IF NOT EXISTS facts_au
+    AFTER UPDATE OF content, scope, keywords ON facts BEGIN
+        INSERT INTO facts_fts(facts_fts, rowid, content, scope, keywords)
+        VALUES ('delete', old.rowid, old.content, old.scope, old.keywords);
+        INSERT INTO facts_fts(rowid, content, scope, keywords)
+        VALUES (new.rowid, new.content, new.scope, new.keywords);
+    END;
+```
+
 ## Related Documentation
 
+- [PRIVACY_ARCHITECTURE.md](./PRIVACY_ARCHITECTURE.md) - GDPR erasure workflow
 - [DATABASE_SECURITY.md](./DATABASE_SECURITY.md) - Security features
 - [IMPLEMENTATION.md](./IMPLEMENTATION.md) - Technical details
 - [README.md](../README.md) - Quick start guide

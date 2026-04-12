@@ -368,6 +368,40 @@ class BaseStorage(ABC):
         limit: int = 100,
     ) -> list[dict]: ...
 
+    # ── GDPR subject-erasure methods ──────────────────────────────────
+
+    @abstractmethod
+    async def gdpr_soft_erase_agent(self, agent_id: str) -> dict[str, int]:
+        """Soft-erase all PII for agent_id in this workspace.
+
+        Redacts engineer name and provenance on every fact version, scrubs
+        free-text fields on related conflicts, anonymises the agents-table
+        row, and scrubs the audit log.  Fact content and validity are
+        preserved so the knowledge base remains coherent.
+
+        Returns a dict of affected-row counts keyed by table/operation.
+        """
+        ...
+
+    @abstractmethod
+    async def gdpr_hard_erase_agent(self, agent_id: str) -> dict[str, int]:
+        """Hard-erase all data for agent_id in this workspace.
+
+        In addition to the soft-erase redaction this:
+        - Replaces fact content with a per-row placeholder and clears
+          keywords, entities, and the embedding vector so the fact can
+          never be retrieved by content or semantic search.
+        - Closes the validity window on all current facts (retires them).
+        - Dismisses every open conflict that references an erased fact,
+          marking it with resolution_type='gdpr_erasure'.
+        - Scrubs free-text on already-resolved conflicts too.
+        - Deletes scope-permission rows for the agent.
+        - Nulls owner_agent_id on any scopes owned by the agent.
+
+        Returns a dict of affected-row counts keyed by table/operation.
+        """
+        ...
+
 
 class SQLiteStorage(BaseStorage):
     """Async SQLite storage with WAL mode and FTS5."""
@@ -1721,6 +1755,193 @@ class SQLiteStorage(BaseStorage):
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    # ── GDPR subject-erasure ─────────────────────────────────────────
+
+    async def gdpr_soft_erase_agent(self, agent_id: str) -> dict[str, int]:
+        """Soft-erase: redact engineer/provenance on all facts; scrub related rows.
+
+        All six statements run before a single commit so the operation is
+        atomic from the perspective of any concurrent reader.
+        """
+        wid = self.workspace_id
+
+        # 1. Redact engineer name and provenance on every fact version.
+        c = await self.db.execute(
+            "UPDATE facts SET engineer = '[redacted]', provenance = NULL "
+            "WHERE agent_id = ? AND workspace_id = ?",
+            (agent_id, wid),
+        )
+        facts_updated = c.rowcount
+
+        # 2. Scrub free-text conflict columns for conflicts that reference
+        #    this agent's facts (open and resolved alike — both can embed
+        #    the engineer name in auto-generated explanation strings).
+        c = await self.db.execute(
+            """UPDATE conflicts
+               SET explanation            = '[redacted]',
+                   suggested_resolution   = NULL,
+                   suggested_resolution_type = NULL,
+                   suggestion_reasoning   = NULL
+               WHERE workspace_id = ?
+                 AND (fact_a_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?)
+                      OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))""",
+            (wid, agent_id, wid, agent_id, wid),
+        )
+        conflicts_scrubbed = c.rowcount
+
+        # 3. Redact engineer name on the agents-registry row.
+        c = await self.db.execute(
+            "UPDATE agents SET engineer = '[redacted]', label = NULL "
+            "WHERE agent_id = ? AND workspace_id = ?",
+            (agent_id, wid),
+        )
+        agents_updated = c.rowcount
+
+        # 4. Scrub audit-log rows where the agent is the actor.
+        c = await self.db.execute(
+            "UPDATE audit_log SET agent_id = NULL, extra = '{}' "
+            "WHERE agent_id = ? AND workspace_id = ?",
+            (agent_id, wid),
+        )
+        audit_rows_scrubbed = c.rowcount
+
+        await self.db.commit()
+        return {
+            "facts_updated": facts_updated,
+            "conflicts_scrubbed": conflicts_scrubbed,
+            "agents_updated": agents_updated,
+            "conflicts_closed": 0,
+            "scope_permissions_deleted": 0,
+            "scopes_updated": 0,
+            "audit_rows_scrubbed": audit_rows_scrubbed,
+        }
+
+    async def gdpr_hard_erase_agent(self, agent_id: str) -> dict[str, int]:
+        """Hard-erase: wipe fact payload, retire current versions, cascade conflicts.
+
+        All statements execute before a single commit.  The FTS5 shadow table
+        is kept consistent by the facts_au trigger added in schema v10.
+        """
+        now = _now_iso()
+        wid = self.workspace_id
+
+        # 1. Replace fact payload with a per-row placeholder, close any still-
+        #    current validity windows, and null semantic fields.
+        #    content uses the fact id so each row is unique (avoids spurious
+        #    dedup matches if find_duplicate ever scans retired rows).
+        c = await self.db.execute(
+            """UPDATE facts
+               SET content      = '[gdpr:erased:' || id || ']',
+                   content_hash = 'gdpr:erased:' || id,
+                   engineer     = '[redacted]',
+                   provenance   = NULL,
+                   keywords     = NULL,
+                   entities     = NULL,
+                   embedding    = NULL,
+                   valid_until  = COALESCE(valid_until, ?)
+               WHERE agent_id = ? AND workspace_id = ?""",
+            (now, agent_id, wid),
+        )
+        facts_updated = c.rowcount
+
+        # 2a. Dismiss open conflicts that reference an erased fact.
+        c = await self.db.execute(
+            """UPDATE conflicts
+               SET status                    = 'dismissed',
+                   resolution_type           = 'gdpr_erasure',
+                   resolution                = '[gdpr:erased]',
+                   resolved_at               = ?,
+                   resolved_by               = 'gdpr',
+                   explanation               = '[redacted]',
+                   suggested_resolution      = NULL,
+                   suggested_resolution_type = NULL,
+                   suggested_winning_fact_id = NULL,
+                   suggestion_reasoning      = NULL
+               WHERE workspace_id = ?
+                 AND status = 'open'
+                 AND (fact_a_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?)
+                      OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))""",
+            (now, wid, agent_id, wid, agent_id, wid),
+        )
+        conflicts_closed = c.rowcount
+
+        # 2b. Scrub free-text on already-resolved conflicts referencing erased facts.
+        c = await self.db.execute(
+            """UPDATE conflicts
+               SET explanation               = '[redacted]',
+                   resolution                = '[redacted]',
+                   suggested_resolution      = NULL,
+                   suggested_resolution_type = NULL,
+                   suggestion_reasoning      = NULL
+               WHERE workspace_id = ?
+                 AND status != 'open'
+                 AND (fact_a_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?)
+                      OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))""",
+            (wid, agent_id, wid, agent_id, wid),
+        )
+        conflicts_scrubbed = c.rowcount
+
+        # 2c. Null suggested_winning_fact_id if it pointed at an erased fact.
+        await self.db.execute(
+            """UPDATE conflicts
+               SET suggested_winning_fact_id = NULL
+               WHERE workspace_id = ?
+                 AND suggested_winning_fact_id IN
+                     (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?)""",
+            (wid, agent_id, wid),
+        )
+
+        # 3. Redact the agents-registry row.
+        c = await self.db.execute(
+            "UPDATE agents SET engineer = '[redacted]', label = NULL "
+            "WHERE agent_id = ? AND workspace_id = ?",
+            (agent_id, wid),
+        )
+        agents_updated = c.rowcount
+
+        # 4. Remove scope-permission rows — no longer meaningful post-erasure.
+        c = await self.db.execute(
+            "DELETE FROM scope_permissions WHERE agent_id = ?",
+            (agent_id,),
+        )
+        scope_permissions_deleted = c.rowcount
+
+        # 5. Null owner_agent_id on scopes this agent owned.
+        c = await self.db.execute(
+            "UPDATE scopes SET owner_agent_id = NULL "
+            "WHERE owner_agent_id = ? AND workspace_id = ?",
+            (agent_id, wid),
+        )
+        scopes_updated = c.rowcount
+
+        # 6. Scrub audit-log rows: actor rows and rows tied to erased facts.
+        c = await self.db.execute(
+            "UPDATE audit_log SET agent_id = NULL, extra = '{}' "
+            "WHERE agent_id = ? AND workspace_id = ?",
+            (agent_id, wid),
+        )
+        audit_actor = c.rowcount
+        c = await self.db.execute(
+            """UPDATE audit_log
+               SET fact_id = NULL, extra = '{}'
+               WHERE workspace_id = ?
+                 AND fact_id IN
+                     (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?)""",
+            (wid, agent_id, wid),
+        )
+        audit_fact = c.rowcount
+
+        await self.db.commit()
+        return {
+            "facts_updated": facts_updated,
+            "conflicts_closed": conflicts_closed,
+            "conflicts_scrubbed": conflicts_scrubbed,
+            "agents_updated": agents_updated,
+            "scope_permissions_deleted": scope_permissions_deleted,
+            "scopes_updated": scopes_updated,
+            "audit_rows_scrubbed": audit_actor + audit_fact,
+        }
 
 
 def _now_iso() -> str:

@@ -5,12 +5,16 @@ Schema version 4 adds:
 - invite_keys table (for join flow)
 - workspace_id column on facts, conflicts, agents (multi-tenancy)
 
+Schema version 10 adds:
+- facts_au trigger for SQLite FTS5 consistency on content/keywords updates
+  (required by the GDPR subject-erasure hard-erase path)
+
 Two schemas are maintained:
 - SCHEMA_SQL: SQLite (local mode, aiosqlite)
 - POSTGRES_SCHEMA_SQL: PostgreSQL (team mode, asyncpg)
 """
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Incremental ALTER TABLE migrations keyed by target version.
 MIGRATIONS: dict[int, list[str]] = {
@@ -119,6 +123,21 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE workspaces ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE workspaces ADD COLUMN description TEXT NOT NULL DEFAULT ''",
     ],
+    10: [
+        # SQLite FTS5 update trigger for GDPR hard-erase path.
+        # facts_fts uses external-content mode (content=facts), so UPDATE
+        # statements on content/keywords do not automatically refresh the index.
+        # This trigger keeps the shadow table consistent by deleting the old
+        # entry and re-inserting the new one in a single statement group.
+        # Postgres uses a GENERATED tsvector column, so no migration is needed there.
+        """CREATE TRIGGER IF NOT EXISTS facts_au
+           AFTER UPDATE OF content, scope, keywords ON facts BEGIN
+               INSERT INTO facts_fts(facts_fts, rowid, content, scope, keywords)
+               VALUES ('delete', old.rowid, old.content, old.scope, old.keywords);
+               INSERT INTO facts_fts(rowid, content, scope, keywords)
+               VALUES (new.rowid, new.content, new.scope, new.keywords);
+           END""",
+    ],
 }
 
 # ── SQLite schema (local mode) ───────────────────────────────────────
@@ -179,6 +198,15 @@ CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
     INSERT INTO facts_fts(facts_fts, rowid, content, scope, keywords)
     VALUES ('delete', old.rowid, old.content, old.scope, old.keywords);
 END;
+
+-- Keep FTS5 shadow table in sync when content/keywords are updated (e.g. GDPR erasure).
+CREATE TRIGGER IF NOT EXISTS facts_au
+    AFTER UPDATE OF content, scope, keywords ON facts BEGIN
+        INSERT INTO facts_fts(facts_fts, rowid, content, scope, keywords)
+        VALUES ('delete', old.rowid, old.content, old.scope, old.keywords);
+        INSERT INTO facts_fts(rowid, content, scope, keywords)
+        VALUES (new.rowid, new.content, new.scope, new.keywords);
+    END;
 
 -- Conflict tracking
 CREATE TABLE IF NOT EXISTS conflicts (
