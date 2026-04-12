@@ -12,6 +12,11 @@ Eight tools total:
 
 Tool descriptions embed behavioral guidance for the LLM.
 The 'next_prompt' field in onboarding responses tells the agent exactly what to say.
+
+API Versioning:
+  - Tool API version: 1.0 (stable)
+  - Add '?version=latest' to tool calls for newest version
+  - Deprecated tools will be removed after 6 months notice
 """
 
 from __future__ import annotations
@@ -21,6 +26,10 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Literal
+
+# API version constant - bump for breaking changes
+__version__ = "1.0.0"
+__api_version__ = "1.0"
 
 from mcp.server.fastmcp import FastMCP
 
@@ -118,10 +127,19 @@ async def engram_status() -> dict[str, Any]:
 
     **Common mistake:** Starting tasks without calling engram_status first, leading to
     "disconnected" errors mid-task.
+
+    **API Version:** This tool is part of API version 1.0 (stable).
     """
     from engram.workspace import read_workspace, WORKSPACE_PATH
+    import engram.server as server_module
 
     ws = read_workspace()
+
+    # Include API version in response
+    result = {
+        "api_version": server_module.__api_version__,
+        "api_stable": True,
+    }
 
     if ws and ws.db_url:
         disconnected = await _check_key_generation(ws)
