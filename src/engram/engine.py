@@ -43,6 +43,9 @@ class EngramEngine:
         self._nli_threshold_high: float = 0.85
         self._nli_threshold_low: float = 0.50
         self._sse_subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._recent_queries: dict[
+            str, list[tuple[str, float]]
+        ] = {}  # agent_id -> [(topic, timestamp)]
 
     async def start(self) -> None:
         """Start the background detection worker and periodic tasks."""
@@ -430,6 +433,7 @@ class EngramEngine:
         fact_type: str | None = None,
         include_ephemeral: bool = False,
         include_adjacent: bool = False,
+        agent_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query what the team's agents collectively know about a topic.
 
@@ -657,6 +661,12 @@ class EngramEngine:
                         pf["id"][:12],
                     )
 
+        # Detect query loops (repeated queries from same agent)
+        if agent_id:
+            loop_warning = self._check_query_loop(agent_id, topic)
+            if loop_warning:
+                logger.warning(loop_warning)
+
         return results
 
     async def _query_adjacent_scopes(
@@ -754,6 +764,40 @@ class EngramEngine:
 
         results.sort(key=lambda r: r["relevance_score"], reverse=True)
         return results
+
+    def _check_query_loop(self, agent_id: str, topic: str) -> str | None:
+        """Detect if an agent is repeatedly querying the same topic (potential loop).
+
+        Returns a warning message if a loop is detected, None otherwise.
+        """
+        import time
+        from collections import deque
+
+        now = time.time()
+        window_seconds = 300  # 5 minute window
+
+        if agent_id not in self._recent_queries:
+            self._recent_queries[agent_id] = deque()
+
+        # Add current query
+        self._recent_queries[agent_id].append((topic, now))
+
+        # Clean old entries outside the window
+        while (
+            self._recent_queries[agent_id]
+            and self._recent_queries[agent_id][0][1] < now - window_seconds
+        ):
+            self._recent_queries[agent_id].popleft()
+
+        # Check for repeated queries
+        queries = self._recent_queries[agent_id]
+        if len(queries) >= 5:
+            # Count unique topics in recent queries
+            topics = [q[0] for q in queries]
+            if len(set(topics)) == 1:
+                return f"Query loop detected: Agent '{agent_id}' has queried '{topic}' {len(queries)} times in 5 minutes. This may indicate an agent loop."
+
+        return None
 
     # ── engram_promote ──────────────────────────────────────────────
 
