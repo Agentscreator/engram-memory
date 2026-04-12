@@ -406,11 +406,11 @@ async def _tool_init(pool: Any, anonymous_mode: bool = False, anon_agents: bool 
             f'  "headers": {{"Authorization": "Bearer {invite_key}"}}\n\n'
             f"In Claude Code I can edit the config for you — just ask.\n\n"
             f"To invite teammates, share the invite key above. They run:\n"
-            f"  curl -fsSL https://engram-us.com/install | sh\n"
+            f"  curl -fsSL https://engram-memory.com/install | sh\n"
             f"and paste the invite key when prompted.\n\n"
             f"To see and manage your team's memory — facts, conflicts, agents, and lineage — "
             f"visit the Engram dashboard:\n"
-            f"  https://www.engram-us.com/dashboard\n"
+            f"  https://www.engram-memory.com/dashboard\n"
             f"Log in with your Workspace ID ({engram_id}) and invite key.\n\n"
             f"Should commits show who made them, or stay anonymous?"
         ),
@@ -453,7 +453,7 @@ async def _tool_join(invite_key: str, pool: Any) -> dict:
             f"Otherwise restart your IDE and Engram will be ready.\n\n"
             f"To see and manage your team's memory — facts, conflicts, agents, and lineage — "
             f"visit the Engram dashboard:\n"
-            f"  https://www.engram-us.com/dashboard\n"
+            f"  https://www.engram-memory.com/dashboard\n"
             f"Log in with your Workspace ID ({engram_id}) and invite key."
         ),
     }
@@ -494,7 +494,7 @@ async def _tool_commit(
             "paused": True,
             "message": (
                 "Workspace paused: free storage limit (512 MB) exceeded. "
-                "Visit https://www.engram-us.com/dashboard to add a payment method and resume."
+                "Visit https://www.engram-memory.com/dashboard to add a payment method and resume."
             ),
         }
 
@@ -748,7 +748,7 @@ async def _tool_reset_invite_key(workspace_id: str, pool: Any) -> dict:
             f"Invite key rotated. All old keys are revoked.\n\n"
             f"New Invite Key: {new_key}\n\n"
             f"Share this with your team. They'll need to re-run the install script with the new key.\n\n"
-            f"Manage your team's memory at: https://www.engram-us.com/dashboard"
+            f"Manage your team's memory at: https://www.engram-memory.com/dashboard"
         ),
     }
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Engram installer — adds Engram to your MCP config
-# Usage: curl -fsSL https://engram-us.com/install | sh
-#   or:  curl -fsSL https://engram-us.com/install | sh -s -- --join ek_live_...
+# Usage: curl -fsSL https://engram-memory.com/install | sh
+#   or:  curl -fsSL https://engram-memory.com/install | sh -s -- --join ek_live_...
 
 set -e
 

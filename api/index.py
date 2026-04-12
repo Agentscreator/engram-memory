@@ -624,15 +624,15 @@ def _render_landing() -> str:
           </div>
           <div class="code-block" id="tab-mac">
             <button class="copy-btn" onclick="copyCode('install-mac', event)">Copy</button>
-            <div id="install-mac">curl -fsSL https://engram-us.com/install | sh</div>
+            <div id="install-mac">curl -fsSL https://engram-memory.com/install | sh</div>
           </div>
           <div class="code-block" id="tab-ps" style="display:none;">
             <button class="copy-btn" onclick="copyCode('install-ps', event)">Copy</button>
-            <div id="install-ps">irm https://engram-us.com/install.ps1 | iex</div>
+            <div id="install-ps">irm https://engram-memory.com/install.ps1 | iex</div>
           </div>
           <div class="code-block" id="tab-cmd" style="display:none;">
             <button class="copy-btn" onclick="copyCode('install-cmd', event)">Copy</button>
-            <div id="install-cmd">curl -fsSL https://engram-us.com/install.cmd -o install.cmd &amp;&amp; install.cmd &amp;&amp; del install.cmd</div>
+            <div id="install-cmd">curl -fsSL https://engram-memory.com/install.cmd -o install.cmd &amp;&amp; install.cmd &amp;&amp; del install.cmd</div>
           </div>
         </div>
       </div>

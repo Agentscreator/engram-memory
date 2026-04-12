@@ -1,6 +1,6 @@
 @echo off
 REM Engram installer for Windows CMD
-REM Usage: curl -fsSL https://engram-us.com/install.cmd -o install.cmd && install.cmd && del install.cmd
+REM Usage: curl -fsSL https://engram-memory.com/install.cmd -o install.cmd && install.cmd && del install.cmd
 
 setlocal enabledelayedexpansion
 

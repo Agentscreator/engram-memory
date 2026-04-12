@@ -29,7 +29,7 @@ DB_URL = os.environ.get("ENGRAM_DB_URL", "")
 SCHEMA = "engram"
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-APP_URL = os.environ.get("ENGRAM_APP_URL", "https://www.engram-us.com")
+APP_URL = os.environ.get("ENGRAM_APP_URL", "https://www.engram-memory.com")
 
 # ── Pricing constants ────────────────────────────────────────────────
 HOBBY_LIMIT_BYTES = 512 * 1024 * 1024  # 512 MiB (Neon free tier)

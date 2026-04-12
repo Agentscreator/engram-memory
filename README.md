@@ -28,17 +28,17 @@ When two agents develop incompatible beliefs, Engram detects the contradiction a
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://engram-us.com/install | sh
+curl -fsSL https://engram-memory.com/install | sh
 ```
 
 **Windows PowerShell:**
 ```powershell
-irm https://engram-us.com/install.ps1 | iex
+irm https://engram-memory.com/install.ps1 | iex
 ```
 
 **Windows CMD:**
 ```cmd
-curl -fsSL https://engram-us.com/install.cmd -o install.cmd && install.cmd && del install.cmd
+curl -fsSL https://engram-memory.com/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
 
 By default, the installer writes `https://mcp.engram.app/mcp` into your MCP config. If your environment needs a different endpoint, set `ENGRAM_MCP_URL` before running the installer.

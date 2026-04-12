@@ -1,6 +1,6 @@
 # Engram installer for Windows PowerShell
-# Usage: irm https://engram-us.com/install.ps1 | iex
-#   or:  & { $env:ENGRAM_JOIN='ek_live_...'; irm https://engram-us.com/install.ps1 | iex }
+# Usage: irm https://engram-memory.com/install.ps1 | iex
+#   or:  & { $env:ENGRAM_JOIN='ek_live_...'; irm https://engram-memory.com/install.ps1 | iex }
 
 $ErrorActionPreference = 'Stop'
 $McpUrl = $env:ENGRAM_MCP_URL

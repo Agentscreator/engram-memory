@@ -1,6 +1,6 @@
 # Supported IDEs
 
-Engram's install script (`curl -fsSL https://engram-us.com/install | sh`) auto-detects and configures the following IDEs. Each IDE has its own MCP config format — the installer handles the differences automatically.
+Engram's install script (`curl -fsSL https://engram-memory.com/install | sh`) auto-detects and configures the following IDEs. Each IDE has its own MCP config format — the installer handles the differences automatically.
 
 By default, the installer writes `https://mcp.engram.app/mcp` into each MCP config. If you need a custom endpoint, set `ENGRAM_MCP_URL` before running the installer.
 
@@ -63,22 +63,22 @@ Adapt the key names to match your IDE's format (`url`, `serverUrl`, `type`, etc.
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://engram-us.com/install | sh
+curl -fsSL https://engram-memory.com/install | sh
 ```
 
 **Windows PowerShell:**
 ```powershell
-irm https://engram-us.com/install.ps1 | iex
+irm https://engram-memory.com/install.ps1 | iex
 ```
 
 **Windows CMD:**
 ```cmd
-curl -fsSL https://engram-us.com/install.cmd -o install.cmd && install.cmd && del install.cmd
+curl -fsSL https://engram-memory.com/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
 
 To join an existing workspace:
 ```bash
-curl -fsSL https://engram-us.com/install | sh -s -- --join ek_live_YOUR_KEY
+curl -fsSL https://engram-memory.com/install | sh -s -- --join ek_live_YOUR_KEY
 ```
 ## Verification and troubleshooting
 

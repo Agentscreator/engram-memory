@@ -7,7 +7,7 @@ Zed supports MCP and can use Engram through `context_servers`.
 ### Option 1: Auto-install (Recommended)
 
 ```bash
-curl -fsSL https://engram-us.com/install | sh
+curl -fsSL https://engram-memory.com/install | sh
 ```
 
 ### Option 2: Manual Setup

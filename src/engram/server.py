@@ -179,7 +179,7 @@ async def engram_status() -> dict[str, Any]:
         "next_prompt": (
             "Welcome to Engram — shared memory for your team's agents.\n\n"
             "How would you like to get started?\n\n"
-            "1. **Engram Cloud** (Recommended) — Quickest setup. Sign up at https://www.engram-us.com to create "
+            "1. **Engram Cloud** (Recommended) — Quickest setup. Sign up at https://www.engram-memory.com to create "
             "a workspace and get an invite key, or paste an existing invite key to join your team.\n"
             "2. **PostgreSQL (Self-hosted)** — Use your own database. "
             "You'll need a PostgreSQL connection URL ready. I'll run `engram init` to create the workspace.\n"

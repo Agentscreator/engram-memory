@@ -6,7 +6,7 @@ Claude Desktop uses a stdio bridge for remote MCP servers.
 
 ### Option 1: Auto-install (Recommended)
 ```bash
-curl -fsSL https://engram-us.com/install | sh
+curl -fsSL https://engram-memory.com/install | sh
 ```
 
 The installer automatically sets up the mcp-remote bridge.
