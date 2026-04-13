@@ -425,12 +425,12 @@ def _render_dashboard() -> str:
     .graph-filter:focus { outline: none; border-color: rgba(52,211,153,0.3);
       box-shadow: 0 0 0 3px rgba(52,211,153,0.06); }
     .graph-filter::placeholder { color: rgba(255,255,255,0.2); }
-    .graph-wrap { position: relative; border-radius: 16px; overflow: hidden;
+    .graph-wrap { position: relative; border-radius: 16px; overflow: hidden; height: 520px;
       border: 1px solid rgba(255,255,255,0.04); background: rgba(0,0,0,0.2); }
     .graph-wrap::before { content: ''; position: absolute; inset: 0; z-index: 0; pointer-events: none;
       background: radial-gradient(ellipse at 25% 40%, rgba(52,211,153,0.03) 0%, transparent 60%),
                   radial-gradient(ellipse at 75% 60%, rgba(6,182,212,0.02) 0%, transparent 50%); }
-    #cy { width: 100%; height: 520px; position: relative; z-index: 1; }
+    #graph-nodes { position: absolute; inset: 0; z-index: 1; cursor: pointer; }
     #graph-particles { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
     .graph-legend { display: flex; gap: 20px; margin-top: 14px; flex-wrap: wrap; }
     .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px;
@@ -583,7 +583,7 @@ def _render_dashboard() -> str:
       /* Graph */
       .graph-controls { padding: 12px 0 0; }
       .graph-filter { font-size: 13px; padding: 10px 14px; }
-      #cy { height: 340px; }
+      .graph-wrap { height: 340px; }
 
       /* Facts */
       .facts-toolbar { flex-wrap: wrap; gap: 8px; }
@@ -812,7 +812,7 @@ def _render_dashboard() -> str:
       </div>
       <div class="graph-wrap">
         <canvas id="graph-particles"></canvas>
-        <div id="cy"></div>
+        <canvas id="graph-nodes"></canvas>
       </div>
       <div class="graph-legend">
         <span class="legend-item"><span class="legend-dot" style="background:var(--em5)"></span>Active</span>
@@ -991,7 +991,7 @@ let SESSION = null;        // { user_id, email, workspaces }
 let CURRENT_WS = null;     // { engram_id, ... }
 let WS_DATA = null;        // { facts, conflicts, agents }
 let BILLING = null;        // billing status
-let cy = null;
+let atomNodes = [], atomEdges = [], atomFrame = null, atomSelected = null, atomFilter = '';
 let factFilter = 'all';
 let authMode = 'login';
 
@@ -1542,7 +1542,7 @@ async function loadWithKey(engram_id) {
       </div>
       <div class="graph-wrap">
         <canvas id="graph-particles"></canvas>
-        <div id="cy"></div>
+        <canvas id="graph-nodes"></canvas>
       </div>
       <div class="graph-legend">
         <span class="legend-item"><span class="legend-dot" style="background:var(--em5)"></span>Active</span>
@@ -1579,7 +1579,9 @@ async function loadWithKey(engram_id) {
 }
 
 function goBackToList() {
-  WS_DATA = null; CURRENT_WS = null; BILLING = null; cy = null;
+  WS_DATA = null; CURRENT_WS = null; BILLING = null;
+  if (atomFrame) { cancelAnimationFrame(atomFrame); atomFrame = null; }
+  atomNodes = []; atomEdges = []; atomSelected = null; atomFilter = '';
   document.getElementById('ws-detail-screen').style.display = 'none';
   showWsListScreen(SESSION.workspaces);
 }
@@ -1621,21 +1623,9 @@ function renderDetail() {
   renderAgents();
 }
 
-// ── Graph ───────────────────────────────────────────────────────────
-let _cyScript = null;
-function _loadCytoscape() {
-  if (typeof cytoscape !== 'undefined') return Promise.resolve();
-  if (_cyScript) return _cyScript;
-  _cyScript = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.29.2/cytoscape.min.js';
-    s.onload = resolve; s.onerror = reject;
-    document.head.appendChild(s);
-  });
-  return _cyScript;
-}
+// ── Graph (atom canvas) ─────────────────────────────────────────────
 
-// Ambient floating particles behind the graph
+// Ambient floating particles (background layer — tiny, fast, subtle)
 function initParticles() {
   const canvas = document.getElementById('graph-particles');
   if (!canvas) return;
@@ -1646,12 +1636,12 @@ function initParticles() {
     w = canvas.width = r.width; h = canvas.height = r.height;
   }
   resize(); window.addEventListener('resize', resize);
-  for (let i = 0; i < 35; i++) {
+  for (let i = 0; i < 40; i++) {
     particles.push({
       x: Math.random()*w, y: Math.random()*h,
-      vx: (Math.random()-0.5)*0.2, vy: (Math.random()-0.5)*0.2,
-      r: Math.random()*1.2+0.3, a: Math.random()*0.2+0.05,
-      hue: [153,180,200][Math.floor(Math.random()*3)]
+      vx: (Math.random()-0.5)*0.18, vy: (Math.random()-0.5)*0.18,
+      r: Math.random()*1.1+0.2, a: Math.random()*0.12+0.03,
+      hue: [153,180,200,220][Math.floor(Math.random()*4)]
     });
   }
   function draw() {
@@ -1661,20 +1651,19 @@ function initParticles() {
       if (p.x < 0) p.x = w; if (p.x > w) p.x = 0;
       if (p.y < 0) p.y = h; if (p.y > h) p.y = 0;
       ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
-      ctx.fillStyle = `hsla(${p.hue},60%,65%,${p.a})`;
+      ctx.fillStyle = `hsla(${p.hue},55%,65%,${p.a})`;
       ctx.fill();
     });
-    // Draw faint connections between nearby particles
     for (let i = 0; i < particles.length; i++) {
       for (let j = i+1; j < particles.length; j++) {
         const dx = particles[i].x - particles[j].x;
         const dy = particles[i].y - particles[j].y;
         const dist = Math.sqrt(dx*dx + dy*dy);
-        if (dist < 80) {
+        if (dist < 70) {
           ctx.beginPath(); ctx.moveTo(particles[i].x, particles[i].y);
           ctx.lineTo(particles[j].x, particles[j].y);
-          ctx.strokeStyle = `rgba(52,211,153,${0.04*(1-dist/80)})`;
-          ctx.lineWidth = 0.5; ctx.stroke();
+          ctx.strokeStyle = `rgba(52,211,153,${0.025*(1-dist/70)})`;
+          ctx.lineWidth = 0.4; ctx.stroke();
         }
       }
     }
@@ -1683,169 +1672,298 @@ function initParticles() {
   draw();
 }
 
-async function renderGraph() {
+function renderGraph() {
   if (!WS_DATA) return;
-  await _loadCytoscape();
   initParticles();
+
+  const canvas = document.getElementById('graph-nodes');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const wrap = canvas.parentElement;
+
+  function resize() {
+    const r = wrap.getBoundingClientRect();
+    canvas.width = r.width; canvas.height = r.height;
+    // Also sync bg canvas
+    const bg = document.getElementById('graph-particles');
+    if (bg) { bg.width = r.width; bg.height = r.height; }
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
   const { facts, conflicts } = WS_DATA;
-  const els = [], sc = {};
-  const PAL = ['#10b981','#06b6d4','#8b5cf6','#ec4899','#f59e0b','#22c55e','#3b82f6','#14b8a6'];
-  let pi = 0;
+  const PAL = ['#10b981','#06b6d4','#8b5cf6','#ec4899','#f59e0b','#22c55e','#3b82f6','#14b8a6',
+               '#f97316','#a78bfa','#34d399','#38bdf8'];
+  const sc = {}; let pi = 0;
   const sColor = s => { if (!sc[s]) sc[s] = PAL[pi++ % PAL.length]; return sc[s]; };
 
-  (facts||[]).forEach(f => {
-    const ret = !!f.valid_until;
-    const col = ret ? '#475569' : sColor(f.scope||'general');
-    els.push({data:{id:f.id, label:f.scope||'general', content:f.content, scope:f.scope,
-      fact_type:f.fact_type, committed_at:f.committed_at, durability:f.durability, retired:ret,
-      color: col, glow: col,
-      size: ret ? 20 : Math.max(22, (f.confidence||0.9)*40+14)}});
+  // Build nodes — scatter them evenly using a jittered grid
+  const count = (facts||[]).length;
+  const cols = Math.ceil(Math.sqrt(count * 1.6));
+  const rows = Math.ceil(count / cols);
+
+  atomNodes = (facts||[]).map((f, i) => {
+    const retired = !!f.valid_until;
+    const color = retired ? '#64748b' : sColor(f.scope||'general');
+    const r = retired ? 7 : Math.max(9, (f.confidence||0.9)*14+5);
+    const col = i % cols, row = Math.floor(i / cols);
+    const cw = canvas.width / cols, ch = canvas.height / rows;
+    return {
+      id: f.id,
+      x: cw * col + cw * (0.2 + Math.random() * 0.6),
+      y: ch * row + ch * (0.2 + Math.random() * 0.6),
+      vx: (Math.random()-0.5) * 0.022,
+      vy: (Math.random()-0.5) * 0.022,
+      r,
+      color,
+      scope: f.scope||'general',
+      content: f.content||'',
+      retired,
+      fact_type: f.fact_type||'observation',
+      committed_at: f.committed_at,
+      durability: f.durability||'durable',
+      phase: Math.random() * Math.PI * 2,
+    };
+  });
+
+  // Build edges
+  atomEdges = [];
+  const nodeMap = () => { const m = {}; atomNodes.forEach(n => m[n.id] = n); return m; };
+
+  // Scope bonds — connect each node to its 2 nearest same-scope peers
+  const byScope = {};
+  atomNodes.forEach(n => {
+    if (!n.retired) {
+      (byScope[n.scope] = byScope[n.scope]||[]).push(n);
+    }
+  });
+  const edgeSet = new Set();
+  Object.values(byScope).forEach(group => {
+    group.forEach(n => {
+      const others = group.filter(o => o.id !== n.id)
+        .sort((a,b) => (a.x-n.x)**2+(a.y-n.y)**2 - ((b.x-n.x)**2+(b.y-n.y)**2));
+      others.slice(0, 2).forEach(o => {
+        const key = [n.id, o.id].sort().join('|');
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key);
+          atomEdges.push({a: n.id, b: o.id, kind: 'scope', color: n.color});
+        }
+      });
+    });
+  });
+
+  // Conflict + lineage edges
+  (conflicts||[]).filter(c=>c.status==='open').forEach(c => {
+    atomEdges.push({a: c.fact_a_id, b: c.fact_b_id, kind: 'conflict', color: '#ef4444'});
   });
   (facts||[]).filter(f=>f.supersedes_fact_id).forEach(f => {
-    els.push({data:{id:'l-'+f.id, source:f.supersedes_fact_id, target:f.id, kind:'lineage'}});
-  });
-  (conflicts||[]).filter(c=>c.status==='open').forEach(c => {
-    els.push({data:{id:'c-'+c.id, source:c.fact_a_id, target:c.fact_b_id, kind:'conflict'}});
+    atomEdges.push({a: f.supersedes_fact_id, b: f.id, kind: 'lineage', color: '#8b5cf6'});
   });
 
-  if (cy) cy.destroy();
-  cy = cytoscape({
-    container: document.getElementById('cy'), elements: els,
-    style: [
-      {selector:'node', style:{
-        'background-color':'data(color)',
-        'background-opacity': 0.85,
-        'label':'data(label)',
-        'font-size':'10px',
-        'color':'rgba(148,163,184,0.8)',
-        'text-valign':'bottom',
-        'text-margin-y':'6px',
-        'width':'data(size)',
-        'height':'data(size)',
-        'border-width': 1.5,
-        'border-color':'rgba(255,255,255,0.08)',
-        'overlay-opacity': 0,
-        'transition-property': 'background-color, border-color, border-width, opacity, width, height',
-        'transition-duration': '0.3s',
-      }},
-      {selector:'node:active', style:{
-        'overlay-opacity': 0,
-      }},
-      {selector:'node[retired = true]', style:{
-        'opacity':0.25,
-        'border-style':'dashed',
-        'border-color':'rgba(255,255,255,0.04)',
-      }},
-      {selector:'edge[kind="lineage"]', style:{
-        'line-color':'#8b5cf6',
-        'target-arrow-color':'#8b5cf6',
-        'target-arrow-shape':'triangle',
-        'curve-style':'bezier',
-        'width':1.5,
-        'opacity':0.35,
-        'line-style':'dotted',
-        'transition-property': 'opacity, line-color',
-        'transition-duration': '0.3s',
-      }},
-      {selector:'edge[kind="conflict"]', style:{
-        'line-color':'#ef4444',
-        'line-style':'dashed',
-        'width':2,
-        'opacity':0.6,
-        'curve-style':'bezier',
-        'transition-property': 'opacity',
-        'transition-duration': '0.3s',
-      }},
-      {selector:':selected', style:{
-        'border-color':'#34d399',
-        'border-width':3,
-        'background-opacity': 1,
-      }},
-      {selector:'node.hover-neighbor', style:{
-        'border-color':'rgba(52,211,153,0.5)',
-        'border-width':2,
-        'background-opacity': 1,
-      }},
-      {selector:'node.dimmed', style:{'opacity':0.08}},
-      {selector:'edge.dimmed', style:{'opacity':0.03}},
-    ],
-    layout:{
-      name: (facts||[]).length < 40 ? 'cose' : 'random',
-      animate: true,
-      animationDuration: 800,
-      animationEasing: 'ease-out-cubic',
-      randomize: false,
-      nodeRepulsion: 10000,
-      idealEdgeLength: 140,
-      padding: 30,
-      nodeOverlap: 20,
-    },
-    wheelSensitivity: 0.3,
-    minZoom: 0.3,
-    maxZoom: 3,
-  });
+  let t = 0;
+  if (atomFrame) cancelAnimationFrame(atomFrame);
 
-  // Hover glow effect
-  cy.on('mouseover','node', e => {
-    const n = e.target;
-    n.style({'border-color':'rgba(52,211,153,0.6)', 'border-width':3, 'background-opacity':1});
-    n.neighborhood('node').addClass('hover-neighbor');
-    cy.elements().not(n).not(n.neighborhood()).addClass('dimmed');
-  });
-  cy.on('mouseout','node', e => {
-    const n = e.target;
-    n.style({'border-color':'rgba(255,255,255,0.08)', 'border-width':1.5, 'background-opacity':0.85});
-    cy.elements().removeClass('hover-neighbor').removeClass('dimmed');
-  });
+  function draw() {
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    t += 0.004;
 
-  // Click detail panel
-  cy.on('tap','node', e => {
-    const d = e.target.data();
-    document.getElementById('nd-scope').textContent = (d.scope||'general')+' · '+(d.fact_type||'observation');
-    document.getElementById('nd-content').textContent = d.content||'';
-    const ts = d.committed_at ? new Date(d.committed_at).toLocaleString() : '';
-    document.getElementById('nd-meta').textContent = (d.retired?'⊘ Retired':'● Active')+' · '+(d.durability||'durable')+' · '+ts;
-    const panel = document.getElementById('node-detail');
-    panel.style.display = 'block';
-    panel.style.animation = 'none';
-    panel.offsetHeight; // reflow
-    panel.style.animation = 'slideDetail 0.3s ease';
-  });
-  cy.on('tap', e => { if(e.target===cy) document.getElementById('node-detail').style.display='none'; });
+    const nm = {};
+    atomNodes.forEach(n => nm[n.id] = n);
 
-  // Subtle idle animation — gentle breathing on nodes
-  let breathPhase = 0;
-  function breathe() {
-    breathPhase += 0.02;
-    cy.nodes('[retired != true]').forEach((n, i) => {
-      const s = 1 + Math.sin(breathPhase + i * 0.3) * 0.03;
-      const base = n.data('size') || 24;
-      n.style({'width': base * s, 'height': base * s});
+    const filterLower = atomFilter.toLowerCase();
+    const visibleIds = filterLower
+      ? new Set(atomNodes.filter(n =>
+          n.content.toLowerCase().includes(filterLower) ||
+          n.scope.toLowerCase().includes(filterLower)
+        ).map(n => n.id))
+      : null;
+
+    // ── Draw atom-bond edges ─────────────────────────────────────────
+    atomEdges.forEach(e => {
+      const na = nm[e.a], nb = nm[e.b];
+      if (!na || !nb) return;
+      if (visibleIds && !visibleIds.has(e.a) && !visibleIds.has(e.b)) return;
+
+      const dx = nb.x - na.x, dy = nb.y - na.y;
+      const len = Math.sqrt(dx*dx + dy*dy) || 1;
+
+      // Slight perpendicular curve — atom-like bond arc
+      const curveAmt = len * 0.13;
+      const cpx = (na.x+nb.x)/2 + (-dy/len) * curveAmt;
+      const cpy = (na.y+nb.y)/2 + (dx/len) * curveAmt;
+
+      let alpha, lineW, blur;
+      if (e.kind === 'conflict') {
+        alpha = 0.55 + Math.sin(t*3) * 0.15;
+        lineW = 1.2; blur = 10;
+      } else if (e.kind === 'lineage') {
+        alpha = 0.28 + Math.sin(t*1.5 + na.phase) * 0.07;
+        lineW = 0.8; blur = 5;
+      } else {
+        alpha = 0.10 + Math.sin(t*0.9 + na.phase) * 0.05;
+        lineW = 0.6; blur = 4;
+      }
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = e.color;
+      ctx.lineWidth = lineW;
+      ctx.shadowBlur = blur;
+      ctx.shadowColor = e.color;
+      ctx.beginPath();
+      ctx.moveTo(na.x, na.y);
+      ctx.quadraticCurveTo(cpx, cpy, nb.x, nb.y);
+      ctx.stroke();
+      ctx.restore();
     });
-    requestAnimationFrame(breathe);
+
+    // ── Draw fact nodes ──────────────────────────────────────────────
+    atomNodes.forEach(n => {
+      // Incredibly slow drift — bounce softly off edges
+      n.x += n.vx; n.y += n.vy;
+      const pad = n.r + 4;
+      if (n.x < pad) { n.x = pad; n.vx = Math.abs(n.vx); }
+      if (n.x > w - pad) { n.x = w - pad; n.vx = -Math.abs(n.vx); }
+      if (n.y < pad) { n.y = pad; n.vy = Math.abs(n.vy); }
+      if (n.y > h - pad) { n.y = h - pad; n.vy = -Math.abs(n.vy); }
+
+      const isSelected = atomSelected === n.id;
+      const isDim = visibleIds ? !visibleIds.has(n.id) : false;
+      const breathe = 1 + Math.sin(t * 0.7 + n.phase) * 0.035;
+      const drawR = n.r * breathe;
+
+      ctx.save();
+      if (isDim) ctx.globalAlpha = 0.06;
+      else if (n.retired) ctx.globalAlpha = 0.22;
+      else ctx.globalAlpha = isSelected ? 1 : 0.88;
+
+      // ── Outer pulse ring (selected only) ──
+      if (isSelected && !isDim) {
+        const pulseR = drawR + 7 + Math.sin(t * 2.5) * 3;
+        ctx.save();
+        ctx.globalAlpha = 0.55 + Math.sin(t * 2.5) * 0.2;
+        ctx.strokeStyle = n.color;
+        ctx.lineWidth = 1.2;
+        ctx.shadowBlur = 25;
+        ctx.shadowColor = n.color;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, pulseR, 0, Math.PI*2);
+        ctx.stroke();
+        // Second outer ring
+        ctx.globalAlpha = 0.25 + Math.sin(t * 2.5 + 1) * 0.1;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, pulseR + 5 + Math.sin(t*2)*2, 0, Math.PI*2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // ── Glow halo ──
+      if (!n.retired && !isDim) {
+        ctx.shadowBlur = isSelected ? 40 : 22;
+        ctx.shadowColor = n.color;
+      }
+
+      // ── Main circle (radial gradient — rich centre, soft edge) ──
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, drawR, 0, Math.PI*2);
+      const g = ctx.createRadialGradient(
+        n.x - drawR * 0.28, n.y - drawR * 0.28, drawR * 0.05,
+        n.x, n.y, drawR
+      );
+      if (n.retired) {
+        g.addColorStop(0, '#94a3b8');
+        g.addColorStop(1, '#334155');
+      } else {
+        g.addColorStop(0, n.color);
+        g.addColorStop(0.55, n.color + 'cc');
+        g.addColorStop(1, n.color + '44');
+      }
+      ctx.fillStyle = g;
+      ctx.fill();
+
+      // ── Inner specular highlight ──
+      if (!n.retired && !isDim) {
+        ctx.shadowBlur = 0;
+        const hx = n.x - drawR * 0.28, hy = n.y - drawR * 0.28;
+        const hg = ctx.createRadialGradient(hx, hy, 0, hx, hy, drawR * 0.38);
+        hg.addColorStop(0, 'rgba(255,255,255,0.32)');
+        hg.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.beginPath();
+        ctx.arc(hx, hy, drawR * 0.38, 0, Math.PI*2);
+        ctx.fillStyle = hg;
+        ctx.fill();
+      }
+
+      // ── Scope label ──
+      if (!isDim) {
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = n.retired ? 0.25 : 0.4;
+        ctx.fillStyle = '#cbd5e1';
+        ctx.font = '9px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        const lbl = n.scope.length > 12 ? n.scope.slice(0,11)+'…' : n.scope;
+        ctx.fillText(lbl, n.x, n.y + drawR + 5);
+      }
+
+      ctx.restore();
+    });
+
+    atomFrame = requestAnimationFrame(draw);
   }
-  breathe();
+  draw();
+
+  // ── Hit-test & interaction ───────────────────────────────────────
+  function hitTest(px, py) {
+    let best = null, bestDist = Infinity;
+    atomNodes.forEach(n => {
+      const dx = n.x - px, dy = n.y - py;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      if (dist < n.r * 2.8 && dist < bestDist) { best = n; bestDist = dist; }
+    });
+    return best;
+  }
+
+  function handleTap(px, py) {
+    const n = hitTest(px, py);
+    if (n) {
+      atomSelected = atomSelected === n.id ? null : n.id;
+      if (atomSelected) {
+        document.getElementById('nd-scope').textContent =
+          (n.scope||'general') + ' · ' + (n.fact_type||'observation');
+        document.getElementById('nd-content').textContent = n.content||'';
+        const ts = n.committed_at ? new Date(n.committed_at).toLocaleString() : '';
+        document.getElementById('nd-meta').textContent =
+          (n.retired ? '⊘ Retired' : '● Active') + ' · ' + (n.durability||'durable') + ' · ' + ts;
+        const panel = document.getElementById('node-detail');
+        panel.style.display = 'block';
+        panel.style.animation = 'none'; panel.offsetHeight;
+        panel.style.animation = 'slideDetail 0.3s ease';
+      } else {
+        document.getElementById('node-detail').style.display = 'none';
+      }
+    } else {
+      atomSelected = null;
+      document.getElementById('node-detail').style.display = 'none';
+    }
+  }
+
+  canvas.addEventListener('click', e => {
+    const r = canvas.getBoundingClientRect();
+    handleTap(e.clientX - r.left, e.clientY - r.top);
+  });
+  canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    const t = e.touches[0];
+    handleTap(t.clientX - r.left, t.clientY - r.top);
+  }, { passive: false });
 }
 
 function filterGraph(q) {
-  if (!cy) return;
-  q = q.toLowerCase();
-  if (!q) {
-    cy.elements().removeClass('dimmed');
-    cy.nodes().style('opacity', n => n.data('retired') ? 0.25 : 0.85);
-    cy.edges().style('opacity', e => e.data('kind')==='conflict' ? 0.6 : 0.35);
-    return;
-  }
-  cy.nodes().forEach(n => {
-    const m = (n.data('content')||'').toLowerCase().includes(q)||(n.data('scope')||'').toLowerCase().includes(q);
-    if (m) {
-      n.removeClass('dimmed');
-      n.style({'opacity':1, 'border-color':'rgba(52,211,153,0.4)', 'border-width':2.5});
-    } else {
-      n.addClass('dimmed');
-    }
-  });
-  cy.edges().addClass('dimmed');
+  atomFilter = (q||'').toLowerCase();
+  // The live canvas draw loop reads atomFilter each frame — no extra work needed
 }
 
 // ── Conflicts ───────────────────────────────────────────────────────
@@ -2033,7 +2151,7 @@ function switchTab(name, event) {
   if (event && event.target) event.target.classList.add('active');
   const panel = document.getElementById('panel-' + name);
   if (panel) panel.classList.add('active');
-  if (name === 'graph' && cy) cy.resize();
+  // graph canvas auto-resizes via window resize listener
   if (name === 'billing' && CURRENT_WS && !BILLING) loadBilling(CURRENT_WS.engram_id);
 }
 
