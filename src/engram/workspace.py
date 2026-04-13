@@ -260,6 +260,7 @@ def decode_invite_key(invite_key: str) -> dict[str, Any]:
 
     Returns payload dict: {db_url, engram_id, schema, expires_at, uses_remaining, created_at}
     """
+    invite_key = "".join(invite_key.split())  # strip all whitespace (handles copy-paste line breaks)
     if not invite_key.startswith("ek_live_"):
         raise ValueError("Invalid invite key format (must start with ek_live_)")
 
@@ -312,6 +313,7 @@ def invite_key_hash(invite_key: str) -> str:
 
     Extracts enc_key from the token and returns SHA256(enc_key) as hex.
     """
+    invite_key = "".join(invite_key.split())  # strip all whitespace (handles copy-paste line breaks)
     if not invite_key.startswith("ek_live_"):
         raise ValueError("Invalid invite key format")
     b64 = invite_key[8:]
