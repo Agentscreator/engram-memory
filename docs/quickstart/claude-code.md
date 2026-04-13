@@ -6,7 +6,7 @@ Claude Code is Anthropic's CLI agent. Engram integrates seamlessly.
 
 ### Option 1: Auto-install (Recommended)
 ```bash
-curl -fsSL https://engram-us.com/install | sh
+curl -fsSL https://engram-memory.com/install | sh
 ```
 
 ### Option 2: Manual Setup
@@ -17,7 +17,7 @@ curl -fsSL https://engram-us.com/install | sh
   "mcpServers": {
     "engram": {
       "type": "http",
-      "url": "https://mcp.engram.app/mcp"
+      "url": "https://www.engram-memory.com/mcp"
     }
   }
 }

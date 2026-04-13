@@ -364,25 +364,25 @@
         }
     },
     "VS Code (Copilot)": {
-        "path": ".vscode/mcp.json",
-        "server_type_key": "mcpServers",
+        "path": "Code/User/mcp.json",
+        "server_type_key": "servers",
         "family": "VS Code",
         "config_path": {
-            "appdata": false,
-            "appsupport": false,
-            "xdg": false,
-            "syshome": true
+            "appdata": true,
+            "appsupport": true,
+            "xdg": true,
+            "syshome": false
         }
     },
     "VS Code Insiders (Copilot)": {
-        "path": ".vscode-insiders/mcp.json",
-        "server_type_key": "mcpServers",
+        "path": "Code - Insiders/User/mcp.json",
+        "server_type_key": "servers",
         "family": "VS Code",
         "config_path": {
-            "appdata": false,
-            "appsupport": false,
-            "xdg": false,
-            "syshome": true
+            "appdata": true,
+            "appsupport": true,
+            "xdg": true,
+            "syshome": false
         }
     },
     "Warp": {

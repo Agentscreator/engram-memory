@@ -29,7 +29,7 @@ DB_URL = os.environ.get("ENGRAM_DB_URL", "")
 SCHEMA = "engram"
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-APP_URL = os.environ.get("ENGRAM_APP_URL", "https://www.engram-us.com")
+APP_URL = os.environ.get("ENGRAM_APP_URL", "https://www.engram-memory.com")
 
 # ── Pricing constants ────────────────────────────────────────────────
 HOBBY_LIMIT_BYTES = 512 * 1024 * 1024  # 512 MiB (Neon free tier)
@@ -84,7 +84,7 @@ def _get_jwt_from_request(request: Request) -> dict | None:
 async def _user_owns_workspace(user_id: str, engram_id: str, pool: Any) -> bool:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT 1 FROM user_workspaces WHERE user_id = $1 AND engram_id = $2",
+            f"SELECT 1 FROM {SCHEMA}.user_workspaces WHERE user_id = $1 AND engram_id = $2",
             user_id,
             engram_id,
         )
@@ -123,7 +123,7 @@ async def handle_status(request: Request) -> JSONResponse:
 
         async with pool.acquire() as conn:
             ws = await conn.fetchrow(
-                "SELECT paused, storage_bytes, plan, stripe_customer_id FROM workspaces WHERE engram_id = $1",
+                f"SELECT paused, storage_bytes, plan, stripe_customer_id FROM {SCHEMA}.workspaces WHERE engram_id = $1",
                 engram_id,
             )
     except Exception as exc:
@@ -175,10 +175,12 @@ async def handle_checkout(request: Request) -> JSONResponse:
 
         async with pool.acquire() as conn:
             ws = await conn.fetchrow(
-                "SELECT stripe_customer_id FROM workspaces WHERE engram_id = $1", engram_id
+                f"SELECT stripe_customer_id FROM {SCHEMA}.workspaces WHERE engram_id = $1",
+                engram_id,
             )
             user = await conn.fetchrow(
-                "SELECT email, stripe_customer_id FROM users WHERE id = $1", session["sub"]
+                f"SELECT email, stripe_customer_id FROM {SCHEMA}.users WHERE id = $1",
+                session["sub"],
             )
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -198,12 +200,12 @@ async def handle_checkout(request: Request) -> JSONResponse:
         # Save customer id to user and workspace
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE users SET stripe_customer_id = $1 WHERE id = $2",
+                f"UPDATE {SCHEMA}.users SET stripe_customer_id = $1 WHERE id = $2",
                 customer_id,
                 session["sub"],
             )
             await conn.execute(
-                "UPDATE workspaces SET stripe_customer_id = $1 WHERE engram_id = $2",
+                f"UPDATE {SCHEMA}.workspaces SET stripe_customer_id = $1 WHERE engram_id = $2",
                 customer_id,
                 engram_id,
             )
@@ -240,7 +242,8 @@ async def handle_portal(request: Request) -> JSONResponse:
 
         async with pool.acquire() as conn:
             ws = await conn.fetchrow(
-                "SELECT stripe_customer_id FROM workspaces WHERE engram_id = $1", engram_id
+                f"SELECT stripe_customer_id FROM {SCHEMA}.workspaces WHERE engram_id = $1",
+                engram_id,
             )
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -287,7 +290,7 @@ async def handle_webhook(request: Request) -> Response:
                 async with pool.acquire() as conn:
                     # Unpause workspace and record payment method
                     await conn.execute(
-                        """UPDATE workspaces
+                        f"""UPDATE {SCHEMA}.workspaces
                            SET paused = false, stripe_customer_id = $1, plan = 'pro'
                            WHERE engram_id = $2""",
                         customer_id,
@@ -306,7 +309,7 @@ async def handle_webhook(request: Request) -> Response:
                     pool = await _get_pool()
                     async with pool.acquire() as conn:
                         await conn.execute(
-                            """UPDATE workspaces
+                            f"""UPDATE {SCHEMA}.workspaces
                                SET paused = false, stripe_customer_id = $1, plan = 'pro'
                                WHERE engram_id = $2""",
                             customer_id,

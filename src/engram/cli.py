@@ -16,6 +16,7 @@ import logging
 import sys
 from pathlib import Path
 import os
+import platform
 
 import click
 
@@ -25,7 +26,9 @@ from engram.storage import DEFAULT_DB_PATH
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 _PATH_SYSTEM_HOME = Path.home()
 _PATH_APPDATA_DIR = Path(os.environ["APPDATA"]) if "APPDATA" in os.environ else None
-_PATH_APPSUPPORT_DIR = _PATH_SYSTEM_HOME / "Library" / "Application Support"  # Mac only
+_PATH_APPSUPPORT_DIR = (
+    _PATH_SYSTEM_HOME / "Library" / "Application Support" if platform.system() == "Darwin" else None
+)
 _PATH_XDG_DIR = (
     Path(os.environ["XDG_CONFIG_HOME"])
     if "XDG_CONFIG_HOME" in os.environ
@@ -71,13 +74,16 @@ _ENGRAM_MCP_ENTRY = {
 def _engram_mcp_entry_for_client(client_name: str) -> dict[str, object]:
     import os
 
-    mcp_url = os.environ.get("ENGRAM_MCP_URL", "https://mcp.engram.app/mcp")
+    mcp_url = os.environ.get("ENGRAM_MCP_URL", "https://www.engram-memory.com/mcp")
 
     if client_name == "Windsurf":
         return {"serverUrl": mcp_url}
 
     if client_name == "Zed":
         return {"url": mcp_url}
+
+    if client_name.startswith("VS Code"):
+        return {"type": "http", "url": mcp_url}
 
     return {
         "command": "uvx",
@@ -940,87 +946,151 @@ def info() -> None:
 # ── engram verify ────────────────────────────────────────────────────
 
 
-@main.command()
-@click.option("--verbose", "-v", is_flag=True, help="Show details for all checks.")
-def verify(verbose: bool) -> None:
-    """Verify Engram installation and configuration.
+_QUICKSTART_URL = "https://github.com/Agentscreator/Engram/blob/main/docs/quickstart/README.md"
+_TROUBLESHOOTING_URL = "https://github.com/Agentscreator/Engram/blob/main/docs/TROUBLESHOOTING.md"
+_NLI_MODEL_NAME = "cross-encoder/nli-MiniLM2-L6-H768"
 
-    Runs a focused checklist and prints a clear pass/fail for each:
-    ✓ workspace.json exists and is valid
-    ✓ Backend is reachable (team mode)
-    ✓ MCP config written to at least one IDE
-    ✓ NLI model files present (if using conflict detection)
-    """
+
+def _mcp_health_url(mcp_url: str) -> str:
+    if mcp_url.endswith("/mcp"):
+        return mcp_url[: -len("/mcp")] + "/health"
+    return mcp_url
+
+
+def _nli_cache_paths() -> list[Path]:
+    model_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    return [
+        model_dir / "models--cross-encoder--nli-MiniLM2-L6-H768",
+        Path.home() / ".cache" / "sentence_transformers" / "cross-encoder" / "nli-MiniLM2-L6-H768",
+    ]
+
+
+async def _check_storage_connectivity(ws: object | None) -> tuple[bool, str]:
+    if ws is not None and getattr(ws, "db_url", ""):
+        from engram.postgres_storage import PostgresStorage
+
+        storage = PostgresStorage(
+            db_url=getattr(ws, "db_url"),
+            workspace_id=getattr(ws, "engram_id", "local"),
+            schema=getattr(ws, "schema", "engram"),
+        )
+    else:
+        from engram.storage import SQLiteStorage
+
+        storage = SQLiteStorage(db_path=DEFAULT_DB_PATH, workspace_id="local")
+
+    try:
+        await storage.connect()
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        try:
+            await storage.close()
+        except Exception:
+            pass
+
+    return True, ""
+
+
+def _run_diagnostics(command_name: str, verbose: bool, load_nli: bool) -> bool:
+    """Run installation diagnostics shared by `verify` and `doctor`."""
     from engram.workspace import WORKSPACE_PATH, read_workspace
-    import json
-    import urllib.request
     import urllib.error
-    import os
+    import urllib.request
 
     all_passed = True
     verbose = verbose or os.environ.get("ENGRAM_VERIFY_VERBOSE") == "1"
+    ws = None
 
-    # Check 1: workspace.json exists and is valid JSON
-    click.echo("\n[1/4] Checking workspace configuration...")
+    click.echo(f"\nEngram {command_name}: checking installation health")
+
+    # Check 1: workspace.json exists and is semantically readable.
+    click.echo("\n[1/5] Checking workspace configuration...")
     if not WORKSPACE_PATH.exists():
         click.echo("  ✗ ~/.engram/workspace.json not found")
         click.echo("    → Run: engram init   (or: engram join <key>)")
-        click.echo(
-            "    → Docs: https://github.com/Agentscreator/Engram/blob/main/docs/QUICKSTART.md"
-        )
+        click.echo(f"    → Docs: {_QUICKSTART_URL}")
         all_passed = False
     else:
         try:
-            data = json.loads(WORKSPACE_PATH.read_text())
-            ws = read_workspace()
-            mode = "team" if ws and ws.db_url else "local"
-            click.echo(f"  ✓ workspace.json exists ({mode} mode)")
-            if verbose:
-                click.echo(f"    - engram_id: {ws.engram_id if ws else 'N/A'}")
-                click.echo(f"    - schema: {ws.schema if ws else 'N/A'}")
-                click.echo(f"    - anonymous_mode: {ws.anonymous_mode if ws else 'N/A'}")
-        except json.JSONDecodeError as e:
-            click.echo(f"  ✗ workspace.json is invalid JSON: {e}")
+            json.loads(WORKSPACE_PATH.read_text())
+        except json.JSONDecodeError as exc:
+            click.echo(f"  ✗ workspace.json is invalid JSON: {exc}")
             click.echo("    → Delete and re-run: rm ~/.engram/workspace.json && engram init")
             all_passed = False
+        else:
+            ws = read_workspace()
+            if ws is None:
+                click.echo("  ✗ workspace.json could not be parsed as an Engram workspace")
+                click.echo("    → Run: engram config show")
+                click.echo(f"    → Docs: {_TROUBLESHOOTING_URL}")
+                all_passed = False
+            else:
+                mode = "team" if ws.db_url else "local"
+                click.echo(f"  ✓ workspace.json exists and is valid ({mode} mode)")
+                if verbose:
+                    click.echo(f"    - engram_id: {ws.engram_id}")
+                    click.echo(f"    - schema: {ws.schema}")
+                    click.echo(f"    - anonymous_mode: {ws.anonymous_mode}")
 
-    # Check 2: Backend is reachable (team mode only)
-    click.echo("\n[2/4] Checking backend connectivity...")
-    ws = read_workspace()
-    if ws and ws.db_url:
-        # For team mode, check if we can reach the MCP endpoint
-        # The MCP URL pattern is derived from db_url or uses default
-        mcp_url = os.environ.get("ENGRAM_MCP_URL", "https://mcp.engram.app/mcp")
-
-        # Try a simple HEAD request to check connectivity
-        try:
-            req = urllib.request.Request(
-                mcp_url.replace("/mcp", "/health") if "/mcp" in mcp_url else mcp_url, method="HEAD"
+    # Check 2: storage backend can connect.
+    click.echo("\n[2/5] Checking database connectivity...")
+    if WORKSPACE_PATH.exists() and ws is None:
+        click.echo("  ○ Skipped until workspace configuration is fixed")
+    else:
+        ok, error = asyncio.run(_check_storage_connectivity(ws))
+        if ok:
+            storage_label = "PostgreSQL" if ws and ws.db_url else "SQLite"
+            click.echo(f"  ✓ {storage_label} storage connected")
+            if verbose and not (ws and ws.db_url):
+                click.echo(f"    - path: {DEFAULT_DB_PATH}")
+        else:
+            click.echo("  ✗ Storage connection failed")
+            click.echo(f"    - Error: {error}")
+            click.echo("    → For local mode, check ~/.engram permissions and disk space")
+            click.echo(
+                "    → For team mode, verify ENGRAM_DB_URL or rejoin with a fresh invite key"
             )
+            click.echo(f"    → Docs: {_TROUBLESHOOTING_URL}")
+            all_passed = False
+
+    # Check 3: MCP server module can load and optional HTTP endpoint responds.
+    click.echo("\n[3/5] Checking MCP server reachability...")
+    try:
+        from engram.server import mcp
+
+        if mcp is None:
+            raise RuntimeError("FastMCP server object is missing")
+        click.echo("  ✓ MCP server module loads")
+    except Exception as exc:
+        click.echo("  ✗ MCP server failed to load")
+        click.echo(f"    - Error: {type(exc).__name__}: {exc}")
+        click.echo("    → Reinstall Engram or check Python dependency installation")
+        click.echo(f"    → Docs: {_TROUBLESHOOTING_URL}")
+        all_passed = False
+
+    mcp_url = os.environ.get("ENGRAM_MCP_URL", "")
+    if mcp_url:
+        try:
+            req = urllib.request.Request(_mcp_health_url(mcp_url), method="HEAD")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 if resp.status < 400:
-                    click.echo(f"  ✓ Backend reachable at {mcp_url}")
+                    click.echo(f"  ✓ MCP HTTP endpoint reachable at {mcp_url}")
                 else:
-                    click.echo(f"  ✗ Backend returned status {resp.status}")
-                    all_passed = False
-        except urllib.error.URLError as e:
-            # Non-critical: backend might not have /health endpoint
-            click.echo("  ⚠ Could not reach health endpoint (non-critical)")
+                    click.echo(f"  ⚠ MCP HTTP endpoint returned status {resp.status}")
+        except urllib.error.URLError as exc:
+            click.echo("  ⚠ Could not reach MCP HTTP endpoint")
             if verbose:
                 click.echo(f"    - URL: {mcp_url}")
-                click.echo(f"    - Error: {e.reason}")
-                click.echo("    - Note: Backend connectivity will be verified by your IDE")
-        except Exception as e:
-            click.echo(f"  ⚠ Could not verify backend ({type(e).__name__}: {e})")
-            if verbose:
-                click.echo("    - This is normal if you're offline or the backend is busy")
-    else:
-        click.echo("  ○ Team mode not configured (local SQLite mode)")
-        if verbose:
-            click.echo("    - For team features: engram init or engram join <key>")
+                click.echo(f"    - Error: {exc.reason}")
+            click.echo(
+                "    → If you use a remote MCP URL, verify ENGRAM_MCP_URL and network access"
+            )
+    elif verbose:
+        click.echo("    - ENGRAM_MCP_URL not set; stdio MCP mode will be used by default")
 
-    # Check 3: MCP config in at least one IDE
-    click.echo("\n[3/4] Checking MCP configuration in IDEs...")
+    # Check 4: MCP config in at least one IDE.
+    click.echo("\n[4/5] Checking MCP configuration in IDEs...")
     detected = []
     missing = []
 
@@ -1031,7 +1101,6 @@ def verify(verbose: bool) -> None:
                 data = json.loads(config_path.read_text())
                 key = info["key"]
 
-                # Navigate nested keys (e.g., "mcpServers" or "mcp")
                 keys = key.split(".")
                 current = data
                 found = True
@@ -1057,56 +1126,90 @@ def verify(verbose: bool) -> None:
     else:
         click.echo("  ✗ Engram not found in any IDE MCP config")
         click.echo("    → Run: engram install")
+        click.echo(f"    → Docs: {_QUICKSTART_URL}")
         all_passed = False
 
     if missing and verbose:
         click.echo("\n  Other detected IDEs (Engram not configured):")
-        for client_name in missing[:5]:  # Limit verbose output
+        for client_name in missing[:5]:
             click.echo(f"    - ○ {client_name}")
         if len(missing) > 5:
             click.echo(f"    - ... and {len(missing) - 5} more")
 
-    # Check 4: NLI model files present
-    click.echo("\n[4/4] Checking NLI model files...")
-    model_dir = Path.home() / ".cache" / "huggingface" / "hub"
-    nli_model_path = model_dir / "models--cross-encoder--nli-MiniLM2-L6-H768"
+    # Check 5: NLI model cache or opt-in full load.
+    click.echo("\n[5/5] Checking NLI model...")
+    if load_nli:
+        try:
+            from sentence_transformers import CrossEncoder
 
-    # Check in common locations
-    possible_paths = [
-        nli_model_path,
-        Path.home() / ".cache" / "sentence_transformers" / "cross-encoder" / "nli-MiniLM2-L6-H768",
-    ]
-
-    found_model = False
-    for path in possible_paths:
-        if path.exists():
-            click.echo(f"  ✓ NLI model found at {path}")
-            found_model = True
-            break
-
-    if not found_model:
-        click.echo("  ⚠ NLI model not cached (will download on first conflict detection)")
-        if verbose:
-            click.echo("    - Model: cross-encoder/nli-MiniLM2-L6-H768")
-            click.echo("    - Will be downloaded automatically when needed")
+            CrossEncoder(_NLI_MODEL_NAME)
+            click.echo(f"  ✓ NLI model loaded: {_NLI_MODEL_NAME}")
+        except Exception as exc:
+            click.echo("  ✗ NLI model failed to load")
+            click.echo(f"    - Error: {type(exc).__name__}: {exc}")
             click.echo(
-                "    - This is optional - Engram works without it (Tier 1 detection disabled)"
+                "    → Install optional model dependencies or allow first-run model download"
             )
+            click.echo(f"    → Docs: {_TROUBLESHOOTING_URL}")
+            all_passed = False
+    else:
+        found_path = next((path for path in _nli_cache_paths() if path.exists()), None)
+        if found_path:
+            click.echo(f"  ✓ NLI model cache found at {found_path}")
+        else:
+            click.echo("  ⚠ NLI model not cached (will download on first conflict detection)")
+            click.echo("    → Run: engram doctor --load-nli to verify the model can load now")
+            if verbose:
+                click.echo(f"    - Model: {_NLI_MODEL_NAME}")
+                click.echo("    - This is optional; deterministic conflict checks still work")
 
-    # Summary
     click.echo("\n" + "=" * 50)
     if all_passed:
-        click.echo("✓ All checks passed! Engram is ready to use.")
+        click.echo("✓ All checks passed! All required checks passed. Engram is ready to use.")
         click.echo("\nNext steps:")
         click.echo("  1. Restart your IDE")
         click.echo("  2. Ask your agent: 'Set up Engram for my team'")
-        click.echo("  3. Run 'engram verify' anytime to re-check")
+        click.echo(f"  3. Run 'engram {command_name}' anytime to re-check")
     else:
-        click.echo("✗ Some checks failed. Fix the issues above and run 'engram verify' again.")
         click.echo(
-            "\nFor help: https://github.com/Agentscreator/Engram/blob/main/docs/TROUBLESHOOTING.md"
+            f"✗ Some checks failed. Fix the issues above and run 'engram {command_name}' again."
         )
+        click.echo(f"\nFor help: {_TROUBLESHOOTING_URL}")
     click.echo("=" * 50 + "\n")
+
+    return all_passed
+
+
+@main.command()
+@click.option("--verbose", "-v", is_flag=True, help="Show details for all checks.")
+@click.option(
+    "--load-nli",
+    is_flag=True,
+    help="Attempt to load the NLI model instead of only checking the local cache.",
+)
+def verify(verbose: bool, load_nli: bool) -> None:
+    """Verify Engram installation and configuration.
+
+    Runs a focused checklist and prints a clear pass/fail for each:
+    ✓ workspace.json exists and is valid
+    ✓ Storage backend can connect
+    ✓ MCP server module loads
+    ✓ MCP config written to at least one IDE
+    ✓ NLI model cache present, or full model loads with --load-nli
+    """
+    _run_diagnostics("verify", verbose=verbose, load_nli=load_nli)
+
+
+@main.command()
+@click.option("--verbose", "-v", is_flag=True, help="Show details for all checks.")
+@click.option(
+    "--load-nli",
+    is_flag=True,
+    help="Attempt to load the NLI model instead of only checking the local cache.",
+)
+def doctor(verbose: bool, load_nli: bool) -> None:
+    """Diagnose a broken Engram setup and print actionable fixes."""
+    _run_diagnostics("doctor", verbose=verbose, load_nli=load_nli)
 
 
 # ── engram re-embed ───────────────────────────────────────────────────
@@ -1584,6 +1687,286 @@ def export_cmd(format: str, output: str | None, scope: str | None) -> None:
             click.echo(content)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
+
+
+# ── engram gdpr ──────────────────────────────────────────────────────
+
+
+@main.group()
+def gdpr() -> None:
+    """GDPR / legal subject-erasure commands (workspace creator only)."""
+    pass
+
+
+@gdpr.command("erase")
+@click.option("--agent-id", required=True, help="Agent ID whose data should be erased.")
+@click.option(
+    "--mode",
+    type=click.Choice(["soft", "hard"]),
+    required=True,
+    help=(
+        "soft: redact engineer name and provenance only, fact content preserved. "
+        "hard: wipe fact content, close validity windows, cascade-dismiss conflicts."
+    ),
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip interactive confirmation (for non-interactive / scripted use).",
+)
+def gdpr_erase(agent_id: str, mode: str, yes: bool) -> None:
+    """Erase personal data for an agent (GDPR right-to-erasure / right-to-be-forgotten).
+
+    Requires the local workspace to be initialised as a creator workspace.
+    Hard erase is irreversible — always back up your database first.
+    """
+    import asyncio
+
+    if not yes:
+        action = (
+            "SOFT erase (redact attribution fields)"
+            if mode == "soft"
+            else "HARD erase (wipe content, close validity, dismiss conflicts — IRREVERSIBLE)"
+        )
+        click.echo(f"\nAbout to perform: {action}")
+        click.echo(f"Agent ID : {agent_id}")
+        click.confirm("Proceed?", abort=True)
+
+    async def _run() -> None:
+        from engram.engine import EngramEngine
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws is None:
+            raise click.ClickException("No workspace configured. Run 'engram setup' first.")
+        if not ws.is_creator:
+            raise click.ClickException("GDPR erasure is restricted to the workspace creator.")
+
+        if ws.db_url.startswith("postgres"):
+            from engram.postgres_storage import PostgresStorage
+
+            storage = PostgresStorage(ws.db_url, workspace_id=ws.engram_id, schema=ws.schema)
+        else:
+            from engram.storage import SQLiteStorage
+
+            storage = SQLiteStorage(workspace_id=ws.engram_id)
+
+        await storage.connect()
+        try:
+            engine = EngramEngine(storage)
+            result = await engine.gdpr_erase_agent(agent_id, mode, actor="cli")  # type: ignore[arg-type]
+        finally:
+            await storage.close()
+
+        stats = result["stats"]
+        click.echo(f"\nGDPR {mode} erase complete for agent: {agent_id}")
+        click.echo(f"  Facts updated          : {stats['facts_updated']}")
+        if mode == "hard":
+            click.echo(f"  Conflicts closed       : {stats['conflicts_closed']}")
+        click.echo(f"  Conflicts scrubbed     : {stats['conflicts_scrubbed']}")
+        click.echo(f"  Agents updated         : {stats['agents_updated']}")
+        if mode == "hard":
+            click.echo(f"  Scope permissions del. : {stats['scope_permissions_deleted']}")
+            click.echo(f"  Scopes updated         : {stats['scopes_updated']}")
+        click.echo(f"  Audit rows scrubbed    : {stats['audit_rows_scrubbed']}")
+
+    try:
+        asyncio.run(_run())
+    except click.ClickException:
+        raise
+    except PermissionError as exc:
+        raise click.ClickException(str(exc))
+    except Exception as exc:
+        raise click.ClickException(f"Erasure failed: {exc}")
+
+
+# ── engram invite ────────────────────────────────────────────────────
+
+
+@main.group()
+def invite() -> None:
+    """Invite key lifecycle commands (workspace creator only)."""
+    pass
+
+
+@invite.command("rotate")
+@click.option(
+    "--grace-minutes",
+    default=15,
+    show_default=True,
+    help="Grace window (minutes) for active sessions after rotation. 0 = immediate revocation.",
+)
+@click.option(
+    "--reason",
+    default="",
+    help="Optional note explaining why the key was rotated (stored in audit log).",
+)
+@click.option(
+    "--expires-days",
+    default=90,
+    show_default=True,
+    help="Validity period in days for the new invite key.",
+)
+@click.option(
+    "--uses",
+    default=10,
+    show_default=True,
+    help="Max number of times the new invite key can be consumed.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip interactive confirmation (for non-interactive / scripted use).",
+)
+def invite_rotate(
+    grace_minutes: int,
+    reason: str,
+    expires_days: int,
+    uses: int,
+    yes: bool,
+) -> None:
+    """Rotate the workspace invite key with audit trail and webhook notification.
+
+    Soft-revokes all existing keys with an optional grace period so agents
+    in active sessions can finish their work before being disconnected.
+    New join attempts with the old key are rejected immediately.
+
+    Requires the local workspace to be initialised as a creator workspace.
+    """
+    import asyncio
+
+    if not yes:
+        click.echo("\nAbout to rotate the workspace invite key.")
+        if grace_minutes > 0:
+            click.echo(f"  Grace period : {grace_minutes} minutes for active sessions")
+        else:
+            click.echo("  Grace period : none (immediate revocation)")
+        if reason:
+            click.echo(f"  Reason       : {reason}")
+        click.confirm("Proceed?", abort=True)
+
+    async def _run() -> None:
+        from engram.engine import EngramEngine
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws is None:
+            raise click.ClickException("No workspace configured. Run 'engram setup' first.")
+        if not ws.is_creator:
+            raise click.ClickException("Key rotation is restricted to the workspace creator.")
+
+        db_url = ws.db_url
+        if not db_url:
+            raise click.ClickException(
+                "No team database configured. Key rotation requires team mode."
+            )
+
+        if db_url.startswith("postgres"):
+            from engram.postgres_storage import PostgresStorage
+
+            storage = PostgresStorage(db_url, workspace_id=ws.engram_id, schema=ws.schema)
+        else:
+            from engram.storage import SQLiteStorage
+
+            storage = SQLiteStorage(workspace_id=ws.engram_id)
+
+        await storage.connect()
+        try:
+            engine = EngramEngine(storage)
+            result = await engine.rotate_invite_key(
+                expires_days=expires_days,
+                uses=uses,
+                grace_minutes=grace_minutes,
+                reason=reason or None,
+                actor="cli",
+            )
+        except PermissionError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        finally:
+            await storage.close()
+
+        click.echo("\nInvite key rotated successfully.")
+        click.echo(f"  Old generation : {result['old_generation']}")
+        click.echo(f"  New generation : {result['new_generation']}")
+        if result.get("grace_until"):
+            click.echo(f"  Grace until    : {result['grace_until']}")
+        click.echo(f"\nNew invite key:\n\n  {result['invite_key']}\n")
+        click.echo("Share this key with your team via a secure channel.")
+
+    try:
+        asyncio.run(_run())
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(f"Key rotation failed: {exc}")
+
+
+@invite.command("history")
+@click.option(
+    "--limit",
+    default=20,
+    show_default=True,
+    help="Maximum number of rotation audit entries to display.",
+)
+def invite_history(limit: int) -> None:
+    """Show the invite key rotation audit trail for this workspace."""
+    import asyncio
+
+    async def _run() -> None:
+        from engram.engine import EngramEngine
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws is None:
+            raise click.ClickException("No workspace configured. Run 'engram setup' first.")
+
+        db_url = ws.db_url
+        if not db_url:
+            raise click.ClickException("No team database configured. History requires team mode.")
+
+        if db_url.startswith("postgres"):
+            from engram.postgres_storage import PostgresStorage
+
+            storage = PostgresStorage(db_url, workspace_id=ws.engram_id, schema=ws.schema)
+        else:
+            from engram.storage import SQLiteStorage
+
+            storage = SQLiteStorage(workspace_id=ws.engram_id)
+
+        await storage.connect()
+        engine = EngramEngine(storage)
+        try:
+            entries = await engine.get_rotation_history(limit=limit)
+        finally:
+            await storage.close()
+
+        if not entries:
+            click.echo("No key rotation events found.")
+            return
+
+        click.echo(f"\nKey rotation history ({len(entries)} entries):\n")
+        for entry in entries:
+            extra = entry.get("extra") or "{}"
+            if isinstance(extra, str):
+                try:
+                    extra = json.loads(extra)
+                except Exception:
+                    extra = {}
+            click.echo(
+                f"  {entry.get('timestamp', 'unknown')} — generation {extra.get('old_generation', '?')} → {extra.get('new_generation', '?')}"
+            )
+            if extra.get("reason"):
+                click.echo(f"    reason  : {extra['reason']}")
+            click.echo(f"    actor   : {extra.get('actor', 'unknown')}")
+            grace = extra.get("grace_until") or extra.get("grace_minutes")
+            if grace:
+                click.echo(f"    grace   : {grace}")
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

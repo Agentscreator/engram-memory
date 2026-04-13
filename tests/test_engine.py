@@ -42,6 +42,14 @@ async def test_commit_returns_proactive_suggestions_for_rate_limit(engine: Engra
     assert any("retry" in s.lower() for s in result["suggestions"])
 
 
+def test_conflict_risk_estimation():
+    engine = EngramEngine(storage=None)  # storage not needed for this test
+
+    assert engine._estimate_conflict_risk("Rate limit is 1000", "api") == "high"
+    assert engine._estimate_conflict_risk("System should retry requests", "api") == "medium"
+    assert engine._estimate_conflict_risk("UI color is blue", "ui") == "low"
+
+
 @pytest.mark.asyncio
 async def test_commit_dedup(engine: EngramEngine):
     await engine.commit(

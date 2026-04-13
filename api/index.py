@@ -85,6 +85,11 @@ def _render_landing() -> str:
       text-decoration: none; letter-spacing: -0.03em;
       display: flex; align-items: center; gap: 10px;
     }
+    .logo-memory {
+      font-size: 13px; font-weight: 400; color: rgba(52, 211, 153, 0.5);
+      letter-spacing: 0.12em; text-transform: uppercase;
+      align-self: flex-end; margin-bottom: 2px; margin-left: 2px;
+    }
     .logo-dot {
       width: 8px; height: 8px; border-radius: 50%;
       background: var(--emerald-400);
@@ -429,7 +434,8 @@ def _render_landing() -> str:
       border-top: 1px solid var(--border-subtle);
     }
     .footer-links { display: flex; gap: 28px; justify-content: center; align-items: center; margin-bottom: 16px; }
-    .footer-logo { font-size: 18px; font-weight: 700; color: var(--emerald-400); letter-spacing: -0.02em; }
+    .footer-logo { font-size: 18px; font-weight: 700; color: var(--emerald-400); letter-spacing: -0.02em; display: inline-flex; align-items: baseline; gap: 6px; }
+    .footer-logo-memory { font-size: 10px; font-weight: 400; color: rgba(52, 211, 153, 0.45); letter-spacing: 0.12em; text-transform: uppercase; }
     .footer-links a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; transition: color 0.25s; }
     .footer-links a:hover { color: var(--emerald-400); }
     .footer-tagline { font-size: 13px; color: var(--text-muted); font-style: italic; }
@@ -561,7 +567,7 @@ def _render_landing() -> str:
 <header>
   <div class="container">
     <div class="header-content">
-      <a href="/" class="logo"><span class="logo-dot"></span>engram</a>
+      <a href="/" class="logo"><span class="logo-dot"></span>engram<span class="logo-memory">memory</span></a>
       <nav class="nav-links">
         <a href="#install">Install</a>
         <a href="/dashboard">Dashboard</a>
@@ -617,16 +623,16 @@ def _render_landing() -> str:
             <button class="tab" onclick="switchTab('cmd')">CMD</button>
           </div>
           <div class="code-block" id="tab-mac">
-            <button class="copy-btn" onclick="copyCode('install-mac')">Copy</button>
-            <div id="install-mac">curl -fsSL https://engram-us.com/install | sh</div>
+            <button class="copy-btn" onclick="copyCode('install-mac', event)">Copy</button>
+            <div id="install-mac">curl -fsSL https://engram-memory.com/install | sh</div>
           </div>
           <div class="code-block" id="tab-ps" style="display:none;">
-            <button class="copy-btn" onclick="copyCode('install-ps')">Copy</button>
-            <div id="install-ps">irm https://engram-us.com/install.ps1 | iex</div>
+            <button class="copy-btn" onclick="copyCode('install-ps', event)">Copy</button>
+            <div id="install-ps">irm https://engram-memory.com/install.ps1 | iex</div>
           </div>
           <div class="code-block" id="tab-cmd" style="display:none;">
-            <button class="copy-btn" onclick="copyCode('install-cmd')">Copy</button>
-            <div id="install-cmd">curl -fsSL https://engram-us.com/install.cmd -o install.cmd &amp;&amp; install.cmd &amp;&amp; del install.cmd</div>
+            <button class="copy-btn" onclick="copyCode('install-cmd', event)">Copy</button>
+            <div id="install-cmd">curl -fsSL https://engram-memory.com/install.cmd -o install.cmd &amp;&amp; install.cmd &amp;&amp; del install.cmd</div>
           </div>
         </div>
       </div>
@@ -641,7 +647,7 @@ def _render_landing() -> str:
         <div class="step-content">
           <div class="step-title">Ask your agent</div>
           <div class="code-block">
-            <button class="copy-btn" onclick="copyCode('setup-prompt')">Copy</button>
+            <button class="copy-btn" onclick="copyCode('setup-prompt', event)">Copy</button>
             <div id="setup-prompt">"Set up Engram for my team"</div>
           </div>
         </div>
@@ -705,7 +711,7 @@ def _render_landing() -> str:
 <footer>
   <div class="container">
     <div class="footer-links">
-      <span class="footer-logo">engram</span>
+      <span class="footer-logo">engram<span class="footer-logo-memory">memory</span></span>
       <a href="https://github.com/Agentscreator/Engram" target="_blank">GitHub</a>
       <a href="https://github.com/Agentscreator/Engram/blob/main/LICENSE" target="_blank">Apache 2.0</a>
       <a href="https://discord.gg/2SQ34TfA" target="_blank">Discord</a>
@@ -818,10 +824,10 @@ function switchTab(platform) {
 
 // ── Copy helper ────────────────────────────────────────────────────
 let toastTimeout;
-function copyCode(id) {
+function copyCode(id, evt) {
+  const btn = (evt && evt.currentTarget) || document.querySelector('#' + id).closest('.code-block').querySelector('.copy-btn');
   const text = document.getElementById(id).textContent.trim();
   navigator.clipboard.writeText(text).then(() => {
-    const btn = event.target;
     const original = btn.textContent;
     btn.textContent = '✓ Copied';
     btn.classList.add('copied');
@@ -837,6 +843,20 @@ function copyCode(id) {
       block.style.boxShadow = '0 0 20px rgba(52, 211, 153, 0.1)';
       setTimeout(() => { block.style.borderColor = ''; block.style.boxShadow = ''; }, 800);
     }
+  }).catch(() => {
+    // Fallback for browsers that block clipboard API (e.g. non-HTTPS)
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+    document.body.removeChild(ta);
+    const original = btn.textContent;
+    btn.textContent = '✓ Copied';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 2000);
+    const toast = document.getElementById('copy-toast');
+    clearTimeout(toastTimeout);
+    toast.classList.add('show');
+    toastTimeout = setTimeout(() => toast.classList.remove('show'), 2500);
   });
 }
 

@@ -222,10 +222,43 @@ def _render_dashboard() -> str:
     }
     .auth-switch button:hover { opacity: 0.8; }
 
+    /* Mobile auth logo (shown only when brand panel is hidden) */
+    .auth-mobile-logo {
+      display: none; align-items: center; gap: 9px;
+      font-size: 20px; font-weight: 700; color: var(--em4); letter-spacing: -0.03em;
+      text-decoration: none; margin-bottom: 36px; justify-content: center;
+    }
+    .auth-mobile-logo-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--em4);
+      box-shadow: 0 0 10px var(--em4), 0 0 20px rgba(52,211,153,0.2);
+    }
+
+    /* Modal field inputs */
+    .field { margin-bottom: 16px; }
+    .field label {
+      display: block; font-size: 13px; font-weight: 500; color: var(--t2); margin-bottom: 7px;
+    }
+    .field input {
+      width: 100%; padding: 12px 14px; background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(52,211,153,0.1); border-radius: 10px; font-size: 14px;
+      font-family: inherit; color: var(--t1);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .field input:focus {
+      outline: none; background: rgba(255,255,255,0.06);
+      border-color: var(--em5); box-shadow: 0 0 0 3px rgba(16,185,129,0.12);
+    }
+    .field input::placeholder { color: rgba(167,243,208,0.25); }
+
     @media (max-width: 900px) {
       .auth-layout { grid-template-columns: 1fr; }
       .auth-brand { display: none; }
-      .auth-form-panel { padding: 48px 28px; min-height: 100vh; }
+      .auth-form-panel {
+        padding: 48px 28px; min-height: 100vh;
+        align-items: flex-start; padding-top: 64px;
+      }
+      .auth-mobile-logo { display: flex; }
+      .auth-form-heading { font-size: 22px; }
     }
 
     /* ── WORKSPACE LIST ─────────────────────────────────────────── */
@@ -265,6 +298,44 @@ def _render_dashboard() -> str:
     .modal .subtitle { font-size: 13px; color: var(--t2); margin-bottom: 24px; }
     .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
     .modal-actions button { flex: 1; }
+
+    /* PIN input */
+    .pin-row { display: flex; gap: 10px; justify-content: center; margin: 20px 0; }
+    .pin-digit {
+      width: 52px; height: 60px; border-radius: 12px; border: 1px solid rgba(52,211,153,0.15);
+      background: rgba(255,255,255,0.04); color: var(--t1); font-size: 26px; font-weight: 700;
+      text-align: center; font-family: 'JetBrains Mono', monospace;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      -webkit-appearance: none; appearance: none;
+    }
+    .pin-digit:focus {
+      outline: none; border-color: var(--em5); box-shadow: 0 0 0 3px rgba(16,185,129,0.12);
+    }
+
+    /* Invite key display */
+    .invite-key-box {
+      background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 10px;
+      padding: 14px 16px; font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      color: var(--em4); word-break: break-all; line-height: 1.6;
+      position: relative; margin: 16px 0;
+    }
+    .copy-btn {
+      margin-top: 8px; width: 100%; padding: 10px; border-radius: 9px;
+      background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.18);
+      color: var(--em4); font-size: 13px; font-weight: 600; cursor: pointer;
+      font-family: inherit; transition: background 0.2s;
+    }
+    .copy-btn:hover { background: rgba(52,211,153,0.15); }
+    .copy-btn.copied { background: rgba(52,211,153,0.2); border-color: rgba(52,211,153,0.4); color: #34d399; }
+
+    /* Workspace list action buttons */
+    .ws-list-actions { display: flex; gap: 10px; }
+    .ws-card-footer { display: flex; justify-content: flex-end; margin-top: 14px; padding-top: 12px;
+      border-top: 1px solid var(--border); }
+    .ws-key-btn { padding: 6px 14px; border-radius: 7px; font-size: 12px; font-weight: 600;
+      background: rgba(52,211,153,0.07); border: 1px solid rgba(52,211,153,0.15); color: var(--em4);
+      cursor: pointer; font-family: inherit; transition: background 0.2s; }
+    .ws-key-btn:hover { background: rgba(52,211,153,0.14); }
 
     /* ── WORKSPACE DETAIL ───────────────────────────────────────── */
     #ws-detail-screen { display: none; }
@@ -483,7 +554,9 @@ def _render_dashboard() -> str:
     @media (max-width: 480px) {
       .stat-num { font-size: 22px; }
       .stat-card { padding: 12px 14px; }
-      .auth-form-panel { padding: 32px 20px; }
+      .auth-form-panel { padding: 48px 20px; }
+      .auth-mobile-logo { margin-bottom: 28px; }
+      .pin-digit { width: 46px; height: 54px; font-size: 22px; }
     }
   </style>
 </head>
@@ -515,21 +588,34 @@ def _render_dashboard() -> str:
       <p class="auth-brand-sub">Every agent on your team sees the same verified facts,<br>conflicts, and decisions — in real time.</p>
       <div class="auth-features">
         <div class="auth-feature">
-          <div class="auth-feature-icon">⚡</div>
+          <div class="auth-feature-icon">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="var(--em4)" stroke-width="1.8">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+          </div>
           <div class="auth-feature-text">
             <strong>Zero setup</strong>
             <span>One invite key. Works with any MCP-compatible IDE.</span>
           </div>
         </div>
         <div class="auth-feature">
-          <div class="auth-feature-icon">🔒</div>
+          <div class="auth-feature-icon">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="var(--em4)" stroke-width="1.8">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+          </div>
           <div class="auth-feature-text">
             <strong>Private by default</strong>
             <span>All data encrypted. Never shared, always yours.</span>
           </div>
         </div>
         <div class="auth-feature">
-          <div class="auth-feature-icon">🧠</div>
+          <div class="auth-feature-icon">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="var(--em4)" stroke-width="1.8">
+              <circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>
+              <path stroke-linecap="round" d="M12 7v4m0 0l-5.5 6M12 11l5.5 6"/>
+            </svg>
+          </div>
           <div class="auth-feature-text">
             <strong>Conflict detection</strong>
             <span>Automatically flags contradictions across agents.</span>
@@ -541,6 +627,9 @@ def _render_dashboard() -> str:
     <!-- Right: form -->
     <div class="auth-form-panel">
       <div class="auth-form-inner">
+        <a href="/" class="auth-mobile-logo">
+          <span class="auth-mobile-logo-dot"></span>engram
+        </a>
         <h2 class="auth-form-heading" id="auth-heading">Welcome back</h2>
         <p class="auth-form-sub" id="auth-subheading">Sign in to your Engram account</p>
 
@@ -593,12 +682,15 @@ def _render_dashboard() -> str:
   <div class="container">
     <div class="screen-header">
       <div class="screen-title">Your Workspaces</div>
-      <button class="btn-sm btn-primary" onclick="openConnectModal()">+ Connect Workspace</button>
+      <div class="ws-list-actions">
+        <button class="btn-sm btn-ghost" onclick="openConnectModal()">Connect existing</button>
+        <button class="btn-sm btn-primary" onclick="openCreateModal()">+ New workspace</button>
+      </div>
     </div>
     <div class="ws-grid" id="ws-grid">
       <div class="empty-state" style="grid-column:1/-1">
         No workspaces yet.<br>
-        <span style="font-size:13px">Create a workspace with <code style="font-family:JetBrains Mono,monospace;font-size:12px;background:rgba(52,211,153,0.08);padding:2px 6px;border-radius:4px">engram_init</code> in your IDE, then connect it here.</span>
+        <span style="font-size:13px">Click <strong>+ New workspace</strong> to create one, or connect an existing workspace with an invite key.</span>
       </div>
     </div>
   </div>
@@ -620,7 +712,7 @@ def _render_dashboard() -> str:
     <div class="paused-banner" id="paused-banner" style="display:none">
       <div class="paused-banner-text">
         <strong>Workspace paused — free tier limit reached</strong>
-        <span>Your workspace has exceeded the 512 MiB free storage limit. Add a payment method to resume.</span>
+        <span>Your workspace has exceeded the 512 MB free storage limit. Add a payment method to resume.</span>
       </div>
       <button class="btn-sm btn-primary" onclick="startCheckout()">Add payment method</button>
     </div>
@@ -703,6 +795,76 @@ def _render_dashboard() -> str:
     <div class="modal-actions">
       <button class="btn-sm btn-ghost" onclick="closeConnectModal()">Cancel</button>
       <button class="btn-sm btn-primary" onclick="connectWorkspace()">Connect</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── CREATE WORKSPACE MODAL ───────────────────────────────────── -->
+<div class="modal-overlay" id="create-modal">
+  <div class="modal">
+    <div id="create-step-pin">
+      <h3>Create a workspace</h3>
+      <p class="subtitle">Set a 4-digit PIN to protect your invite key. You'll need it to view the key again later.</p>
+      <div class="pin-row">
+        <input class="pin-digit" id="cp0" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+        <input class="pin-digit" id="cp1" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+        <input class="pin-digit" id="cp2" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+        <input class="pin-digit" id="cp3" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+      </div>
+      <p class="subtitle" style="margin-top:0;margin-bottom:8px">Confirm PIN</p>
+      <div class="pin-row">
+        <input class="pin-digit" id="cp4" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+        <input class="pin-digit" id="cp5" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+        <input class="pin-digit" id="cp6" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+        <input class="pin-digit" id="cp7" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+      </div>
+      <div class="auth-msg error" id="create-error"></div>
+      <div class="modal-actions">
+        <button class="btn-sm btn-ghost" onclick="closeCreateModal()">Cancel</button>
+        <button class="btn-sm btn-primary" id="create-btn" onclick="submitCreateWorkspace()">Create workspace</button>
+      </div>
+    </div>
+    <div id="create-step-done" style="display:none">
+      <h3>Workspace created</h3>
+      <p class="subtitle">Your invite key is shown below. Copy it now — you can always retrieve it again with your PIN.</p>
+      <div class="invite-key-box" id="create-invite-key-box"></div>
+      <button class="copy-btn" onclick="copyCreatedKey()">Copy invite key</button>
+      <p style="font-size:12px;color:var(--tm);margin-top:12px;line-height:1.6">
+        Add this key to your MCP config under <code style="background:rgba(52,211,153,0.08);padding:1px 5px;border-radius:4px">"Authorization": "Bearer &lt;key&gt;"</code> — or paste it when prompted by your IDE.
+      </p>
+      <div class="modal-actions" style="margin-top:16px">
+        <button class="btn-sm btn-primary" onclick="closeCreateModal()">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── VIEW INVITE KEY MODAL ────────────────────────────────────── -->
+<div class="modal-overlay" id="key-modal">
+  <div class="modal">
+    <div id="key-step-pin">
+      <h3>View invite key</h3>
+      <p class="subtitle" id="key-modal-subtitle">Enter your 4-digit PIN to reveal the invite key for <span id="key-modal-ws-id" style="color:var(--em4);font-family:'JetBrains Mono',monospace"></span>.</p>
+      <div class="pin-row">
+        <input class="pin-digit" id="kp0" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+        <input class="pin-digit" id="kp1" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+        <input class="pin-digit" id="kp2" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+        <input class="pin-digit" id="kp3" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" />
+      </div>
+      <div class="auth-msg error" id="key-error"></div>
+      <div class="modal-actions">
+        <button class="btn-sm btn-ghost" onclick="closeKeyModal()">Cancel</button>
+        <button class="btn-sm btn-primary" id="key-btn" onclick="submitRevealKey()">Reveal</button>
+      </div>
+    </div>
+    <div id="key-step-done" style="display:none">
+      <h3>Invite key</h3>
+      <p class="subtitle">Share this key with teammates to give them access to the workspace.</p>
+      <div class="invite-key-box" id="reveal-invite-key-box"></div>
+      <button class="copy-btn" onclick="copyRevealedKey()">Copy invite key</button>
+      <div class="modal-actions" style="margin-top:16px">
+        <button class="btn-sm btn-ghost" onclick="closeKeyModal()">Close</button>
+      </div>
     </div>
   </div>
 </div>
@@ -847,7 +1009,7 @@ function renderWsGrid(workspaces) {
   if (!workspaces.length) {
     el.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
       No workspaces yet.<br>
-      <span style="font-size:13px">Create a workspace with <code style="font-family:JetBrains Mono,monospace;font-size:12px;background:rgba(52,211,153,0.08);padding:2px 6px;border-radius:4px">engram_init</code> in your IDE, then connect it here.</span>
+      <span style="font-size:13px">Click <strong>+ New workspace</strong> to create one, or connect an existing workspace with an invite key.</span>
     </div>`;
     return;
   }
@@ -857,14 +1019,20 @@ function renderWsGrid(workspaces) {
     const fillClass = pct >= 100 ? 'over' : pct >= 80 ? 'near' : '';
     const isPaused = ws.paused;
     const plan = ws.plan || 'hobby';
-    return `<div class="ws-card ${isPaused ? 'paused' : ''}" onclick="openWorkspace('${esc(ws.engram_id)}')">
-      <div class="ws-id">${esc(ws.engram_id)}</div>
-      <div class="ws-badges">
-        <span class="badge ${isPaused ? 'badge-paused' : 'badge-active'}">${isPaused ? 'Paused' : 'Active'}</span>
-        <span class="badge ${plan === 'pro' ? 'badge-pro' : 'badge-hobby'}">${plan}</span>
+    const wsId = esc(ws.engram_id);
+    return `<div class="ws-card ${isPaused ? 'paused' : ''}">
+      <div onclick="openWorkspace('${wsId}')" style="cursor:pointer">
+        <div class="ws-id">${wsId}</div>
+        <div class="ws-badges">
+          <span class="badge ${isPaused ? 'badge-paused' : 'badge-active'}">${isPaused ? 'Paused' : 'Active'}</span>
+          <span class="badge ${plan === 'pro' ? 'badge-pro' : 'badge-hobby'}">${plan}</span>
+        </div>
+        <div class="ws-usage-bar"><div class="ws-usage-fill ${fillClass}" style="width:${pct}%"></div></div>
+        <div class="ws-usage-label">${storageMib} MB / 512 MB free</div>
       </div>
-      <div class="ws-usage-bar"><div class="ws-usage-fill ${fillClass}" style="width:${pct}%"></div></div>
-      <div class="ws-usage-label">${storageMib} MiB / 512 MiB free</div>
+      <div class="ws-card-footer">
+        <button class="ws-key-btn" onclick="event.stopPropagation();openKeyModal('${wsId}')">View invite key</button>
+      </div>
     </div>`;
   }).join('');
 }
@@ -900,6 +1068,150 @@ async function connectWorkspace() {
   } catch(e) {
     errEl.textContent = 'Connection error';
     errEl.style.display = 'block';
+  }
+}
+
+// ── PIN digit helpers ───────────────────────────────────────────────
+function wirePinDigits(ids) {
+  ids.forEach((id, i) => {
+    const el = document.getElementById(id);
+    el.addEventListener('input', () => {
+      el.value = el.value.replace(/\D/g, '').slice(0, 1);
+      if (el.value && i < ids.length - 1) document.getElementById(ids[i + 1]).focus();
+    });
+    el.addEventListener('keydown', e => {
+      if (e.key === 'Backspace' && !el.value && i > 0) document.getElementById(ids[i - 1]).focus();
+    });
+  });
+}
+function getPinValue(ids) {
+  return ids.map(id => document.getElementById(id).value).join('');
+}
+function clearPinDigits(ids) {
+  ids.map(id => document.getElementById(id)).forEach(el => { el.value = ''; });
+}
+
+// ── Create workspace modal ──────────────────────────────────────────
+const CREATE_PIN_IDS = ['cp0','cp1','cp2','cp3'];
+const CREATE_CONFIRM_IDS = ['cp4','cp5','cp6','cp7'];
+let _createdInviteKey = null;
+
+function openCreateModal() {
+  clearPinDigits([...CREATE_PIN_IDS, ...CREATE_CONFIRM_IDS]);
+  document.getElementById('create-error').style.display = 'none';
+  document.getElementById('create-step-pin').style.display = 'block';
+  document.getElementById('create-step-done').style.display = 'none';
+  document.getElementById('create-modal').classList.add('open');
+  wirePinDigits(CREATE_PIN_IDS);
+  wirePinDigits(CREATE_CONFIRM_IDS);
+  setTimeout(() => document.getElementById('cp0').focus(), 50);
+}
+function closeCreateModal() {
+  document.getElementById('create-modal').classList.remove('open');
+  _createdInviteKey = null;
+  clearPinDigits([...CREATE_PIN_IDS, ...CREATE_CONFIRM_IDS]);
+}
+async function submitCreateWorkspace() {
+  const pin = getPinValue(CREATE_PIN_IDS);
+  const confirm = getPinValue(CREATE_CONFIRM_IDS);
+  const errEl = document.getElementById('create-error');
+  errEl.style.display = 'none';
+  if (pin.length !== 4) { errEl.textContent = 'Enter all 4 PIN digits'; errEl.style.display = 'block'; return; }
+  if (pin !== confirm) { errEl.textContent = 'PINs do not match'; errEl.style.display = 'block'; return; }
+  const btn = document.getElementById('create-btn');
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+  try {
+    const r = await fetch('/auth/create-workspace', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ pin }),
+    });
+    const d = await r.json();
+    if (!r.ok) { errEl.textContent = d.error || 'Failed to create workspace'; errEl.style.display = 'block'; return; }
+    _createdInviteKey = d.invite_key;
+    document.getElementById('create-invite-key-box').textContent = d.invite_key;
+    document.getElementById('create-step-pin').style.display = 'none';
+    document.getElementById('create-step-done').style.display = 'block';
+    // Refresh workspace list
+    const meR = await fetch('/auth/me', { credentials: 'include' });
+    SESSION = await meR.json();
+    showWsListScreen(SESSION.workspaces);
+  } catch(e) {
+    errEl.textContent = 'Connection error'; errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create workspace';
+  }
+}
+function copyCreatedKey() {
+  if (_createdInviteKey) {
+    navigator.clipboard.writeText(_createdInviteKey);
+    _flashCopyBtn(event.target);
+  }
+}
+function _flashCopyBtn(btn) {
+  if (!btn) return;
+  const orig = btn.textContent;
+  btn.textContent = 'Copied!';
+  btn.classList.add('copied');
+  setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 2000);
+}
+
+// ── View invite key modal ───────────────────────────────────────────
+const KEY_PIN_IDS = ['kp0','kp1','kp2','kp3'];
+let _keyModalWsId = null;
+let _revealedKey = null;
+
+function openKeyModal(engram_id) {
+  _keyModalWsId = engram_id;
+  _revealedKey = null;
+  clearPinDigits(KEY_PIN_IDS);
+  document.getElementById('key-error').style.display = 'none';
+  document.getElementById('key-modal-ws-id').textContent = engram_id;
+  document.getElementById('key-step-pin').style.display = 'block';
+  document.getElementById('key-step-done').style.display = 'none';
+  document.getElementById('key-modal').classList.add('open');
+  wirePinDigits(KEY_PIN_IDS);
+  setTimeout(() => document.getElementById('kp0').focus(), 50);
+}
+function closeKeyModal() {
+  document.getElementById('key-modal').classList.remove('open');
+  _keyModalWsId = null;
+  _revealedKey = null;
+  clearPinDigits(KEY_PIN_IDS);
+}
+async function submitRevealKey() {
+  const pin = getPinValue(KEY_PIN_IDS);
+  const errEl = document.getElementById('key-error');
+  errEl.style.display = 'none';
+  if (pin.length !== 4) { errEl.textContent = 'Enter all 4 PIN digits'; errEl.style.display = 'block'; return; }
+  const btn = document.getElementById('key-btn');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  try {
+    const r = await fetch('/auth/invite-key', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ engram_id: _keyModalWsId, pin }),
+    });
+    const d = await r.json();
+    if (!r.ok) { errEl.textContent = d.error || 'Incorrect PIN'; errEl.style.display = 'block'; return; }
+    _revealedKey = d.invite_key;
+    document.getElementById('reveal-invite-key-box').textContent = d.invite_key;
+    document.getElementById('key-step-pin').style.display = 'none';
+    document.getElementById('key-step-done').style.display = 'block';
+  } catch(e) {
+    errEl.textContent = 'Connection error'; errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Reveal';
+  }
+}
+function copyRevealedKey() {
+  if (_revealedKey) {
+    navigator.clipboard.writeText(_revealedKey);
+    _flashCopyBtn(event.target);
   }
 }
 
@@ -1248,13 +1560,13 @@ function renderBilling(b) {
     <div class="billing-card">
       <h3>Storage Usage</h3>
       <div class="usage-numbers">
-        <span>${storageMib.toFixed(2)} MiB used</span>
-        <span>512 MiB free</span>
+        <span>${storageMib.toFixed(2)} MB used</span>
+        <span>512 MB free</span>
       </div>
       <div class="usage-bar-lg"><div class="usage-fill-lg ${fillClass}" style="width:${Math.min(100,pct)}%"></div></div>
       <div style="font-size:13px;color:var(--tm)">${pct.toFixed(1)}% of free tier used</div>
       <p class="pricing-note">
-        Free tier: <strong>512 MiB</strong> (same as Neon's hobby plan)<br>
+        Free tier: <strong>512 MB</strong> (same as Neon's hobby plan)<br>
         Paid tier: <strong>$${b.price_per_gib_month}/GiB-month</strong>
         — 20% above Neon's rate, with identical free tier limits.
       </p>
@@ -1346,6 +1658,12 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('connect-modal').addEventListener('click', e => {
     if (e.target === document.getElementById('connect-modal')) closeConnectModal();
+  });
+  document.getElementById('create-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('create-modal')) closeCreateModal();
+  });
+  document.getElementById('key-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('key-modal')) closeKeyModal();
   });
   boot();
 });

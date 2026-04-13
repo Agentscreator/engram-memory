@@ -28,20 +28,20 @@ When two agents develop incompatible beliefs, Engram detects the contradiction a
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://engram-us.com/install | sh
+curl -fsSL https://engram-memory.com/install | sh
 ```
 
 **Windows PowerShell:**
 ```powershell
-irm https://engram-us.com/install.ps1 | iex
+irm https://engram-memory.com/install.ps1 | iex
 ```
 
 **Windows CMD:**
 ```cmd
-curl -fsSL https://engram-us.com/install.cmd -o install.cmd && install.cmd && del install.cmd
+curl -fsSL https://engram-memory.com/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
 
-By default, the installer writes `https://mcp.engram.app/mcp` into your MCP config. If your environment needs a different endpoint, set `ENGRAM_MCP_URL` before running the installer.
+By default, the installer writes `https://www.engram-memory.com/mcp` into your MCP config. If your environment needs a different endpoint, set `ENGRAM_MCP_URL` before running the installer.
 
 Restart your editor, then ask your agent:
 ```
@@ -57,6 +57,7 @@ Your agent handles the rest.
 Engram is currently optimized for MCP-native workflows in:
 
 - [Claude Code](./docs/quickstart/claude-code.md)
+- [VS Code (Copilot)](./docs/quickstart/vscode-copilot.md)
 - [Windsurf](./docs/quickstart/windsurf.md)
 - [Zed](./docs/quickstart/zed.md)
 
@@ -204,6 +205,7 @@ engram config show        # Display configuration
 engram config set <key>   # Update configuration
 engram tail               # Live stream of workspace commits
 engram verify             # Verify installation
+engram doctor             # Diagnose setup issues
 engram completion <shell> # Install shell tab completion
 ```
 
@@ -239,9 +241,12 @@ Grounded in the [FiFA/MaRS research](https://arxiv.org/abs/2512.12856) on forget
 
 ## Research Foundation
 
-Engram is grounded in peer-reviewed research on multi-agent memory systems:
+Engram exists because of a paper.
 
-- **[Yu et al. (2026)](https://arxiv.org/abs/2603.10062)** — Multi-agent memory as a computer architecture problem
+**[Multi-Agent Memory from a Computer Architecture Perspective: Visions and Challenges Ahead](https://arxiv.org/abs/2603.10062)** — Yu et al. (2026), UCSD SysEvol — is the primary intellectual foundation of this project. It reframes multi-agent memory as a computer architecture problem: coherence, consistency, and shared state across concurrent agents. That framing is what Engram is built to implement in practice.
+
+The rest of the literature informs specific subsystems:
+
 - **[Xu et al. (2025)](https://arxiv.org/abs/2502.12110)** — A-Mem's Zettelkasten structure for fact enrichment
 - **[Rasmussen et al. (2025)](https://arxiv.org/abs/2501.13956)** — Graphiti's bitemporal modeling for temporal validity
 - **[Hu et al. (2026)](https://arxiv.org/abs/2512.13564)** — Survey confirming shared memory as an open frontier
@@ -255,6 +260,8 @@ Implementation details: [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md)
 ## Contributing
 
 PRs welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+For a full description of the test suite — what each module covers and the per-test breakdown for lifecycle and conflict tests — see [`tests/TESTS.md`](./tests/TESTS.md).
 
 ---
 

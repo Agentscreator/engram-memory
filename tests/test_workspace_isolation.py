@@ -184,12 +184,16 @@ async def test_close_validity_window_by_fact_id_scoped_to_workspace(ws_alpha, ws
 @pytest.mark.asyncio
 async def test_expire_ttl_facts_isolated_by_workspace(ws_alpha, ws_beta):
     """TTL expiry in beta must not expire alpha's facts."""
-    # Use ttl_days=0 to ensure immediate expiry
-    fact_a = _make_fact(workspace_id="alpha", ttl_days=0, committed_at=_past_iso(1))
+    # Use ttl_days=0 + ephemeral durability to ensure immediate expiry
+    fact_a = _make_fact(
+        workspace_id="alpha", ttl_days=0, committed_at=_past_iso(1), durability="ephemeral"
+    )
     fact_a["valid_from"] = fact_a["committed_at"]
     await ws_alpha.insert_fact(fact_a)
 
-    fact_b = _make_fact(workspace_id="beta", ttl_days=0, committed_at=_past_iso(1))
+    fact_b = _make_fact(
+        workspace_id="beta", ttl_days=0, committed_at=_past_iso(1), durability="ephemeral"
+    )
     fact_b["valid_from"] = fact_b["committed_at"]
     await ws_beta.insert_fact(fact_b)
 

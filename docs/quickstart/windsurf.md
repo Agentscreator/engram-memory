@@ -6,7 +6,7 @@ Windsurf is Codeium's AI-powered code editor.
 
 ### Option 1: Auto-install (Recommended)
 ```bash
-curl -fsSL https://engram-us.com/install | sh
+curl -fsSL https://engram-memory.com/install | sh
 ```
 
 ### Option 2: Manual Setup
@@ -16,7 +16,7 @@ curl -fsSL https://engram-us.com/install | sh
 {
   "mcpServers": {
     "engram": {
-      "serverUrl": "https://mcp.engram.app/mcp"
+      "serverUrl": "https://www.engram-memory.com/mcp"
     }
   }
 }

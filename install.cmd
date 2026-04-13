@@ -1,13 +1,13 @@
 @echo off
 REM Engram installer for Windows CMD
-REM Usage: curl -fsSL https://engram-us.com/install.cmd -o install.cmd && install.cmd && del install.cmd
+REM Usage: curl -fsSL https://engram-memory.com/install.cmd -o install.cmd && install.cmd && del install.cmd
 
 setlocal enabledelayedexpansion
 
 if defined ENGRAM_MCP_URL (
     set "MCP_URL=%ENGRAM_MCP_URL%"
 ) else (
-    set "MCP_URL=https://mcp.engram.app/mcp"
+    set "MCP_URL=https://www.engram-memory.com/mcp"
 )
 set "INVITE_KEY="
 
@@ -151,6 +151,68 @@ if exist "%USERPROFILE%\.config\opencode" (
 )
 
 del "%PATCHER%" >nul 2>&1
+
+REM ── Install Claude Code skill (global, all sessions) ─────────────
+set "SKILL_DIR=%USERPROFILE%\.claude\skills"
+set "SKILL_FILE=%SKILL_DIR%\set-up-engram-for-my-team.md"
+if not exist "%SKILL_DIR%" mkdir "%SKILL_DIR%"
+(
+echo # Set Up Engram for My Team
+echo.
+echo Guide the user through configuring the Engram MCP server in their IDE.
+echo.
+echo ## CRITICAL -- Correct MCP URL
+echo.
+echo The ONLY correct Engram MCP endpoint is:
+echo.
+echo     https://www.engram-memory.com/mcp
+echo.
+echo DO NOT invent subdomains like mcp.engram-memory.com or mcp.engram.app -- they do not exist.
+echo DO NOT omit the www prefix. Always use exactly:
+echo.
+echo     https://www.engram-memory.com/mcp
+echo.
+echo ## Step 1 -- Check existing config and auto-fix wrong URLs
+echo.
+echo Read ~/.claude.json and .mcp.json ^(if they exist^). If either contains an "engram"
+echo entry under mcpServers with a WRONG url ^(anything other than https://www.engram-memory.com/mcp,
+echo e.g. mcp.engram.app or mcp.engram-memory.com^), fix it to https://www.engram-memory.com/mcp and tell the user you
+echo corrected it.
+echo.
+echo If Engram is already correctly configured, tell the user and skip to Step 4.
+echo.
+echo ## Step 2 -- Ask two questions in a single AskUserQuestion call
+echo.
+echo **Question 1 -- header: "Engram type"**
+echo question: "What Engram implementation do you want to use?"
+echo options:
+echo 1. label: "Engram hosted server ^(Recommended^)" -- description: "Use the managed Engram MCP server at engram-memory.com -- no installation needed, easiest to get started"
+echo 2. label: "Self-hosted / custom" -- description: "You have your own Engram server URL or a local binary you want to connect to"
+echo 3. label: "Walk me through the options and tradeoffs" -- description: "Explain the differences before I decide"
+echo 4. label: "Chat about this" -- description: "I have a question first"
+echo.
+echo **Question 2 -- header: "Scope"**
+echo question: "Where should Engram be configured?"
+echo options:
+echo 1. label: "User-level ^(~/.claude.json^) ^(Recommended^)" -- description: "Available across all your Claude Code projects, not tied to any single repo"
+echo 2. label: "Project-level ^(.mcp.json^)" -- description: "Checked into this repo -- all agents working in this directory share the config"
+echo 3. label: "Chat about this" -- description: "I have a question first"
+echo.
+echo If the user picks "Walk me through the options" or "Chat about this", answer their question then re-ask.
+echo.
+echo ## Step 3 -- Write config
+echo.
+echo IMPORTANT: The url MUST be exactly https://www.engram-memory.com/mcp -- no other domain.
+echo.
+echo Hosted + User-level: merge into ~/.claude.json with mcpServers.engram = {type: "http", url: "https://www.engram-memory.com/mcp"}
+echo Hosted + Project-level: merge into .mcp.json with same entry
+echo Self-hosted: ask for URL first, then write accordingly
+echo.
+echo ## Step 4 -- Next steps
+echo.
+echo Tell the user which file was written, that the MCP URL is https://www.engram-memory.com/mcp, to restart Claude Code, then call engram_status^(^) to run engram_init or engram_join.
+) > "%SKILL_FILE%"
+echo   + %SKILL_FILE%
 
 REM ── Result ───────────────────────────────────────────────────────
 echo.

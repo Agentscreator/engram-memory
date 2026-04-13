@@ -400,6 +400,56 @@ def test_resolve_valid_passes_through():
     engine.resolve.assert_called_once()
 
 
+def test_resolve_accepts_deprecated_winning_fact_id():
+    client, engine = _build_client(
+        resolve_result={
+            "resolved": True,
+            "conflict_id": "abc123",
+            "resolution_type": "winner",
+            "winning_claim_id": "fact-123",
+        }
+    )
+    resp = client.post(
+        "/api/resolve",
+        json={
+            "conflict_id": "abc123",
+            "resolution_type": "winner",
+            "resolution": "fact-123 is correct",
+            "winning_fact_id": "fact-123",
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["winning_claim_id"] == "fact-123"
+    assert data["tool_surface_version"] == "1.0.0"
+    assert data["deprecation_warnings"][0]["parameter"] == "winning_fact_id"
+    engine.resolve.assert_called_once_with(
+        conflict_id="abc123",
+        resolution_type="winner",
+        resolution="fact-123 is correct",
+        winning_claim_id="fact-123",
+    )
+
+
+def test_resolve_rejects_both_winning_claim_id_and_winning_fact_id():
+    client, engine = _build_client()
+    resp = client.post(
+        "/api/resolve",
+        json={
+            "conflict_id": "abc123",
+            "resolution_type": "winner",
+            "resolution": "pick one winner",
+            "winning_claim_id": "claim-123",
+            "winning_fact_id": "fact-123",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "Provide only one" in resp.json()["error"]
+    engine.resolve.assert_not_called()
+
+
 def test_resolve_invalid_json():
     client, _ = _build_client()
     resp = client.post("/api/resolve", content=b"bad", headers={"Content-Type": "application/json"})

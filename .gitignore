@@ -32,3 +32,6 @@ htmlcov/
 
 # Kiro local settings (machine-specific MCP config)
 .kiro/settings/mcp.json
+
+# donCarlosOne local settings (machine-specificconfig)
+.history

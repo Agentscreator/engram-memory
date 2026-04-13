@@ -172,7 +172,7 @@ Using an old Engram version that doesn't include the command.
 
 ### Fix
 1. Update Engram: `pip install --upgrade engram`
-2. Or reinstall: `curl -fsSL https://engram-us.com/install | sh`
+2. Or reinstall: `curl -fsSL https://engram-memory.com/install | sh`
 3. Check available commands: `engram --help`
 
 ---

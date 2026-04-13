@@ -1,8 +1,8 @@
-# Pricing Page - engram-us.com/pricing
+# Pricing Page - engram-memory.com/pricing
 
 ## Overview
 
-This document provides the pricing page design for engram-us.com. Copy the HTML below to your website.
+This document provides the pricing page design for engram-memory.com. Copy the HTML below to your website.
 
 ## Pricing Tiers
 
@@ -31,7 +31,7 @@ This document provides the pricing page design for engram-us.com. Copy the HTML 
 - **Features:**
   - Everything in Free
   - Team memory sync
-  - Dashboard at dashboard.engram.us
+  - Dashboard at www.engram-memory.com/dashboard
   - Real-time conflict notifications
   - Invite key-based team joining
   - Priority email support
@@ -199,7 +199,7 @@ async def stripe_webhook(request: Request):
 ## Next Steps
 
 1. Create Stripe account and products
-2. Deploy pricing page to engram-us.com
+2. Deploy pricing page to engram-memory.com
 3. Implement Stripe Checkout flow
 4. Set up webhook endpoint
 5. Test payment flow end-to-end
