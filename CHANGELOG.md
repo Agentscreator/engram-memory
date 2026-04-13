@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+### Bug Fixes
+
+- Fixed `TypeError: Can't instantiate abstract class SQLiteStorage without an implementation for abstract methods 'gdpr_hard_erase_agent', 'gdpr_soft_erase_agent'` that crashed the MCP server on startup for users running stale cached installs via `uvx`.
+- `engram serve` now emits a clear upgrade message instead of a raw traceback when the storage backend fails to instantiate.
+
 ## Unreleased
 
 ### Tool Surface Migrations

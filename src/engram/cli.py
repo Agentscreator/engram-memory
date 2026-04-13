@@ -579,7 +579,17 @@ async def _serve(
         from engram.storage import SQLiteStorage
 
         effective_db = db_path or str(DEFAULT_DB_PATH)
-        storage = SQLiteStorage(db_path=effective_db, workspace_id=workspace_id)
+        try:
+            storage = SQLiteStorage(db_path=effective_db, workspace_id=workspace_id)
+        except TypeError as exc:
+            logger.error(
+                "Failed to start Engram: %s\n"
+                "Your installed version is outdated. Run:\n"
+                "  uvx --from engram-team@latest engram serve\n"
+                "or: pip install --upgrade engram-team",
+                exc,
+            )
+            raise SystemExit(1) from exc
         logger.info("Local mode: SQLite (%s, workspace: %s)", effective_db, workspace_id)
 
     await storage.connect()
