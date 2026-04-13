@@ -388,20 +388,36 @@ def _write_cursor_hook(dry_run: bool) -> bool:
 # API using Kiro's $USER_PROMPT env var, regardless of whether the LLM
 # remembers to call engram_commit.
 
+_KIRO_HOOK_COMMAND = (
+    'python3 -c "\n'
+    "import json, os, sys, urllib.request\n"
+    "try:\n"
+    "    prompt = os.environ.get('USER_PROMPT', '').strip()\n"
+    "    if not prompt: sys.exit(0)\n"
+    "    server_url = 'https://www.engram-memory.com'\n"
+    "    invite_key = ''\n"
+    "    for f in [os.path.expanduser('~/.engram/credentials'), os.path.join(os.getcwd(), '.engram.env')]:\n"
+    "        if os.path.exists(f):\n"
+    "            for line in open(f).read().splitlines():\n"
+    "                if line.startswith('ENGRAM_SERVER_URL='): server_url = line[18:]\n"
+    "                elif line.startswith('ENGRAM_INVITE_KEY='): invite_key = line[18:]\n"
+    "    if not invite_key: sys.exit(0)\n"
+    "    payload = json.dumps({'content': prompt, 'scope': 'general', 'confidence': 0.8, 'fact_type': 'observation'}).encode()\n"
+    "    req = urllib.request.Request(f'{server_url}/api/commit', data=payload, headers={'Authorization': f'Bearer {invite_key}', 'Content-Type': 'application/json'}, method='POST')\n"
+    "    urllib.request.urlopen(req, timeout=3)\n"
+    "except Exception: pass\n"
+    '"'
+)
+
 _KIRO_HOOK = {
     "name": "Engram Auto-Commit",
     "version": "1.0.0",
-    "description": "Commits every user message to Engram shared team memory before the agent responds. Required by Engram ToS.",
+    "description": "Commits every user message to Engram shared team memory. Required by Engram ToS.",
     "when": {"type": "promptSubmit"},
     "then": {
         "type": "runCommand",
-        # Kiro exposes $USER_PROMPT as an env var; we wrap it in a tiny JSON
-        # payload and pipe it to the shared hook script so credentials are
-        # read from ~/.engram/credentials / .engram.env just like other IDEs.
-        "command": (
-            'echo "{\\"prompt\\": \\"$(echo $USER_PROMPT | sed s/\\"/\\\\\\\\\\"/g)\\"}"'
-            " | python3 ~/.engram/hooks/auto_commit.py"
-        ),
+        "command": _KIRO_HOOK_COMMAND,
+        "timeout": 10,
     },
 }
 
@@ -409,10 +425,9 @@ _KIRO_HOOK = {
 def _write_kiro_hook(project_dir: Path, dry_run: bool) -> bool:
     """Write the Engram promptSubmit hook to .kiro/hooks/ in the project directory.
 
-    Also ensures the shared hook script exists at ~/.engram/hooks/auto_commit.py.
+    The hook is self-contained inline Python — no external script dependency.
     Returns True if the hook was written (or would be in dry-run mode).
     """
-    hook_script = Path.home() / ".engram" / "hooks" / "auto_commit.py"
     hooks_dir = project_dir / ".kiro" / "hooks"
     hook_path = hooks_dir / "engram-autocommit.json"
 
@@ -421,11 +436,6 @@ def _write_kiro_hook(project_dir: Path, dry_run: bool) -> bool:
         return True
 
     try:
-        # Ensure the shared hook script exists
-        hook_script.parent.mkdir(parents=True, exist_ok=True)
-        hook_script.write_text(_HOOK_SCRIPT)
-        hook_script.chmod(0o755)
-
         hooks_dir.mkdir(parents=True, exist_ok=True)
         hook_path.write_text(json.dumps(_KIRO_HOOK, indent=2) + "\n")
         return True
