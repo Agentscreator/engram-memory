@@ -142,6 +142,26 @@ On each commit, all active facts are batched into 8k-token context windows and c
 
 ---
 
+## The Detective
+
+Most conflict detection compares facts in pairs and asks "do these contradict?" That misses the most common failure mode: not two facts that directly contradict, but a reversal — the story says "we use X", then "we switched to Y", then "we use X again." No single pair contradicts. The whole arc is incoherent.
+
+Engram's hosted conflict detector reads the workspace's commit history as a **chronological story** and asks a different question: *if a new agent joined this project today and read these facts top to bottom, where would they get confused?*
+
+It catches three things pairwise detection misses:
+
+- **Reversals** — the story changes direction and then changes back
+- **Ambiguity** — two currently active facts say different things about the same subject
+- **Stale claims** — an old fact is clearly outdated by newer context but was never retired
+
+Before reading the story, the detective applies a forgetting curve — recent churn is sampled down, facts that have previously been involved in conflicts survive at higher rates. The trigger fact always survives. The result is a signal-weighted narrative, not a firehose.
+
+This is Engram's moat. It's designed as a layer — it works on top of Engram's own memory, or on top of any other agent memory system. The detection logic is independent of where facts come from.
+
+Full design: [`docs/CONFLICT_DETECTIVE.md`](./docs/CONFLICT_DETECTIVE.md)
+
+---
+
 ## Memory That Forgets on Purpose
 
 Not everything deserves to stick around. Scratchpad facts expire in 24h, unverified observations after 90 days. Decisions and confirmed facts are kept forever. Old context stops crowding out what matters now.
