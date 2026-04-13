@@ -144,19 +144,11 @@ On each commit, all active facts are batched into 8k-token context windows and c
 
 ## The Detective
 
-Most conflict detection compares facts in pairs and asks "do these contradict?" That misses the most common failure mode: not two facts that directly contradict, but a reversal — the story says "we use X", then "we switched to Y", then "we use X again." No single pair contradicts. The whole arc is incoherent.
+Pairwise contradiction detection misses the most common failure mode: not two facts that directly contradict, but a reversal across time. Engram reads the workspace's commit history as a **chronological story** and asks: *where would a new agent get confused about what's currently true?*
 
-Engram's hosted conflict detector reads the workspace's commit history as a **chronological story** and asks a different question: *if a new agent joined this project today and read these facts top to bottom, where would they get confused?*
+It catches reversals, ambiguity between active facts, and stale claims that pairwise detection can't see. A forgetting curve keeps the signal-to-noise ratio high.
 
-It catches three things pairwise detection misses:
-
-- **Reversals** — the story changes direction and then changes back
-- **Ambiguity** — two currently active facts say different things about the same subject
-- **Stale claims** — an old fact is clearly outdated by newer context but was never retired
-
-Before reading the story, the detective applies a forgetting curve — recent churn is sampled down, facts that have previously been involved in conflicts survive at higher rates. The trigger fact always survives. The result is a signal-weighted narrative, not a firehose.
-
-This is Engram's moat. It's designed as a layer — it works on top of Engram's own memory, or on top of any other agent memory system. The detection logic is independent of where facts come from.
+This is Engram's moat — designed as a layer that works on top of Engram's memory or any other agent memory system.
 
 Full design: [`docs/CONFLICT_DETECTIVE.md`](./docs/CONFLICT_DETECTIVE.md)
 
