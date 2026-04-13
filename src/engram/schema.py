@@ -155,7 +155,9 @@ CREATE TABLE IF NOT EXISTS facts (
     workspace_id     TEXT NOT NULL DEFAULT 'local',
     corroborating_agents INTEGER NOT NULL DEFAULT 0,
     durability       TEXT NOT NULL DEFAULT 'durable',
-    query_hits       INTEGER NOT NULL DEFAULT 0
+    query_hits       INTEGER NOT NULL DEFAULT 0,
+    pinned           INTEGER NOT NULL DEFAULT 0,
+    pinned_at        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_validity     ON facts(scope, valid_until);

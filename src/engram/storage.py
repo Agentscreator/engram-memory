@@ -575,11 +575,29 @@ class SQLiteStorage(BaseStorage):
         params.append(offset)
 
         cursor = await self.db.execute(
-            f"SELECT * FROM facts WHERE {where} ORDER BY committed_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM facts WHERE {where} ORDER BY pinned DESC, committed_at DESC LIMIT ? OFFSET ?",
             params,
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    async def pin_fact(self, fact_id: str) -> bool:
+        """Pin a fact to always appear at top of queries."""
+        from datetime import datetime, timezone
+
+        cursor = await self.db.execute(
+            "UPDATE facts SET pinned = 1, pinned_at = ? WHERE id = ? AND workspace_id = ?",
+            (datetime.now(timezone.utc).isoformat(), fact_id, self.workspace_id),
+        )
+        return cursor.rowcount > 0
+
+    async def unpin_fact(self, fact_id: str) -> bool:
+        """Unpin a fact."""
+        cursor = await self.db.execute(
+            "UPDATE facts SET pinned = 0, pinned_at = NULL WHERE id = ? AND workspace_id = ?",
+            (fact_id, self.workspace_id),
+        )
+        return cursor.rowcount > 0
 
     async def fts_search(self, query: str, limit: int = 20, offset: int = 0) -> list[int]:
         """FTS5 BM25 search. Returns rowids ordered by relevance."""
