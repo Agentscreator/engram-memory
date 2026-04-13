@@ -615,6 +615,57 @@ class SQLiteStorage(BaseStorage):
         )
         return cursor.rowcount > 0
 
+    async def auto_tag_facts(self, fact_ids: list[str] | None = None) -> int:
+        """Automatically tag facts with taxonomy categories based on content.
+
+        Categories: code, docs, config, business, personal, technical, other
+        Returns number of facts tagged.
+        """
+        import re
+
+        tag_patterns = {
+            "code": r"\b(function|class|def |import |return |var |let |const |=>|->|\.py|\.js|\.ts)\b",
+            "docs": r"\b(documentation|readme|guide|manual|how-to|tutorial|example)\b",
+            "config": r"\b(config|setting|option|parameter|env|yaml|json|toml)\b",
+            "business": r"\b(customer|pricing|revenue|order|payment|invoice|contract)\b",
+            "personal": r"\b(todo|reminder|meeting|schedule|personal|private)\b",
+            "technical": r"\b(api|database|server|network|deploy|build|test)\b",
+        }
+
+        conditions = ["workspace_id = ?"]
+        params: list[Any] = [self.workspace_id]
+
+        if fact_ids:
+            placeholders = ",".join("?" * len(fact_ids))
+            conditions.append(f"id IN ({placeholders})")
+            params.extend(fact_ids)
+
+        cursor = await self.db.execute(
+            f"SELECT id, content, keywords FROM facts WHERE {' AND '.join(conditions)}",
+            params,
+        )
+        rows = await cursor.fetchall()
+
+        tagged = 0
+        for row in rows:
+            content = row.get("content", "")
+            current_keywords = row.get("keywords", "") or ""
+            tags = []
+
+            for tag, pattern in tag_patterns.items():
+                if re.search(pattern, content, re.IGNORECASE):
+                    tags.append(tag)
+
+            if tags:
+                new_keywords = ",".join(sorted(set(tags + current_keywords.split(","))))
+                await self.db.execute(
+                    "UPDATE facts SET keywords = ? WHERE id = ?",
+                    (new_keywords, row["id"]),
+                )
+                tagged += 1
+
+        return tagged
+
     async def fts_search(self, query: str, limit: int = 20, offset: int = 0) -> list[int]:
         """FTS5 BM25 search. Returns rowids ordered by relevance."""
         cursor = await self.db.execute(
