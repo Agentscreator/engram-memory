@@ -57,6 +57,7 @@ Your agent handles the rest.
 Engram is currently optimized for MCP-native workflows in:
 
 - [Claude Code](./docs/quickstart/claude-code.md)
+- [Cursor](./docs/quickstart/cursor.md)
 - [VS Code (Copilot)](./docs/quickstart/vscode-copilot.md)
 - [Windsurf](./docs/quickstart/windsurf.md)
 - [Zed](./docs/quickstart/zed.md)

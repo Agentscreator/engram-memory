@@ -79,13 +79,21 @@ def _engram_mcp_entry_for_client(client_name: str) -> dict[str, object]:
     if client_name == "Windsurf":
         return {"serverUrl": mcp_url}
 
-    if client_name == "Zed":
+    if client_name in {"Cursor", "Zed"}:
         return {"url": mcp_url}
 
     if client_name.startswith("VS Code"):
         return {"type": "http", "url": mcp_url}
 
     return {
+        "command": "uvx",
+        "args": ["--from", "engram-team@latest", "engram", "serve"],
+    }
+
+
+def _is_legacy_cursor_stdio_entry(entry: object) -> bool:
+    """Return True for the old Engram Cursor stdio config we can safely migrate."""
+    return entry == {
         "command": "uvx",
         "args": ["--from", "engram-team@latest", "engram", "serve"],
     }
@@ -235,6 +243,16 @@ def install(dry_run: bool) -> None:
                 servers = data.setdefault(key, {})
 
                 if "engram" in servers:
+                    desired_entry = _engram_mcp_entry_for_client(client_name)
+                    if client_name == "Cursor" and _is_legacy_cursor_stdio_entry(servers["engram"]):
+                        servers["engram"] = desired_entry
+                        if not dry_run:
+                            config_path.parent.mkdir(parents=True, exist_ok=True)
+                            config_path.write_text(json.dumps(data, indent=2))
+                        added.append(client_name)
+                        steering_written.extend(_write_steering(client_name, dry_run))
+                        continue
+
                     skipped.append(client_name)
                     steering_written.extend(_write_steering(client_name, dry_run))
                     continue

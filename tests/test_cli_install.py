@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from engram.cli import main, _MCP_CLIENTS
+from engram.cli import main, _MCP_CLIENTS, _engram_mcp_entry_for_client
 
 
 _REAL_HOME = Path.home()
@@ -71,6 +71,101 @@ def test_install_writes_zed_context_server_url(tmp_path, monkeypatch):
         assert "context_servers" in data
         assert "engram" in data["context_servers"]
         assert data["context_servers"]["engram"] == {"url": "https://www.engram-memory.com/mcp"}
+
+
+def test_cursor_mcp_entry_uses_remote_url(monkeypatch):
+    monkeypatch.setenv("ENGRAM_MCP_URL", "https://www.engram-memory.com/mcp")
+
+    assert _engram_mcp_entry_for_client("Cursor") == {"url": "https://www.engram-memory.com/mcp"}
+
+
+def test_install_writes_cursor_remote_mcp_url(tmp_path, monkeypatch):
+    runner = CliRunner()
+    workspace_path = tmp_path / ".engram" / "workspace.json"
+
+    monkeypatch.setenv("ENGRAM_MCP_URL", "https://www.engram-memory.com/mcp")
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("engram.workspace.WORKSPACE_PATH", workspace_path),
+        patch("engram.cli._MCP_CLIENTS", _rebased_mcp_clients(tmp_path)),
+    ):
+        cursor_config = tmp_path / ".cursor" / "mcp.json"
+        cursor_config.parent.mkdir(parents=True, exist_ok=True)
+        cursor_config.write_text("{}")
+
+        result = runner.invoke(main, ["install"])
+
+        assert result.exit_code == 0
+
+        data = json.loads(cursor_config.read_text())
+        assert "mcpServers" in data
+        assert "engram" in data["mcpServers"]
+        assert data["mcpServers"]["engram"] == {"url": "https://www.engram-memory.com/mcp"}
+
+
+def test_install_migrates_legacy_cursor_stdio_entry(tmp_path, monkeypatch):
+    runner = CliRunner()
+    workspace_path = tmp_path / ".engram" / "workspace.json"
+
+    monkeypatch.setenv("ENGRAM_MCP_URL", "https://www.engram-memory.com/mcp")
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("engram.workspace.WORKSPACE_PATH", workspace_path),
+        patch("engram.cli._MCP_CLIENTS", _rebased_mcp_clients(tmp_path)),
+    ):
+        cursor_config = tmp_path / ".cursor" / "mcp.json"
+        cursor_config.parent.mkdir(parents=True, exist_ok=True)
+        cursor_config.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "engram": {
+                            "command": "uvx",
+                            "args": ["--from", "engram-team@latest", "engram", "serve"],
+                        },
+                        "other": {"url": "https://example.com/mcp"},
+                    }
+                }
+            )
+        )
+
+        result = runner.invoke(main, ["install"])
+
+        assert result.exit_code == 0
+
+        data = json.loads(cursor_config.read_text())
+        assert data["mcpServers"]["engram"] == {"url": "https://www.engram-memory.com/mcp"}
+        assert data["mcpServers"]["other"] == {"url": "https://example.com/mcp"}
+
+
+def test_install_preserves_custom_cursor_entry(tmp_path, monkeypatch):
+    runner = CliRunner()
+    workspace_path = tmp_path / ".engram" / "workspace.json"
+
+    monkeypatch.setenv("ENGRAM_MCP_URL", "https://www.engram-memory.com/mcp")
+
+    custom_entry = {
+        "command": "uvx",
+        "args": ["--from", "engram-team@dev", "engram", "serve"],
+    }
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("engram.workspace.WORKSPACE_PATH", workspace_path),
+        patch("engram.cli._MCP_CLIENTS", _rebased_mcp_clients(tmp_path)),
+    ):
+        cursor_config = tmp_path / ".cursor" / "mcp.json"
+        cursor_config.parent.mkdir(parents=True, exist_ok=True)
+        cursor_config.write_text(json.dumps({"mcpServers": {"engram": custom_entry}}))
+
+        result = runner.invoke(main, ["install"])
+
+        assert result.exit_code == 0
+
+        data = json.loads(cursor_config.read_text())
+        assert data["mcpServers"]["engram"] == custom_entry
 
 
 def test_install_writes_vscode_copilot_http_server(tmp_path, monkeypatch):
