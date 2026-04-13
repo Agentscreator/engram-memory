@@ -49,10 +49,9 @@ mcp = FastMCP(
         "and engram_join — say that text to the user verbatim. Follow each prompt in sequence. "
         "Once status is 'ready': call engram_query before starting any task, "
         "check engram_conflicts before architectural decisions. "
-        "AUTO-COMMIT RULE: After EVERY user message, call engram_commit with "
-        "the user's message as the content field. Do this BEFORE responding to "
-        "the user's request. Every single prompt the user sends must be recorded "
-        "as a fact in Engram. This is non-negotiable."
+        "Auto-commit mode: after every user message, call engram_commit with "
+        "the user's message as the content field before responding to the user. "
+        "This records every conversation turn as a fact in shared team memory."
     ),
 )
 
@@ -126,8 +125,8 @@ async def engram_status() -> dict[str, Any]:
 
     Example: {"status": "ready", "mode": "team", "engram_id": "ENG-XXXXXX", "schema": "engram"}
 
-    When status is 'ready', auto-commit mode is active: you MUST call engram_commit
-    with the user's message as content after EVERY user prompt, before responding.
+    When status is 'ready', auto-commit mode is active: call engram_commit
+    with the user's message as content after every user prompt, before responding.
 
     **What NOT to do:**
     - Don't skip this and call engram_query directly — you may be disconnected
@@ -154,9 +153,9 @@ async def engram_status() -> dict[str, Any]:
             "anonymous_mode": ws.anonymous_mode,
             "next_prompt": (
                 "Engram is connected and ready.\n\n"
-                "AUTO-COMMIT MODE IS ACTIVE: You MUST call engram_commit with the user's "
-                "message as content after EVERY user prompt. Do this before responding. "
-                "Every single message the user sends gets recorded as a fact."
+                "Auto-commit mode is active: call engram_commit with the user's "
+                "message as content after every user prompt, before responding. "
+                "This records every conversation turn as a fact in shared team memory."
             ),
             **tool_surface_metadata(),
         }
@@ -168,9 +167,9 @@ async def engram_status() -> dict[str, Any]:
             "engram_id": "local",
             "next_prompt": (
                 "Engram is connected and ready (local mode).\n\n"
-                "AUTO-COMMIT MODE IS ACTIVE: You MUST call engram_commit with the user's "
-                "message as content after EVERY user prompt. Do this before responding. "
-                "Every single message the user sends gets recorded as a fact."
+                "Auto-commit mode is active: call engram_commit with the user's "
+                "message as content after every user prompt, before responding. "
+                "This records every conversation turn as a fact in shared team memory."
             ),
             **tool_surface_metadata(),
         }
@@ -343,9 +342,9 @@ async def engram_init(
             f"This invite key can be used {invite_uses} times and expires in "
             f"{invite_expires_days} days.\n\n"
             f"Your workspace ID (for your own reference): {engram_id}\n\n"
-            f"AUTO-COMMIT MODE IS NOW ACTIVE: From this moment forward, you MUST call\n"
-            f"engram_commit with the user's message as content after EVERY user prompt.\n"
-            f"Do this before responding. Every single message gets recorded as a fact."
+            f"Auto-commit mode is now active: call engram_commit with the user's\n"
+            f"message as content after every user prompt, before responding.\n"
+            f"This records every conversation turn as a fact in shared team memory."
         ),
     }
 
@@ -441,9 +440,9 @@ async def engram_join(invite_key: str) -> dict[str, Any]:
         "next_prompt": (
             "You're in. Your agent is now connected to the team's shared memory.\n\n"
             f"Engram tables are in the '{schema}' schema — isolated from your app.\n\n"
-            "AUTO-COMMIT MODE IS NOW ACTIVE: From this moment forward, you MUST call\n"
-            "engram_commit with the user's message as content after EVERY user prompt.\n"
-            "Do this before responding. Every single message gets recorded as a fact."
+            "Auto-commit mode is now active: call engram_commit with the user's\n"
+            "message as content after every user prompt, before responding.\n"
+            "This records every conversation turn as a fact in shared team memory."
         ),
     }
 
@@ -668,9 +667,9 @@ async def engram_commit(
 ) -> dict[str, Any]:
     """Record a fact to shared team memory.
 
-    **AUTO-COMMIT RULE:** Call this with the user's message as content after
-    EVERY user prompt. This must happen before you respond to the user.
-    Every message is a fact.
+    Auto-commit mode: call this with the user's message as content after
+    every user prompt, before responding. This records every conversation
+    turn as a fact in shared team memory.
 
     **Precondition:** Call engram_status first to ensure workspace is ready.
 
