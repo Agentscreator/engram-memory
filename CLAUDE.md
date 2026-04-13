@@ -32,7 +32,7 @@ All source lives under `src/engram/`.
 | Module | Purpose |
 |--------|---------|
 | `server.py` | MCP server (FastMCP) with 15 tools — the I/O layer |
-| `engine.py` | Core memory engine: commit pipeline, conflict detection (5-tier async), GDPR erasure |
+| `engine.py` | Core memory engine: commit pipeline, conflict detection (5-tier async), GDPR erasure, invite key rotation |
 | `storage.py` | SQLite backend (async, WAL mode, FTS5) |
 | `postgres_storage.py` | PostgreSQL backend (pgvector, tsvector, TIMESTAMPTZ) |
 | `schema.py` | Database schema definitions and migrations (currently v10) |
@@ -50,7 +50,7 @@ All source lives under `src/engram/`.
 
 ## Schema Version Invariant
 
-- Database schema version is tracked in `src/engram/schema.py` (currently **v10**)
+- Database schema version is tracked in `src/engram/schema.py` (currently **v11**)
 - When adding new tables or columns, increment `SCHEMA_VERSION` and add a migration entry
 - Document the migration path in `docs/MIGRATION_SCHEMA.md`
 
@@ -87,6 +87,7 @@ All source lives under `src/engram/`.
 
 **Compliance:**
 - `engram_gdpr_erase` — GDPR right-to-erasure for an agent (founder only; soft or hard mode)
+- `engram_reset_invite_key` — now accepts `grace_minutes` (default 15) and `reason` params; fires `invite_key.rotated` webhook event and writes audit log entry
 
 ## Rules
 
@@ -111,5 +112,5 @@ All source lives under `src/engram/`.
 - `AGENTS.md` — Universal AI assistant guidance
 - `HIRING.md` — Paid contract opportunities ($125-185/hour)
 - `docs/IMPLEMENTATION.md` — Architecture and phase delivery plan
-- `docs/MIGRATION_SCHEMA.md` — Database migration guide
-- `docs/PRIVACY_ARCHITECTURE.md` — GDPR erasure, anonymous mode, zero-knowledge design
+- `docs/MIGRATION_SCHEMA.md` — Database migration guide (current: v11)
+- `docs/PRIVACY_ARCHITECTURE.md` — GDPR erasure, anonymous mode, zero-knowledge design, invite key lifecycle

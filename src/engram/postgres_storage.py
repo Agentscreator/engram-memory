@@ -1071,6 +1071,7 @@ class PostgresStorage(BaseStorage):
                 "WHERE key_hash = $1 "
                 "AND (expires_at IS NULL OR expires_at > NOW()) "
                 "AND (uses_remaining IS NULL OR uses_remaining > 0) "
+                "AND revoked_at IS NULL "
                 "RETURNING *",
                 key_hash,
             )
@@ -1092,9 +1093,126 @@ class PostgresStorage(BaseStorage):
             )
         return row["key_generation"] if row else 0
 
-    async def revoke_all_invite_keys(self, engram_id: str) -> None:
+    async def revoke_all_invite_keys(
+        self,
+        engram_id: str,
+        *,
+        grace_minutes: int = 15,
+        reason: str | None = None,
+    ) -> None:
         async with self.acquire() as conn:
-            await conn.execute("DELETE FROM invite_keys WHERE engram_id = $1", engram_id)
+            # Purge already-expired grace keys as a side-effect.
+            await conn.execute(
+                "DELETE FROM invite_keys WHERE engram_id = $1 AND revoked_at IS NOT NULL AND grace_until < NOW()",
+                engram_id,
+            )
+            if grace_minutes > 0:
+                await conn.execute(
+                    "UPDATE invite_keys "
+                    "SET revoked_at = NOW(), "
+                    "    grace_until = NOW() + ($2 || ' minutes')::INTERVAL, "
+                    "    rotation_reason = $3 "
+                    "WHERE engram_id = $1 AND revoked_at IS NULL",
+                    engram_id,
+                    str(grace_minutes),
+                    reason,
+                )
+            else:
+                await conn.execute(
+                    "DELETE FROM invite_keys WHERE engram_id = $1 AND revoked_at IS NULL",
+                    engram_id,
+                )
+
+    async def get_active_grace_until(self, engram_id: str) -> str | None:
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT MAX(grace_until) AS grace_until FROM invite_keys "
+                "WHERE engram_id = $1 AND revoked_at IS NOT NULL AND grace_until > NOW()",
+                engram_id,
+            )
+        if row and row["grace_until"] is not None:
+            val = row["grace_until"]
+            return val.isoformat() if isinstance(val, datetime) else str(val)
+        return None
+
+    async def cleanup_expired_grace_keys(self, engram_id: str) -> int:
+        async with self.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM invite_keys WHERE engram_id = $1 AND revoked_at IS NOT NULL AND grace_until < NOW()",
+                engram_id,
+            )
+        return int(result.split()[-1])
+
+    async def get_key_rotation_history(self, engram_id: str, limit: int = 20) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM audit_log "
+                "WHERE operation = 'key_rotation' AND workspace_id = $1 "
+                "ORDER BY timestamp DESC LIMIT $2",
+                engram_id,
+                max(1, min(limit, 200)),
+            )
+        return [_row_to_dict(r) for r in rows]
+
+    async def insert_audit_entry(self, entry: dict[str, Any]) -> None:
+        import json as _json
+
+        extra = entry.get("extra")
+        if isinstance(extra, str):
+            try:
+                extra = _json.loads(extra)
+            except Exception:
+                extra = {"raw": extra}
+
+        async with self.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO audit_log(id, operation, agent_id, fact_id, conflict_id, extra, timestamp, workspace_id) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
+                entry["id"],
+                entry["operation"],
+                entry.get("agent_id"),
+                entry.get("fact_id"),
+                entry.get("conflict_id"),
+                _json.dumps(extra) if extra is not None else "{}",
+                entry.get("timestamp", _now_ts().isoformat()),
+                self.workspace_id,
+            )
+
+    async def get_audit_log(
+        self,
+        agent_id: str | None = None,
+        operation: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        conditions = ["workspace_id = $1"]
+        params: list[Any] = [self.workspace_id]
+        idx = 2
+        if agent_id:
+            conditions.append(f"agent_id = ${idx}")
+            params.append(agent_id)
+            idx += 1
+        if operation:
+            conditions.append(f"operation = ${idx}")
+            params.append(operation)
+            idx += 1
+        if from_ts:
+            conditions.append(f"timestamp >= ${idx}")
+            params.append(from_ts)
+            idx += 1
+        if to_ts:
+            conditions.append(f"timestamp <= ${idx}")
+            params.append(to_ts)
+            idx += 1
+        params.append(max(1, min(limit, 1000)))
+        sql = (
+            f"SELECT * FROM audit_log WHERE {' AND '.join(conditions)} "
+            f"ORDER BY timestamp DESC LIMIT ${idx}"
+        )
+        async with self.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_row_to_dict(r) for r in rows]
 
     async def get_invite_keys(self) -> list[dict]:
         """Return list of active invite keys."""

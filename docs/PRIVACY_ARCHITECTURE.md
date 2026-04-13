@@ -326,6 +326,89 @@ in `~/.engram/workspace.json`).  A `PermissionError` / 403 is returned for all o
    for your own compliance audit trail — Engram's audit log entry is also
    scrubbed during erasure.
 
+## Invite Key Lifecycle
+
+Engram workspace access is controlled by cryptographic invite keys. Every key
+embeds the workspace ID, database URL, and a key generation counter in an
+HMAC-signed, XOR-encrypted payload. Key rotation is the primary mechanism for
+revoking access.
+
+### Key rotation flow
+
+1. Creator calls `engram_reset_invite_key` (MCP), `POST /api/invite-key/rotate`
+   (REST), or `engram invite rotate` (CLI).
+2. All **active** invite keys are **soft-revoked**: `revoked_at` is set to now,
+   `grace_until` is set to `now + grace_minutes` (default 15 minutes).
+3. The workspace `key_generation` counter is incremented.
+4. A new invite key is generated with the updated generation counter and
+   stored in the database.
+5. An audit log entry (`operation = key_rotation`) is written with the old and
+   new generations, grace window, reason, and actor.
+6. A `invite_key.rotated` webhook event is fired to all subscribed endpoints.
+
+### Grace period for active sessions
+
+| Condition | Behaviour |
+|-----------|-----------|
+| Within grace window | Existing sessions continue uninterrupted |
+| Grace window expired | Agent receives `"disconnected"` on next tool call |
+| New join attempt with old key | **Rejected immediately** (grace does not apply) |
+
+The grace window allows agents currently in the middle of a long task to
+finish before being disconnected. It provides **no protection** for new
+join attempts — `consume_invite_key` checks `revoked_at IS NULL` and returns
+`None` for revoked keys regardless of `grace_until`.
+
+To revoke access immediately with no grace period, use `grace_minutes=0`.
+
+### Audit trail
+
+Every rotation produces an `audit_log` row:
+
+```json
+{
+  "operation": "key_rotation",
+  "extra": {
+    "old_generation": 2,
+    "new_generation": 3,
+    "grace_minutes": 15,
+    "grace_until": "2026-04-13T02:30:00+00:00",
+    "reason": "Suspected credential leak",
+    "actor": "alice"
+  }
+}
+```
+
+Query rotation history via `engram invite history` (CLI) or
+`GET /api/invite-key/history` (REST).
+
+### Webhook payload (`invite_key.rotated`)
+
+```json
+{
+  "event": "invite_key.rotated",
+  "data": {
+    "workspace_id": "ENG-XXXX-YYYY",
+    "old_generation": 2,
+    "new_generation": 3,
+    "rotated_by": "alice",
+    "grace_until": "2026-04-13T02:30:00+00:00",
+    "reason": "Suspected credential leak"
+  }
+}
+```
+
+Subscribe to this event by registering a webhook with `"invite_key.rotated"` in
+the `events` list, or use `"*"` to receive all events.
+
+### Operator checklist for key rotation
+
+1. Notify team members beforehand if using `grace_minutes=0` (no grace).
+2. Set a meaningful `reason` — it appears in the audit log and rotation history.
+3. Distribute the new invite key via a secure out-of-band channel.
+4. Confirm all agents have reconnected by checking `GET /api/agents`.
+5. Rotate quarterly as a preventive measure, not only after suspected breaches.
+
 ## Related Documentation
 
 - [DATABASE_SECURITY.md](./DATABASE_SECURITY.md) - Database configuration and isolation

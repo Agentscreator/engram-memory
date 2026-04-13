@@ -1781,5 +1781,193 @@ def gdpr_erase(agent_id: str, mode: str, yes: bool) -> None:
         raise click.ClickException(f"Erasure failed: {exc}")
 
 
+# ── engram invite ────────────────────────────────────────────────────
+
+
+@main.group()
+def invite() -> None:
+    """Invite key lifecycle commands (workspace creator only)."""
+    pass
+
+
+@invite.command("rotate")
+@click.option(
+    "--grace-minutes",
+    default=15,
+    show_default=True,
+    help="Grace window (minutes) for active sessions after rotation. 0 = immediate revocation.",
+)
+@click.option(
+    "--reason",
+    default="",
+    help="Optional note explaining why the key was rotated (stored in audit log).",
+)
+@click.option(
+    "--expires-days",
+    default=90,
+    show_default=True,
+    help="Validity period in days for the new invite key.",
+)
+@click.option(
+    "--uses",
+    default=10,
+    show_default=True,
+    help="Max number of times the new invite key can be consumed.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip interactive confirmation (for non-interactive / scripted use).",
+)
+def invite_rotate(
+    grace_minutes: int,
+    reason: str,
+    expires_days: int,
+    uses: int,
+    yes: bool,
+) -> None:
+    """Rotate the workspace invite key with audit trail and webhook notification.
+
+    Soft-revokes all existing keys with an optional grace period so agents
+    in active sessions can finish their work before being disconnected.
+    New join attempts with the old key are rejected immediately.
+
+    Requires the local workspace to be initialised as a creator workspace.
+    """
+    import asyncio
+
+    if not yes:
+        click.echo("\nAbout to rotate the workspace invite key.")
+        if grace_minutes > 0:
+            click.echo(f"  Grace period : {grace_minutes} minutes for active sessions")
+        else:
+            click.echo("  Grace period : none (immediate revocation)")
+        if reason:
+            click.echo(f"  Reason       : {reason}")
+        click.confirm("Proceed?", abort=True)
+
+    async def _run() -> None:
+        from engram.engine import EngramEngine
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws is None:
+            raise click.ClickException("No workspace configured. Run 'engram setup' first.")
+        if not ws.is_creator:
+            raise click.ClickException("Key rotation is restricted to the workspace creator.")
+
+        db_url = ws.db_url
+        if not db_url:
+            raise click.ClickException(
+                "No team database configured. Key rotation requires team mode."
+            )
+
+        if db_url.startswith("postgres"):
+            from engram.postgres_storage import PostgresStorage
+
+            storage = PostgresStorage(db_url, workspace_id=ws.engram_id, schema=ws.schema)
+        else:
+            from engram.storage import SQLiteStorage
+
+            storage = SQLiteStorage(workspace_id=ws.engram_id)
+
+        await storage.connect()
+        try:
+            engine = EngramEngine(storage)
+            result = await engine.rotate_invite_key(
+                expires_days=expires_days,
+                uses=uses,
+                grace_minutes=grace_minutes,
+                reason=reason or None,
+                actor="cli",
+            )
+        except PermissionError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        finally:
+            await storage.close()
+
+        click.echo("\nInvite key rotated successfully.")
+        click.echo(f"  Old generation : {result['old_generation']}")
+        click.echo(f"  New generation : {result['new_generation']}")
+        if result.get("grace_until"):
+            click.echo(f"  Grace until    : {result['grace_until']}")
+        click.echo(f"\nNew invite key:\n\n  {result['invite_key']}\n")
+        click.echo("Share this key with your team via a secure channel.")
+
+    try:
+        asyncio.run(_run())
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(f"Key rotation failed: {exc}")
+
+
+@invite.command("history")
+@click.option(
+    "--limit",
+    default=20,
+    show_default=True,
+    help="Maximum number of rotation audit entries to display.",
+)
+def invite_history(limit: int) -> None:
+    """Show the invite key rotation audit trail for this workspace."""
+    import asyncio
+
+    async def _run() -> None:
+        from engram.engine import EngramEngine
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws is None:
+            raise click.ClickException("No workspace configured. Run 'engram setup' first.")
+
+        db_url = ws.db_url
+        if not db_url:
+            raise click.ClickException("No team database configured. History requires team mode.")
+
+        if db_url.startswith("postgres"):
+            from engram.postgres_storage import PostgresStorage
+
+            storage = PostgresStorage(db_url, workspace_id=ws.engram_id, schema=ws.schema)
+        else:
+            from engram.storage import SQLiteStorage
+
+            storage = SQLiteStorage(workspace_id=ws.engram_id)
+
+        await storage.connect()
+        engine = EngramEngine(storage)
+        try:
+            entries = await engine.get_rotation_history(limit=limit)
+        finally:
+            await storage.close()
+
+        if not entries:
+            click.echo("No key rotation events found.")
+            return
+
+        click.echo(f"\nKey rotation history ({len(entries)} entries):\n")
+        for entry in entries:
+            extra = entry.get("extra") or "{}"
+            if isinstance(extra, str):
+                try:
+                    extra = json.loads(extra)
+                except Exception:
+                    extra = {}
+            click.echo(
+                f"  {entry.get('timestamp', 'unknown')} — generation {extra.get('old_generation', '?')} → {extra.get('new_generation', '?')}"
+            )
+            if extra.get("reason"):
+                click.echo(f"    reason  : {extra['reason']}")
+            click.echo(f"    actor   : {extra.get('actor', 'unknown')}")
+            grace = extra.get("grace_until") or extra.get("grace_minutes")
+            if grace:
+                click.echo(f"    grace   : {grace}")
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     main()

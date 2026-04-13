@@ -347,6 +347,7 @@ If you encounter issues:
 | v8 | `webhooks`, `webhook_deliveries`, `resolution_rules`, `scopes`, `audit_log` |
 | v9 | `display_name`, `description` on workspaces |
 | v10 | SQLite `facts_au` AFTER UPDATE trigger (FTS5 consistency for GDPR hard-erase) |
+| v11 | `revoked_at`, `grace_until`, `rotation_reason` on `invite_keys`; grace index |
 
 ## Schema v10 — GDPR FTS Update Trigger
 
@@ -375,9 +376,50 @@ CREATE TRIGGER IF NOT EXISTS facts_au
     END;
 ```
 
+## Schema v11 — Invite Key Lifecycle
+
+**Purpose:** Support soft-revocation with a configurable grace period for
+invite key rotation, plus an audit trail and structured rotation metadata.
+
+**New columns on `invite_keys`:**
+
+| Column | Type (SQLite / Postgres) | Meaning |
+|--------|--------------------------|---------|
+| `revoked_at` | `TEXT` / `TIMESTAMPTZ` | When the key was soft-revoked; `NULL` = still active |
+| `grace_until` | `TEXT` / `TIMESTAMPTZ` | Existing sessions may continue until this timestamp |
+| `rotation_reason` | `TEXT` | Optional operator note stored at revocation time |
+
+**New index:** `invite_keys_grace ON invite_keys(engram_id, grace_until)` —
+enables efficient `get_active_grace_until` queries.
+
+**SQLite migration SQL (runs automatically on next `connect()`):**
+
+```sql
+ALTER TABLE invite_keys ADD COLUMN revoked_at TEXT;
+ALTER TABLE invite_keys ADD COLUMN grace_until TEXT;
+ALTER TABLE invite_keys ADD COLUMN rotation_reason TEXT;
+CREATE INDEX IF NOT EXISTS invite_keys_grace ON invite_keys(engram_id, grace_until);
+```
+
+**PostgreSQL migration SQL (runs automatically on next `connect()`):**
+
+```sql
+ALTER TABLE invite_keys ADD COLUMN revoked_at TIMESTAMPTZ;
+ALTER TABLE invite_keys ADD COLUMN grace_until TIMESTAMPTZ;
+ALTER TABLE invite_keys ADD COLUMN rotation_reason TEXT;
+CREATE INDEX IF NOT EXISTS invite_keys_grace ON invite_keys(engram_id, grace_until);
+```
+
+**Behaviour change:** `consume_invite_key` and `validate_invite_key` now
+add `AND revoked_at IS NULL` to their `WHERE` clause.  Revoked keys cannot
+be used for new joins even when still within their grace window.
+
+See [PRIVACY_ARCHITECTURE.md — Invite Key Lifecycle](./PRIVACY_ARCHITECTURE.md)
+for the full rotation workflow and grace period semantics.
+
 ## Related Documentation
 
-- [PRIVACY_ARCHITECTURE.md](./PRIVACY_ARCHITECTURE.md) - GDPR erasure workflow
+- [PRIVACY_ARCHITECTURE.md](./PRIVACY_ARCHITECTURE.md) - GDPR erasure and invite key lifecycle
 - [DATABASE_SECURITY.md](./DATABASE_SECURITY.md) - Security features
 - [IMPLEMENTATION.md](./IMPLEMENTATION.md) - Technical details
 - [README.md](../README.md) - Quick start guide

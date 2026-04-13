@@ -2424,6 +2424,170 @@ class EngramEngine:
             limit=limit,
         )
 
+    # ── Invite key lifecycle ─────────────────────────────────────────
+
+    async def rotate_invite_key(
+        self,
+        *,
+        expires_days: int = 90,
+        uses: int = 10,
+        grace_minutes: int = 15,
+        reason: str | None = None,
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        """Rotate the workspace invite key with audit trail and webhook notification.
+
+        Soft-revokes all active keys (with an optional grace period so agents
+        mid-session can finish their work), bumps the workspace key generation,
+        generates a fresh invite key, and fires an ``invite_key.rotated`` webhook
+        event for downstream consumers.
+
+        Args:
+            expires_days: Validity period for the new key in days (default 90).
+            uses: Maximum number of times the new key can be consumed (default 10).
+            grace_minutes: How long revoked keys remain valid for *existing* sessions
+                (not new joins). 0 = immediate revocation (default 15).
+            reason: Optional human-readable reason stored in the audit log.
+            actor: Identity of the person triggering the rotation (for audit).
+
+        Returns:
+            dict with ``invite_key``, ``new_generation``, ``old_generation``,
+            and ``grace_until`` (ISO string or None).
+
+        Raises:
+            ValueError: If the workspace is not in team mode.
+            PermissionError: If the caller is not the workspace creator.
+        """
+        import time
+
+        from engram.workspace import (
+            WorkspaceConfig,
+            generate_invite_key,
+            read_workspace,
+            write_workspace,
+        )
+
+        ws = read_workspace()
+        if ws is None or not ws.db_url:
+            raise ValueError(
+                "No team workspace configured. rotate_invite_key is only usable in team mode."
+            )
+        if not ws.is_creator:
+            raise PermissionError(
+                "Invite key rotation is restricted to the workspace creator. "
+                "Only the founder who ran engram_init may perform this operation."
+            )
+
+        old_gen = ws.key_generation
+
+        # Soft-revoke all active keys (existing sessions continue during grace period).
+        await self.storage.revoke_all_invite_keys(
+            ws.engram_id, grace_minutes=grace_minutes, reason=reason
+        )
+
+        # Bump the generation counter — this is what _check_key_generation observes.
+        new_gen = await self.storage.bump_key_generation(ws.engram_id)
+
+        # Generate and store the new invite key.
+        invite_key, key_hash = generate_invite_key(
+            db_url=ws.db_url,
+            engram_id=ws.engram_id,
+            expires_days=expires_days,
+            uses_remaining=uses,
+            schema=ws.schema,
+            key_generation=new_gen,
+        )
+        expires_ts = datetime.fromtimestamp(
+            time.time() + expires_days * 86400, tz=timezone.utc
+        ).isoformat()
+        await self.storage.insert_invite_key(
+            key_hash=key_hash,
+            engram_id=ws.engram_id,
+            expires_at=expires_ts,
+            uses_remaining=uses,
+        )
+
+        # Persist updated generation to local workspace.json.
+        updated_config = WorkspaceConfig(
+            engram_id=ws.engram_id,
+            db_url=ws.db_url,
+            schema=ws.schema,
+            anonymous_mode=ws.anonymous_mode,
+            anon_agents=ws.anon_agents,
+            key_generation=new_gen,
+            is_creator=True,
+        )
+        write_workspace(updated_config)
+
+        grace_until: str | None = None
+        if grace_minutes > 0:
+            from datetime import timedelta
+
+            grace_until = (
+                datetime.now(timezone.utc) + timedelta(minutes=grace_minutes)
+            ).isoformat()
+
+        # Audit log entry — no PII.
+        import json as _json
+
+        await self._audit(
+            "key_rotation",
+            extra=_json.dumps(
+                {
+                    "old_generation": old_gen,
+                    "new_generation": new_gen,
+                    "grace_minutes": grace_minutes,
+                    "grace_until": grace_until,
+                    "reason": reason or "",
+                    "actor": actor or "unknown",
+                }
+            ),
+        )
+
+        # Webhook notification via existing delivery worker.
+        asyncio.ensure_future(
+            self._fire_event(
+                "invite_key.rotated",
+                {
+                    "workspace_id": ws.engram_id,
+                    "old_generation": old_gen,
+                    "new_generation": new_gen,
+                    "rotated_by": actor or "unknown",
+                    "grace_until": grace_until,
+                    "reason": reason or "",
+                },
+            )
+        )
+
+        logger.warning(
+            "Invite key rotated: workspace=%s old_gen=%d new_gen=%d grace_minutes=%d actor=%s",
+            ws.engram_id,
+            old_gen,
+            new_gen,
+            grace_minutes,
+            actor or "unknown",
+        )
+
+        return {
+            "invite_key": invite_key,
+            "old_generation": old_gen,
+            "new_generation": new_gen,
+            "grace_until": grace_until,
+        }
+
+    async def get_rotation_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return invite key rotation audit entries for this workspace.
+
+        Ordered most-recent first. Capped at 200 entries.
+        """
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws is None:
+            return []
+        engram_id = ws.engram_id if ws.db_url else "local"
+        return await self.storage.get_key_rotation_history(engram_id, limit=max(1, min(limit, 200)))
+
     # ── GDPR subject erasure ─────────────────────────────────────────
 
     async def gdpr_erase_agent(

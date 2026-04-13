@@ -883,6 +883,55 @@ def build_rest_routes(
 
         return JSONResponse(result)
 
+    async def api_invite_key_rotate(request: Request) -> JSONResponse:
+        """POST /api/invite-key/rotate — rotate the workspace invite key.
+
+        Body (JSON):
+            grace_minutes  int   optional, default 15  (0 = immediate revocation)
+            reason         str   optional note for the audit log
+            expires_days   int   optional, default 90
+            uses           int   optional, default 10
+
+        Returns {status, invite_key, new_generation, old_generation, grace_until}
+        Restricted to workspace creator.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        try:
+            result = await engine.rotate_invite_key(
+                expires_days=int(body.get("expires_days", 90)),
+                uses=int(body.get("uses", 10)),
+                grace_minutes=int(body.get("grace_minutes", 15)),
+                reason=body.get("reason") or None,
+                actor=body.get("actor"),
+            )
+        except PermissionError as exc:
+            return _error(str(exc), status=403)
+        except ValueError as exc:
+            return _error(str(exc), status=400)
+        except Exception as exc:
+            logger.exception("REST /api/invite-key/rotate error")
+            return _error(str(exc), status=500)
+
+        return JSONResponse({"status": "rotated", **result})
+
+    async def api_invite_key_history(request: Request) -> JSONResponse:
+        """GET /api/invite-key/history?limit=N — rotation audit trail.
+
+        Returns a list of audit log entries for key_rotation events,
+        ordered most-recent first.
+        """
+        try:
+            limit = int(request.query_params.get("limit", "20"))
+        except ValueError:
+            limit = 20
+
+        entries = await engine.get_rotation_history(limit=limit)
+        return JSONResponse({"entries": entries, "count": len(entries)})
+
     return [
         Route("/api/commit", api_commit, methods=["POST"]),
         Route("/api/query", api_query, methods=["POST"]),
@@ -923,4 +972,7 @@ def build_rest_routes(
         Route("/api/audit", api_audit, methods=["GET"]),
         # GDPR
         Route("/api/gdpr/erase", api_gdpr_erase, methods=["POST"]),
+        # Invite key lifecycle
+        Route("/api/invite-key/rotate", api_invite_key_rotate, methods=["POST"]),
+        Route("/api/invite-key/history", api_invite_key_history, methods=["GET"]),
     ]

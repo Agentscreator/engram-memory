@@ -9,12 +9,19 @@ Schema version 10 adds:
 - facts_au trigger for SQLite FTS5 consistency on content/keywords updates
   (required by the GDPR subject-erasure hard-erase path)
 
+Schema version 11 adds:
+- invite_keys.revoked_at: ISO timestamp of soft-revocation (NULL = active)
+- invite_keys.grace_until: ISO timestamp until which revoked keys still allow
+  existing sessions to continue (grace period for key rotation)
+- invite_keys.rotation_reason: optional human-readable reason for revocation
+- Index on (engram_id, grace_until) for efficient grace-period queries
+
 Two schemas are maintained:
 - SCHEMA_SQL: SQLite (local mode, aiosqlite)
 - POSTGRES_SCHEMA_SQL: PostgreSQL (team mode, asyncpg)
 """
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Incremental ALTER TABLE migrations keyed by target version.
 MIGRATIONS: dict[int, list[str]] = {
@@ -137,6 +144,16 @@ MIGRATIONS: dict[int, list[str]] = {
                INSERT INTO facts_fts(rowid, content, scope, keywords)
                VALUES (new.rowid, new.content, new.scope, new.keywords);
            END""",
+    ],
+    11: [
+        # Invite key lifecycle: soft-revocation with grace period for active sessions.
+        # revoked_at: set when a key rotation is triggered; NULL = still active.
+        # grace_until: existing sessions may continue until this timestamp.
+        # rotation_reason: optional operator note stored at revocation time.
+        "ALTER TABLE invite_keys ADD COLUMN revoked_at TEXT",
+        "ALTER TABLE invite_keys ADD COLUMN grace_until TEXT",
+        "ALTER TABLE invite_keys ADD COLUMN rotation_reason TEXT",
+        "CREATE INDEX IF NOT EXISTS invite_keys_grace ON invite_keys(engram_id, grace_until)",
     ],
 }
 
@@ -279,13 +296,19 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 
 -- Invite keys (db_url is encrypted into the key token, NOT stored here)
+-- revoked_at/grace_until support the key rotation lifecycle (schema v11).
 CREATE TABLE IF NOT EXISTS invite_keys (
     key_hash         TEXT PRIMARY KEY,
     engram_id        TEXT NOT NULL REFERENCES workspaces(engram_id),
     created_at       TEXT NOT NULL,
     expires_at       TEXT,
-    uses_remaining   INTEGER
+    uses_remaining   INTEGER,
+    revoked_at       TEXT,
+    grace_until      TEXT,
+    rotation_reason  TEXT
 );
+
+CREATE INDEX IF NOT EXISTS invite_keys_grace ON invite_keys(engram_id, grace_until);
 
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -483,13 +506,19 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 
 -- Invite keys (db_url encrypted into token, NOT stored here)
+-- revoked_at/grace_until support the key rotation lifecycle (schema v11).
 CREATE TABLE IF NOT EXISTS invite_keys (
     key_hash         TEXT PRIMARY KEY,
     engram_id        TEXT NOT NULL REFERENCES workspaces(engram_id),
     created_at       TIMESTAMPTZ NOT NULL,
     expires_at       TIMESTAMPTZ,
-    uses_remaining   INTEGER
+    uses_remaining   INTEGER,
+    revoked_at       TIMESTAMPTZ,
+    grace_until      TIMESTAMPTZ,
+    rotation_reason  TEXT
 );
+
+CREATE INDEX IF NOT EXISTS invite_keys_grace ON invite_keys(engram_id, grace_until);
 
 -- Webhooks (event subscriptions)
 CREATE TABLE IF NOT EXISTS webhooks (

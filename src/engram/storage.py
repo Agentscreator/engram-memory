@@ -296,8 +296,43 @@ class BaseStorage(ABC):
         """Return list of active invite keys. Default empty list."""
         return []
 
-    async def revoke_all_invite_keys(self, engram_id: str) -> None:
-        """Delete all invite keys for a workspace. Default no-op."""
+    async def revoke_all_invite_keys(
+        self,
+        engram_id: str,
+        *,
+        grace_minutes: int = 15,
+        reason: str | None = None,
+    ) -> None:
+        """Soft-revoke all active invite keys for a workspace.
+
+        If grace_minutes > 0, keys are marked revoked but kept in the table
+        until grace_until expires, allowing existing sessions to continue.
+        If grace_minutes == 0, keys are hard-deleted immediately.
+        Expired grace keys are always cleaned up as a side-effect.
+        Default no-op for local mode.
+        """
+
+    async def get_active_grace_until(self, engram_id: str) -> str | None:
+        """Return the latest grace_until among revoked-but-not-yet-expired keys.
+
+        Returns None if no grace window is currently active.
+        Default None for local mode.
+        """
+        return None
+
+    async def cleanup_expired_grace_keys(self, engram_id: str) -> int:
+        """Hard-delete revoked invite keys whose grace_until has passed.
+
+        Returns the number of rows deleted. Default 0 for local mode.
+        """
+        return 0
+
+    async def get_key_rotation_history(self, engram_id: str, limit: int = 20) -> list[dict]:
+        """Return audit_log entries with operation='key_rotation' for the workspace.
+
+        Ordered by timestamp descending. Default empty list for local mode.
+        """
+        return []
 
     # ── Webhook methods ───────────────────────────────────────────────
 
@@ -1431,7 +1466,8 @@ class SQLiteStorage(BaseStorage):
             """SELECT * FROM invite_keys
                WHERE key_hash = ?
                  AND (expires_at IS NULL OR expires_at > ?)
-                 AND (uses_remaining IS NULL OR uses_remaining > 0)""",
+                 AND (uses_remaining IS NULL OR uses_remaining > 0)
+                 AND revoked_at IS NULL""",
             (key_hash, _now_iso()),
         )
         row = await cursor.fetchone()
@@ -1444,6 +1480,7 @@ class SQLiteStorage(BaseStorage):
                WHERE key_hash = ?
                  AND (expires_at IS NULL OR expires_at > ?)
                  AND (uses_remaining IS NULL OR uses_remaining > 0)
+                 AND revoked_at IS NULL
                RETURNING *""",
             (key_hash, _now_iso()),
         )
@@ -1466,9 +1503,64 @@ class SQLiteStorage(BaseStorage):
         await self.db.commit()
         return await self.get_key_generation(engram_id)
 
-    async def revoke_all_invite_keys(self, engram_id: str) -> None:
-        await self.db.execute("DELETE FROM invite_keys WHERE engram_id = ?", (engram_id,))
+    async def revoke_all_invite_keys(
+        self,
+        engram_id: str,
+        *,
+        grace_minutes: int = 15,
+        reason: str | None = None,
+    ) -> None:
+        # Purge any already-expired grace keys as a side-effect.
+        await self.db.execute(
+            "DELETE FROM invite_keys WHERE engram_id = ? AND revoked_at IS NOT NULL AND grace_until < datetime('now')",
+            (engram_id,),
+        )
+        if grace_minutes > 0:
+            await self.db.execute(
+                """UPDATE invite_keys
+                   SET revoked_at      = datetime('now'),
+                       grace_until     = datetime('now', ? || ' minutes'),
+                       rotation_reason = ?
+                   WHERE engram_id = ? AND revoked_at IS NULL""",
+                (f"+{grace_minutes}", reason, engram_id),
+            )
+        else:
+            await self.db.execute(
+                "DELETE FROM invite_keys WHERE engram_id = ? AND revoked_at IS NULL",
+                (engram_id,),
+            )
         await self.db.commit()
+
+    async def get_active_grace_until(self, engram_id: str) -> str | None:
+        cursor = await self.db.execute(
+            """SELECT MAX(grace_until) FROM invite_keys
+               WHERE engram_id = ?
+                 AND revoked_at IS NOT NULL
+                 AND grace_until > datetime('now')""",
+            (engram_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else None
+
+    async def cleanup_expired_grace_keys(self, engram_id: str) -> int:
+        cursor = await self.db.execute(
+            "DELETE FROM invite_keys WHERE engram_id = ? AND revoked_at IS NOT NULL AND grace_until < datetime('now')",
+            (engram_id,),
+        )
+        await self.db.commit()
+        return cursor.rowcount
+
+    async def get_key_rotation_history(self, engram_id: str, limit: int = 20) -> list[dict]:
+        # In SQLite mode workspace_id in audit_log is self.workspace_id, not engram_id.
+        cursor = await self.db.execute(
+            """SELECT * FROM audit_log
+               WHERE operation = 'key_rotation' AND workspace_id = ?
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (self.workspace_id, max(1, min(limit, 200))),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     async def get_invite_keys(self) -> list[dict]:
         """Return list of active invite keys."""

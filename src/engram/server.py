@@ -94,18 +94,30 @@ _DISCONNECTED_NEXT_PROMPT = (
 async def _check_key_generation(ws: Any) -> dict[str, Any] | None:
     """Return a disconnected response if the local key_generation is behind the DB.
 
-    Returns None if the generation is current or the check cannot be performed.
+    When an invite key rotation has been performed with a grace period, agents
+    whose generation is behind are allowed to continue until the grace window
+    expires — only then do they receive the disconnected response.
+
+    Returns None if the generation is current (or within grace), or if the
+    check cannot be performed (local mode, storage not ready).
     """
     if _storage is None or not ws or not ws.db_url:
         return None
     db_gen = await _storage.get_key_generation(ws.engram_id)
-    if db_gen > ws.key_generation:
-        return {
-            "status": "disconnected",
-            "next_prompt": _DISCONNECTED_NEXT_PROMPT,
-            **tool_surface_metadata(),
-        }
-    return None
+    if db_gen <= ws.key_generation:
+        return None
+    # Generation is behind — check whether a grace window is still active.
+    grace_until = await _storage.get_active_grace_until(ws.engram_id)
+    if grace_until is not None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if grace_until > now_iso:
+            # Within grace window — existing session may continue.
+            return None
+    return {
+        "status": "disconnected",
+        "next_prompt": _DISCONNECTED_NEXT_PROMPT,
+        **tool_surface_metadata(),
+    }
 
 
 # ── engram_status ─────────────────────────────────────────────────────
@@ -516,6 +528,8 @@ async def engram_rename(
 async def engram_reset_invite_key(
     invite_expires_days: int = 90,
     invite_uses: int = 10,
+    grace_minutes: int = 15,
+    reason: str = "",
 ) -> dict[str, Any]:
     """Reset the workspace invite key (workspace creator only).
 
@@ -527,21 +541,23 @@ async def engram_reset_invite_key(
     - As part of periodic security rotation (recommended: quarterly)
 
     **What NOT to do:**
-    - Don't call this without reason — all team members will be disconnected
+    - Don't call this without reason — all team members will eventually be disconnected
     - Don't call this if you're not the workspace creator — you'll get an error
     - Don't forget to share the new key with your team after resetting
 
     **Common mistake:** Forgetting to share the new invite key with team members after
-    resetting, leaving them unable to reconnect.
+    resetting, leaving them unable to reconnect after the grace period ends.
 
     Use this when you suspect a security breach or the current invite key
     has been compromised. This will:
-      1. Revoke all existing invite keys for your workspace.
+      1. Soft-revoke all existing invite keys (with a grace period for active sessions).
       2. Increment the workspace key generation counter.
       3. Generate a new invite key.
+      4. Write an audit log entry and fire a webhook event.
 
-    All existing members will be temporarily disconnected. They will see a
-    message telling them to obtain the new invite key and call engram_join.
+    Existing members in active sessions continue working until grace_minutes expires.
+    New join attempts with the old key are rejected immediately regardless of grace.
+    After the grace window, existing members see a reconnect message.
 
     This tool is only available to the workspace creator (the agent that
     originally called engram_init). Other agents will receive an error.
@@ -549,89 +565,51 @@ async def engram_reset_invite_key(
     Parameters:
     - invite_expires_days: Validity period for the new key (default 90 days).
     - invite_uses: Max number of times the new key can be used (default 10).
+    - grace_minutes: Grace window in minutes for active sessions (default 15, 0 = immediate).
+    - reason: Optional note explaining why the key was rotated (stored in audit log).
 
-    Returns: {status, invite_key, key_generation, next_prompt}
+    Returns: {status, invite_key, key_generation, grace_until, next_prompt}
 
-    Example: {"status": "ready", "invite_key": "ek_live_...", "key_generation": 2}
+    Example: {"status": "reset", "invite_key": "ek_live_...", "key_generation": 2}
     """
-    from engram.workspace import (
-        WorkspaceConfig,
-        generate_invite_key,
-        read_workspace,
-        write_workspace,
-    )
-
-    ws = read_workspace()
-    if ws is None or not ws.db_url:
-        return {
-            "status": "error",
-            "next_prompt": "No team workspace is configured. Only usable in team mode.",
-        }
-
-    if not ws.is_creator:
-        return {
-            "status": "error",
-            "next_prompt": (
-                "Only the workspace creator can reset the invite key. "
-                "If you set up this workspace, check that your workspace.json has is_creator=true."
-            ),
-        }
-
-    if _storage is None:
+    if _engine is None:
         return {
             "status": "error",
             "next_prompt": "Storage not initialized. Restart the Engram server and try again.",
         }
 
-    import time
+    try:
+        result = await _engine.rotate_invite_key(
+            expires_days=invite_expires_days,
+            uses=invite_uses,
+            grace_minutes=grace_minutes,
+            reason=reason or None,
+            actor=None,
+        )
+    except ValueError as exc:
+        return {"status": "error", "next_prompt": str(exc)}
+    except PermissionError as exc:
+        return {"status": "error", "next_prompt": str(exc)}
 
-    # Revoke all existing invite keys and bump the generation counter
-    await _storage.revoke_all_invite_keys(ws.engram_id)
-    new_gen = await _storage.bump_key_generation(ws.engram_id)
-
-    # Generate new invite key embedding the new generation
-    invite_key, key_hash = generate_invite_key(
-        db_url=ws.db_url,
-        engram_id=ws.engram_id,
-        expires_days=invite_expires_days,
-        uses_remaining=invite_uses,
-        schema=ws.schema,
-        key_generation=new_gen,
-    )
-
-    expires_ts = datetime.fromtimestamp(
-        time.time() + invite_expires_days * 86400, tz=timezone.utc
-    ).isoformat()
-    await _storage.insert_invite_key(
-        key_hash=key_hash,
-        engram_id=ws.engram_id,
-        expires_at=expires_ts,
-        uses_remaining=invite_uses,
-    )
-
-    # Update creator's local workspace.json with new generation
-    updated_config = WorkspaceConfig(
-        engram_id=ws.engram_id,
-        db_url=ws.db_url,
-        schema=ws.schema,
-        anonymous_mode=ws.anonymous_mode,
-        anon_agents=ws.anon_agents,
-        key_generation=new_gen,
-        is_creator=True,
-    )
-    write_workspace(updated_config)
-    logger.warning(
-        "Invite key reset by creator: workspace=%s, new_generation=%d", ws.engram_id, new_gen
+    invite_key = result["invite_key"]
+    new_gen = result["new_generation"]
+    grace_until = result.get("grace_until")
+    grace_note = (
+        f"\n\nActive sessions have a {grace_minutes}-minute grace period (until {grace_until}) "
+        f"before they are disconnected."
+        if grace_until
+        else "\n\nAll existing sessions have been disconnected immediately."
     )
 
     return {
         "status": "reset",
         "invite_key": invite_key,
         "key_generation": new_gen,
+        "grace_until": grace_until,
         "next_prompt": (
-            f"Security reset complete. All existing invite keys have been revoked.\n\n"
-            f"Key generation is now {new_gen}. All members have been temporarily "
-            f"disconnected — they will see a message asking them to reconnect.\n\n"
+            f"Security reset complete. All existing invite keys have been revoked.{grace_note}\n\n"
+            f"Key generation is now {new_gen}. Members will see a message asking them to reconnect "
+            f"once the grace period ends.\n\n"
             f"Share this new invite key with your team via a secure channel "
             f"(iMessage, WhatsApp, Slack DM, etc.):\n\n"
             f"  Invite Key: {invite_key}\n\n"
