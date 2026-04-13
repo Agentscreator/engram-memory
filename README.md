@@ -151,14 +151,7 @@ Commits return instantly. Detection completes in the background (~2-10s on CPU).
 
 ## Memory That Forgets on Purpose
 
-Engram doesn't just accumulate — it actively forgets what doesn't earn its place.
-
-- **Ephemeral memory** — Scratchpad facts auto-expire in 24h unless queried twice ("proved useful more than once")
-- **Importance decay** — Unverified inferences expire after 30 days. Unverified observations expire after 90 days.
-- **Protected facts** — Decisions, verified facts, and corroborated claims are never auto-retired.
-- **Steeper recency curve** — A 90-day-old fact scores 0.001 in retrieval. Old context stops crowding out what matters now.
-
-Grounded in the [FiFA/MaRS research](https://arxiv.org/abs/2512.12856) on forgetting-by-design for cognitive agents.
+Not everything deserves to stick around. Scratchpad facts expire in 24h, unverified observations after 90 days. Decisions and confirmed facts are kept forever. Old context stops crowding out what matters now.
 
 ---
 
