@@ -1262,6 +1262,38 @@ class SQLiteStorage(BaseStorage):
         row = await cursor.fetchone()
         return row["cnt"] if row else 0
 
+    async def get_memory_health_score(self) -> dict[str, Any]:
+        """Calculate memory health score based on various metrics."""
+        total_facts = await self.count_facts(current_only=False)
+        current_facts = await self.count_facts(current_only=True)
+        open_conflicts = await self.count_conflicts("open")
+        resolved_conflicts = await self.count_conflicts("resolved")
+
+        # Calculate health score (0-100)
+        # Start with 100, subtract for issues
+        score = 100.0
+
+        # Deduct for open conflicts (major issue)
+        if total_facts > 0:
+            conflict_ratio = open_conflicts / total_facts
+            score -= conflict_ratio * 40  # Up to 40 points for conflicts
+
+        # Deduct for low fact retention
+        if total_facts > 0:
+            retention_ratio = current_facts / total_facts
+            score -= (1 - retention_ratio) * 20  # Up to 20 points for expired facts
+
+        score = max(0, min(100, score))  # Clamp to 0-100
+
+        return {
+            "score": int(score),
+            "total_facts": total_facts,
+            "current_facts": current_facts,
+            "open_conflicts": open_conflicts,
+            "resolved_conflicts": resolved_conflicts,
+            "status": "healthy" if score >= 70 else "warning" if score >= 40 else "critical",
+        }
+
     async def get_agents(self) -> list[dict]:
         cursor = await self.db.execute("SELECT * FROM agents ORDER BY last_seen DESC")
         rows = await cursor.fetchall()
