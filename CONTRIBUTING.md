@@ -59,6 +59,31 @@ Not sure where to start? These are always useful:
 
 ---
 
+## The Moat: Conflict Detection
+
+Before diving into code, understand what makes Engram defensible.
+
+Shared agent memory is a solved problem. Mem0, Cipher, and a dozen others do it. What none of them do is tell you when your agents are contradicting each other — and that's the hard part. An agent that confidently acts on a stale or disputed fact is worse than an agent with no memory at all.
+
+**Conflict detection is Engram's moat.** It's the reason this project exists.
+
+The detector is designed as a **layer**, not a feature. It doesn't care where your facts come from:
+
+- Use Engram's own memory layer (the full stack — `engram_commit`, `engram_query`, shared Postgres, the dashboard)
+- Or bring your own memory system (Mem0, a vector DB, a custom store) and point the detector at it
+
+The detection logic is independent of the storage layer. If you're building on top of another memory system and want conflict detection, the detector can run against any fact stream. The `engram_conflicts` and `engram_resolve` tools work regardless of how facts got into the system.
+
+There are two detection implementations, each suited to a different deployment:
+
+**The narrative coherence detective** (hosted, `api/mcp.py`) reads the workspace's entire commit history as a chronological story and asks: *where would a new agent get confused about what's currently true?* It catches reversals, ambiguity, and stale claims that pairwise comparison misses entirely. See [`docs/CONFLICT_DETECTIVE.md`](./docs/CONFLICT_DETECTIVE.md) for the full design.
+
+**The tiered pipeline** (local, `src/engram/engine.py`) runs deterministic entity matching, NLI cross-encoding, numeric rules, and optional LLM escalation — all on-device, no external API required. See [`docs/IMPLEMENTATION.md`](./docs/IMPLEMENTATION.md) § Phase 3.
+
+If you're contributing to Engram, the highest-leverage work is in these two systems. Improving detection precision, reducing false positives, extending coverage to new conflict types, or making the layer easier to plug into external memory systems — that's where the project's value lives.
+
+---
+
 ## Before You Start
 
 Read the [README](./README.md). Understand the problem Engram is solving. The best contributions come from people who've felt the pain — agents re-discovering things that were already known, knowledge evaporating at session end.

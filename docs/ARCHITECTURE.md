@@ -45,6 +45,23 @@ Each section states what the module does, its key public interface, and what it
 
 ---
 
+### Conflict Detection — Two Implementations
+
+Engram has two conflict detection mechanisms depending on deployment mode:
+
+- **Local server** (`src/engram/engine.py`): A four-tier deterministic + ML pipeline
+  (entity exact-match → NLI cross-encoder → numeric rules → LLM escalation). Runs
+  entirely on-device with no external API dependencies. See `docs/IMPLEMENTATION.md`
+  § Phase 3 for the full design.
+
+- **Hosted service** (`api/mcp.py`): A narrative coherence detective that reads the
+  workspace's entire commit history as a chronological story and identifies where a
+  new agent would get confused. Uses `gpt-4o-mini` with a probabilistic forgetting
+  curve to focus on signal over noise. See **`docs/CONFLICT_DETECTIVE.md`** for the
+  full design.
+
+---
+
 ### engine.py — Core Orchestrator
 
 `EngramEngine` owns the entire commit/query/conflict-detection pipeline. On
