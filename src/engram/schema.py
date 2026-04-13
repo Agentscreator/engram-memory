@@ -193,7 +193,9 @@ CREATE TABLE IF NOT EXISTS facts (
     durability       TEXT NOT NULL DEFAULT 'durable',
     query_hits       INTEGER NOT NULL DEFAULT 0,
     pinned           INTEGER NOT NULL DEFAULT 0,
-    pinned_at        TEXT
+    pinned_at        TEXT,
+    endorsements     INTEGER NOT NULL DEFAULT 0,
+    downvotes        INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_validity     ON facts(scope, valid_until);

@@ -674,6 +674,22 @@ class SQLiteStorage(BaseStorage):
         )
         return cursor.rowcount > 0
 
+    async def endorse_fact(self, fact_id: str) -> bool:
+        """Endorse a fact (human approval)."""
+        cursor = await self.db.execute(
+            "UPDATE facts SET endorsements = endorsements + 1 WHERE id = ? AND workspace_id = ?",
+            (fact_id, self.workspace_id),
+        )
+        return cursor.rowcount > 0
+
+    async def downvote_fact(self, fact_id: str) -> bool:
+        """Downvote a fact (human disapproval)."""
+        cursor = await self.db.execute(
+            "UPDATE facts SET downvotes = downvotes + 1 WHERE id = ? AND workspace_id = ?",
+            (fact_id, self.workspace_id),
+        )
+        return cursor.rowcount > 0
+
     async def fts_search(self, query: str, limit: int = 20, offset: int = 0) -> list[int]:
         """FTS5 BM25 search. Returns rowids ordered by relevance."""
         cursor = await self.db.execute(
