@@ -443,11 +443,6 @@ def _render_dashboard() -> str:
       transition: border-color 0.2s; }
     .conflict-card:hover { border-color: rgba(255,255,255,0.08); }
     .conflict-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-    .conflict-severity { font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
-      text-transform: uppercase; padding: 3px 10px; border-radius: 6px; }
-    .severity-high { background: rgba(239,68,68,0.1); color: var(--red); }
-    .severity-medium { background: rgba(245,158,11,0.1); color: var(--yellow); }
-    .severity-low { background: rgba(52,211,153,0.1); color: var(--em4); }
     .conflict-status { font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
       text-transform: uppercase; padding: 3px 10px; border-radius: 6px; }
     .status-open { background: rgba(239,68,68,0.08); color: var(--red); }
@@ -1845,11 +1840,9 @@ function renderConflicts() {
   });
   el.innerHTML = sorted.map(c => {
     const fa = factMap[c.fact_a_id], fb = factMap[c.fact_b_id];
-    const sevClass = c.severity === 'high' ? 'severity-high' : c.severity === 'low' ? 'severity-low' : 'severity-medium';
     const statusClass = c.status === 'open' ? 'status-open' : 'status-resolved';
     return `<div class="conflict-card">
       <div class="conflict-header">
-        <span class="conflict-severity ${sevClass}">${c.severity||'medium'}</span>
         <span class="conflict-status ${statusClass}">${c.status}</span>
       </div>
       ${c.explanation ? `<div class="conflict-explanation">${esc(c.explanation)}</div>` : ''}

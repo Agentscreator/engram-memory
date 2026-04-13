@@ -136,13 +136,9 @@ engram completion <shell> # Install shell tab completion
 
 ## Conflict Detection
 
-Every commit triggers a 3-step detection pipeline. All steps run on every fact — there is no "skip if Step 1 found nothing." The entire corpus is scanned every time.
+Every commit triggers LLM-powered conflict detection. The entire fact corpus is scanned — no fact is skipped.
 
-| Step | Method | What it catches | Speed |
-|---|---|---|---|
-| 1 | Regex entity/numeric matching | "rate limit is 1000" vs "rate limit is 2000" | Instant |
-| 2 | Numeric + cross-scope rules | Same entity with different values across scopes | Instant |
-| 3 | LLM semantic scan | "We use Postgres for the queue" vs "We use Redis for the queue" | ~2-8s |
+On each commit, all active facts are batched into 8k-token context windows and checked for semantic contradictions. Batches run concurrently. Commits return instantly; conflicts surface on the dashboard as they're found.
 
 ---
 

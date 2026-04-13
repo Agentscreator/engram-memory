@@ -33,8 +33,19 @@ logger = logging.getLogger("engram")
 DB_URL = os.environ.get("ENGRAM_DB_URL", "")
 SCHEMA = "engram"
 
-# Billing
-HOBBY_LIMIT_BYTES = 512 * 1024 * 1024  # 512 MiB — same as Neon's free tier
+# ── Plan commit limits (mirrors api/billing.py) ───────────────────────
+_PLAN_LIMITS: dict[str, int] = {
+    "free": 500,
+    "builder": 5_000,
+    "team": 25_000,
+    "scale": 100_000,
+    # legacy aliases
+    "hobby": 500,
+    "pro": 5_000,
+}
+_PLANS_WITH_SUGGESTIONS = {"builder", "team", "scale", "pro"}
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # ── Terms of Service ─────────────────────────────────────────────────
 
@@ -367,98 +378,43 @@ async def _auth_workspace(request: Request) -> str | None:
         return None
 
 
-# ── Conflict detection ────────────────────────────────────────────────
+# ── Conflict detection (LLM-only) ────────────────────────────────────
 
-_NUM_RE = re.compile(
-    r"\b(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|minutes?|hours?|days?|"
-    r"mb|gb|tb|kb|rpm|rps|req/s|req/min|%|requests?|connections?|workers?|threads?|replicas?)?\b",
-    re.IGNORECASE,
-)
-_ENTITY_RE = re.compile(r"\b([A-Z_]{3,})\b")
-
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 _CONFLICT_MODEL = "gpt-4o-mini"
-# ~4 chars per token; leave room for system prompt + new fact + response
-_BATCH_CHAR_LIMIT = 24000  # ~6k tokens of facts, fits in 8k window with overhead
+_BATCH_CHAR_LIMIT = 24000  # ~6k tokens of facts per batch
 
 
 async def _detect_conflicts(
-    new_fact_id: str, content: str, scope: str, workspace_id: str, pool: Any
+    new_fact_id: str,
+    content: str,
+    scope: str,
+    workspace_id: str,
+    pool: Any,
+    plan: str = "free",
 ) -> None:
-    """Multi-tier conflict detection: Tier 0 (regex) + Tier 1 (LLM).
+    """LLM-powered conflict detection. Scans the entire fact corpus.
 
-    Tier 0 runs inline for instant cheap detection of numeric/entity conflicts.
-    Tier 1 sends the new fact against ALL active facts (batched into 8k-token
-    windows) to GPT-4o-mini to catch semantic contradictions like
-    "starts with B" vs "starts with C".
+    On every commit, all active facts are batched into 8k-token windows
+    and sent to the LLM to detect semantic contradictions.
     """
-    # ── Tier 0: regex entity/numeric detection (fast, inline) ────────
-    try:
-        new_nums = {m.group(0).lower() for m in _NUM_RE.finditer(content) if m.group(1)}
-        new_ents = {m.group(1) for m in _ENTITY_RE.finditer(content)}
-
-        if new_nums or new_ents:
-            async with _safe(pool) as conn:
-                existing = await conn.fetch(
-                    """SELECT id, content FROM facts
-                       WHERE workspace_id = $1 AND scope = $2 AND valid_until IS NULL
-                         AND id != $3
-                       ORDER BY committed_at DESC LIMIT 30""",
-                    workspace_id,
-                    scope,
-                    new_fact_id,
-                )
-                for row in existing:
-                    old_content = row["content"]
-                    old_nums = {
-                        m.group(0).lower() for m in _NUM_RE.finditer(old_content) if m.group(1)
-                    }
-                    old_ents = {m.group(1) for m in _ENTITY_RE.finditer(old_content)}
-                    shared_ents = new_ents & old_ents
-                    conflicting_nums = new_nums ^ old_nums
-                    if shared_ents and conflicting_nums:
-                        cid = str(uuid.uuid4())
-                        explanation = (
-                            f"Entity overlap ({', '.join(list(shared_ents)[:3])}) "
-                            f"with different numeric values"
-                        )
-                        await conn.execute(
-                            """INSERT INTO conflicts (id, fact_a_id, fact_b_id, explanation,
-                                   severity, workspace_id)
-                               VALUES ($1, $2, $3, $4, 'medium', $5)
-                               ON CONFLICT DO NOTHING""",
-                            cid,
-                            new_fact_id,
-                            row["id"],
-                            explanation,
-                            workspace_id,
-                        )
-    except Exception as exc:
-        logger.warning("Tier 0 conflict detection failed: %s", exc)
-
-    # ── Tier 1: LLM semantic contradiction detection ─────────────────
     if not OPENAI_API_KEY:
-        return  # No API key configured — skip LLM detection
+        return
 
     try:
-        # Fetch ALL active facts for this workspace (not just same scope)
         async with _safe(pool) as conn:
             all_facts = await conn.fetch(
                 """SELECT id, content, scope FROM facts
                    WHERE workspace_id = $1 AND valid_until IS NULL AND id != $2
                    ORDER BY committed_at DESC""",
-                workspace_id,
-                new_fact_id,
+                workspace_id, new_fact_id,
             )
 
         if not all_facts:
             return
 
-        # Batch facts into chunks that fit the context window
         batches: list[list[dict]] = []
         current_batch: list[dict] = []
         current_chars = 0
-
         for row in all_facts:
             fact_text = f"[{row['id'][:8]}] ({row['scope']}) {row['content']}"
             fact_len = len(fact_text)
@@ -466,17 +422,14 @@ async def _detect_conflicts(
                 batches.append(current_batch)
                 current_batch = []
                 current_chars = 0
-            current_batch.append({"id": row["id"], "text": fact_text, "content": row["content"]})
+            current_batch.append({"id": row["id"], "text": fact_text})
             current_chars += fact_len
-
         if current_batch:
             batches.append(current_batch)
 
-        # Process each batch through the LLM
         import asyncio as _aio
 
         async def _check_batch(batch: list[dict]) -> list[dict]:
-            """Ask the LLM to find contradictions between the new fact and a batch."""
             facts_block = "\n".join(f"- {f['text']}" for f in batch)
             prompt = (
                 "You are a contradiction detector. Given a NEW FACT and a list of EXISTING FACTS, "
@@ -484,43 +437,31 @@ async def _detect_conflicts(
                 "Two facts contradict if they make incompatible claims about the same subject.\n\n"
                 f"NEW FACT: {content}\n\n"
                 f"EXISTING FACTS:\n{facts_block}\n\n"
-                "Respond with ONLY a JSON array of objects for each contradiction found:\n"
-                '[{"fact_id": "<first 8 chars of ID>", "explanation": "<brief explanation>", "severity": "high|medium|low"}]\n\n'
+                'Respond with ONLY a JSON array of objects for each contradiction found:\n'
+                '[{"fact_id": "<first 8 chars of ID>", "explanation": "<brief explanation>"}]\n\n'
                 "If no contradictions, respond with: []\n"
                 "Be precise. Only flag genuine contradictions, not merely different topics."
             )
-
             try:
                 import httpx
-
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     resp = await client.post(
                         "https://api.openai.com/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {OPENAI_API_KEY}",
-                            "Content-Type": "application/json",
-                        },
+                        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
                         json={
                             "model": _CONFLICT_MODEL,
                             "messages": [
-                                {
-                                    "role": "system",
-                                    "content": "You detect contradictions between facts. Respond only with valid JSON arrays.",
-                                },
+                                {"role": "system", "content": "You detect contradictions between facts. Respond only with valid JSON arrays."},
                                 {"role": "user", "content": prompt},
                             ],
-                            "temperature": 0,
-                            "max_tokens": 1024,
+                            "temperature": 0, "max_tokens": 1024,
                         },
                     )
                     if resp.status_code != 200:
-                        logger.warning(
-                            "OpenAI API returned %d: %s", resp.status_code, resp.text[:200]
-                        )
+                        logger.warning("OpenAI API returned %d: %s", resp.status_code, resp.text[:200])
                         return []
                     data = resp.json()
                     raw = data["choices"][0]["message"]["content"].strip()
-                    # Parse JSON — handle markdown code fences
                     if raw.startswith("```"):
                         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
                     return json.loads(raw)
@@ -528,64 +469,38 @@ async def _detect_conflicts(
                 logger.warning("LLM conflict batch failed: %s", exc)
                 return []
 
-        # Run all batches concurrently
         results = await _aio.gather(*[_check_batch(b) for b in batches])
 
-        # Build a lookup from short ID to full ID
         id_lookup: dict[str, str] = {}
         for row in all_facts:
             id_lookup[row["id"][:8]] = row["id"]
 
-        # Insert detected conflicts
         async with _safe(pool) as conn:
             for batch_results in results:
                 for conflict in batch_results:
                     if not isinstance(conflict, dict):
                         continue
-                    short_id = conflict.get("fact_id", "")
-                    full_id = id_lookup.get(short_id)
+                    full_id = id_lookup.get(conflict.get("fact_id", ""))
                     if not full_id:
                         continue
-                    # Check if conflict already exists
                     existing = await conn.fetchrow(
-                        """SELECT 1 FROM conflicts
-                           WHERE workspace_id = $1
-                             AND ((fact_a_id = $2 AND fact_b_id = $3)
-                               OR (fact_a_id = $3 AND fact_b_id = $2))""",
-                        workspace_id,
-                        new_fact_id,
-                        full_id,
+                        """SELECT 1 FROM conflicts WHERE workspace_id = $1
+                             AND ((fact_a_id = $2 AND fact_b_id = $3) OR (fact_a_id = $3 AND fact_b_id = $2))""",
+                        workspace_id, new_fact_id, full_id,
                     )
                     if existing:
                         continue
                     cid = str(uuid.uuid4())
-                    severity = conflict.get("severity", "medium")
-                    if severity not in ("high", "medium", "low"):
-                        severity = "medium"
-                    explanation = conflict.get(
-                        "explanation", "Semantic contradiction detected by LLM"
-                    )
+                    explanation = conflict.get("explanation", "Semantic contradiction detected")
                     await conn.execute(
-                        """INSERT INTO conflicts (id, fact_a_id, fact_b_id, explanation,
-                               severity, workspace_id)
-                           VALUES ($1, $2, $3, $4, $5, $6)
-                           ON CONFLICT DO NOTHING""",
-                        cid,
-                        new_fact_id,
-                        full_id,
-                        f"[LLM] {explanation}",
-                        severity,
-                        workspace_id,
+                        """INSERT INTO conflicts (id, fact_a_id, fact_b_id, explanation, severity, workspace_id)
+                           VALUES ($1, $2, $3, $4, 'medium', $5) ON CONFLICT DO NOTHING""",
+                        cid, new_fact_id, full_id, explanation, workspace_id,
                     )
-                    logger.info(
-                        "LLM conflict detected: %s vs %s — %s",
-                        new_fact_id[:8],
-                        full_id[:8],
-                        explanation,
-                    )
+                    logger.info("Conflict detected: %s vs %s — %s", new_fact_id[:8], full_id[:8], explanation)
 
     except Exception as exc:
-        logger.warning("Tier 1 LLM conflict detection failed: %s", exc)
+        logger.warning("LLM conflict detection failed: %s", exc)
 
 
 # ── Tool implementations ─────────────────────────────────────────────
@@ -820,7 +735,10 @@ async def _tool_commit(
     # ── Quota check ──────────────────────────────────────────────────
     async with _safe(pool) as conn:
         ws_row = await conn.fetchrow(
-            "SELECT paused, storage_bytes, plan, stripe_customer_id FROM workspaces WHERE engram_id = $1",
+            """SELECT paused, plan, stripe_customer_id, stripe_subscription_id,
+                      commit_count_month, commit_month,
+                      TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') AS current_month
+               FROM workspaces WHERE engram_id = $1""",
             workspace_id,
         )
     if ws_row and ws_row["paused"]:
@@ -828,10 +746,28 @@ async def _tool_commit(
             "status": "error",
             "paused": True,
             "message": (
-                "Workspace paused: free storage limit (512 MB) exceeded. "
-                "Visit https://www.engram-memory.com/dashboard to add a payment method and resume."
+                "Workspace paused. Visit https://www.engram-memory.com/dashboard "
+                "to review your plan or resolve any billing issues."
             ),
         }
+    if ws_row:
+        plan = (ws_row["plan"] or "free").lower()
+        commit_limit = _PLAN_LIMITS.get(plan, 500)
+        current_month = ws_row["current_month"]
+        committed = ws_row["commit_count_month"] or 0
+        # Reset counter if month has rolled over
+        if ws_row["commit_month"] != current_month:
+            committed = 0
+        if committed >= commit_limit:
+            plan_name = plan.title()
+            return {
+                "status": "error",
+                "limit_reached": True,
+                "message": (
+                    f"Monthly commit limit reached ({commit_limit:,} commits on {plan_name} plan). "
+                    "Upgrade at https://www.engram-memory.com/dashboard to continue."
+                ),
+            }
 
     async with _safe(pool) as conn:
         if operation == "delete":
@@ -886,7 +822,7 @@ async def _tool_commit(
             workspace_id,
             now,
         )
-        # Track storage usage
+        # Track monthly commit count (reset when month changes)
         if operation != "delete":
             content_bytes = len(content.encode())
             await conn.execute(
@@ -894,19 +830,17 @@ async def _tool_commit(
                 content_bytes,
                 workspace_id,
             )
-            # Auto-pause if hobby limit exceeded and no payment method
-            updated_ws = await conn.fetchrow(
-                "SELECT storage_bytes, plan, stripe_customer_id FROM workspaces WHERE engram_id = $1",
+            await conn.execute(
+                """UPDATE workspaces
+                      SET commit_count_month = CASE
+                            WHEN commit_month = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM')
+                            THEN commit_count_month + 1
+                            ELSE 1
+                          END,
+                          commit_month = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM')
+                    WHERE engram_id = $1""",
                 workspace_id,
             )
-            if (
-                updated_ws
-                and updated_ws["storage_bytes"] > HOBBY_LIMIT_BYTES
-                and not updated_ws["stripe_customer_id"]
-            ):
-                await conn.execute(
-                    "UPDATE workspaces SET paused = true WHERE engram_id = $1", workspace_id
-                )
 
     if durability == "durable" and operation != "delete":
         await _detect_conflicts(fact_id, content, scope, workspace_id, pool)
