@@ -799,37 +799,13 @@ def _render_dashboard() -> str:
     <div class="stats-row" id="stats-row"></div>
 
     <div class="tabs">
-      <button class="tab-btn active" onclick="switchTab('graph', event)">Graph</button>
-      <button class="tab-btn" onclick="switchTab('conflicts', event)">Conflicts <span id="conflict-badge"></span></button>
+      <button class="tab-btn active" onclick="switchTab('conflicts', event)">Conflicts <span id="conflict-badge"></span></button>
       <button class="tab-btn" onclick="switchTab('facts', event)">Facts</button>
-      <button class="tab-btn" onclick="switchTab('agents', event)">Agents</button>
       <button class="tab-btn" onclick="switchTab('billing', event)">Billing</button>
     </div>
 
-    <!-- Graph -->
-    <div class="tab-panel active" id="panel-graph">
-      <div class="graph-controls">
-        <input class="graph-filter" id="graph-filter" placeholder="Search nodes by scope or content…" oninput="filterGraph(this.value)" />
-      </div>
-      <div class="graph-wrap">
-        <canvas id="graph-particles"></canvas>
-        <div id="cy"></div>
-      </div>
-      <div class="graph-legend">
-        <span class="legend-item"><span class="legend-dot" style="background:var(--em5)"></span>Active</span>
-        <span class="legend-item"><span class="legend-dot" style="background:#64748b"></span>Retired</span>
-        <span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>Conflict</span>
-        <span class="legend-item"><span class="legend-dot" style="background:#8b5cf6"></span>Lineage</span>
-      </div>
-      <div class="node-detail" id="node-detail">
-        <h4 id="nd-scope"></h4>
-        <p id="nd-content"></p>
-        <div class="meta" id="nd-meta"></div>
-      </div>
-    </div>
-
     <!-- Conflicts -->
-    <div class="tab-panel" id="panel-conflicts">
+    <div class="tab-panel active" id="panel-conflicts">
       <div class="conflict-list" id="conflict-list"></div>
     </div>
 
@@ -847,11 +823,6 @@ def _render_dashboard() -> str:
         </div>
         <div id="facts-list"></div>
       </div>
-    </div>
-
-    <!-- Agents -->
-    <div class="tab-panel" id="panel-agents">
-      <div class="agents-grid" id="agents-grid"></div>
     </div>
 
     <!-- Billing -->
@@ -1402,7 +1373,7 @@ async function openWorkspace(engram_id, initialTab) {
     const tabBtns = document.querySelectorAll('.tab-btn');
     tabBtns.forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    const idx = ['graph','conflicts','facts','agents','billing'].indexOf(initialTab);
+    const idx = ['conflicts','facts','billing'].indexOf(initialTab);
     if (idx >= 0 && tabBtns[idx]) tabBtns[idx].classList.add('active');
     const panelEl = document.getElementById('panel-' + initialTab);
     if (panelEl) panelEl.classList.add('active');
@@ -1482,7 +1453,7 @@ function showInviteKeyPrompt(engram_id) {
     p.innerHTML = '';
   });
   document.querySelector('.tabs').style.display = 'none';
-  document.getElementById('panel-graph').innerHTML = `
+  document.getElementById('panel-conflicts').innerHTML = `
     <div style="padding:64px 0;text-align:center;color:var(--t2)">
       <div style="font-size:18px;font-weight:700;color:var(--t1);margin-bottom:10px">
         Connect this workspace to your account
@@ -1499,7 +1470,7 @@ function showInviteKeyPrompt(engram_id) {
       </div>
       <div id="quick-key-err" style="color:var(--red);font-size:13px;margin-top:12px;display:none"></div>
     </div>`;
-  document.getElementById('panel-graph').classList.add('active');
+  document.getElementById('panel-conflicts').classList.add('active');
 }
 
 async function loadWithKey(engram_id) {
@@ -1537,23 +1508,6 @@ async function loadWithKey(engram_id) {
       p.classList.remove('active');
     });
     // Rebuild panel content (was cleared by showInviteKeyPrompt)
-    document.getElementById('panel-graph').innerHTML = `
-      <div class="graph-controls">
-        <input class="graph-filter" id="graph-filter" placeholder="Search nodes by scope or content…" oninput="filterGraph(this.value)" />
-      </div>
-      <div class="graph-wrap">
-        <canvas id="graph-particles"></canvas>
-        <div id="cy"></div>
-      </div>
-      <div class="graph-legend">
-        <span class="legend-item"><span class="legend-dot" style="background:var(--em5)"></span>Active</span>
-        <span class="legend-item"><span class="legend-dot" style="background:#64748b"></span>Retired</span>
-        <span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>Conflict</span>
-        <span class="legend-item"><span class="legend-dot" style="background:#8b5cf6"></span>Lineage</span>
-      </div>
-      <div class="node-detail" id="node-detail">
-        <h4 id="nd-scope"></h4><p id="nd-content"></p><div class="meta" id="nd-meta"></div>
-      </div>`;
     document.getElementById('panel-conflicts').innerHTML = '<div class="conflict-list" id="conflict-list"></div>';
     document.getElementById('panel-facts').innerHTML = `
       <div class="facts-toolbar">
@@ -1566,9 +1520,8 @@ async function loadWithKey(engram_id) {
         <div class="fact-row fact-row-header"><div>Content</div><div>Scope</div><div>Type</div><div>Date</div></div>
         <div id="facts-list"></div>
       </div>`;
-    document.getElementById('panel-agents').innerHTML = '<div class="agents-grid" id="agents-grid"></div>';
     document.getElementById('panel-billing').innerHTML = '<div class="billing-section" id="billing-section"></div>';
-    document.getElementById('panel-graph').classList.add('active');
+    document.getElementById('panel-conflicts').classList.add('active');
     // Refresh session workspaces so the list shows the newly linked workspace
     const meR = await fetch('/auth/me', { credentials: 'include' });
     if (meR.ok) SESSION = await meR.json();
@@ -1617,10 +1570,8 @@ function renderDetail() {
   const badge = document.getElementById('conflict-badge');
   if (openC > 0) badge.textContent = '(' + openC + ')';
 
-  renderGraph();
   renderConflicts();
   renderFacts();
-  renderAgents();
 }
 
 // ── Graph ───────────────────────────────────────────────────────────
@@ -2081,7 +2032,6 @@ function switchTab(name, event) {
   if (event && event.target) event.target.classList.add('active');
   const panel = document.getElementById('panel-' + name);
   if (panel) panel.classList.add('active');
-  if (name === 'graph' && cy) cy.resize();
   if (name === 'billing' && CURRENT_WS && !BILLING) loadBilling(CURRENT_WS.engram_id);
 }
 
