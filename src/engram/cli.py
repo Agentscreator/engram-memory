@@ -177,12 +177,13 @@ _HOOK_SCRIPT = '''\
 
 Handles Claude Code, Cursor, and Windsurf JSON formats.
 Reads credentials from ~/.engram/credentials and the project .engram.env,
-then POSTs the user prompt to the Engram REST API. Never blocks or raises.
+then calls engram_commit via MCP JSON-RPC. Never blocks or raises.
 """
 import json
 import os
 import sys
 import urllib.request
+import uuid
 
 try:
     data = json.load(sys.stdin)
@@ -206,9 +207,9 @@ try:
         for line in open(creds).read().splitlines():
             line = line.strip()
             if line.startswith("ENGRAM_SERVER_URL="):
-                server_url = line[len("ENGRAM_SERVER_URL="):]
+                server_url = line[len("ENGRAM_SERVER_URL="):].strip()
             elif line.startswith("ENGRAM_INVITE_KEY="):
-                invite_key = line[len("ENGRAM_INVITE_KEY="):]
+                invite_key = line[len("ENGRAM_INVITE_KEY="):].strip()
 
     # Project-local override (.engram.env in cwd)
     env_file = os.path.join(os.getcwd(), ".engram.env")
@@ -216,30 +217,41 @@ try:
         for line in open(env_file).read().splitlines():
             line = line.strip()
             if line.startswith("ENGRAM_SERVER_URL="):
-                server_url = line[len("ENGRAM_SERVER_URL="):]
+                server_url = line[len("ENGRAM_SERVER_URL="):].strip()
             elif line.startswith("ENGRAM_INVITE_KEY="):
-                invite_key = line[len("ENGRAM_INVITE_KEY="):]
+                invite_key = line[len("ENGRAM_INVITE_KEY="):].strip()
 
     if not invite_key:
         sys.exit(0)
 
-    payload = json.dumps({
-        "content": prompt,
-        "scope": "general",
-        "confidence": 0.8,
-        "fact_type": "observation",
+    # Call engram_commit via MCP JSON-RPC
+    body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": str(uuid.uuid4()),
+        "method": "tools/call",
+        "params": {
+            "name": "engram_commit",
+            "arguments": {
+                "content": prompt,
+                "scope": "general",
+                "confidence": 0.8,
+                "fact_type": "observation",
+                "invite_key": invite_key,
+            },
+        },
     }).encode()
 
     req = urllib.request.Request(
-        f"{server_url}/api/commit",
-        data=payload,
+        server_url.rstrip("/") + "/mcp",
+        data=body,
         headers={
             "Authorization": f"Bearer {invite_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
         },
         method="POST",
     )
-    urllib.request.urlopen(req, timeout=3)
+    urllib.request.urlopen(req, timeout=5)
 except Exception:
     pass  # Never block the user\'s message
 
@@ -390,7 +402,7 @@ def _write_cursor_hook(dry_run: bool) -> bool:
 
 _KIRO_HOOK_COMMAND = (
     'python3 -c "\n'
-    "import json, os, sys, urllib.request\n"
+    "import json, os, sys, urllib.request, uuid\n"
     "try:\n"
     "    prompt = os.environ.get('USER_PROMPT', '').strip()\n"
     "    if not prompt: sys.exit(0)\n"
@@ -399,12 +411,12 @@ _KIRO_HOOK_COMMAND = (
     "    for f in [os.path.expanduser('~/.engram/credentials'), os.path.join(os.getcwd(), '.engram.env')]:\n"
     "        if os.path.exists(f):\n"
     "            for line in open(f).read().splitlines():\n"
-    "                if line.startswith('ENGRAM_SERVER_URL='): server_url = line[18:]\n"
-    "                elif line.startswith('ENGRAM_INVITE_KEY='): invite_key = line[18:]\n"
+    "                if line.startswith('ENGRAM_SERVER_URL='): server_url = line[18:].strip()\n"
+    "                elif line.startswith('ENGRAM_INVITE_KEY='): invite_key = line[18:].strip()\n"
     "    if not invite_key: sys.exit(0)\n"
-    "    payload = json.dumps({'content': prompt, 'scope': 'general', 'confidence': 0.8, 'fact_type': 'observation'}).encode()\n"
-    "    req = urllib.request.Request(f'{server_url}/api/commit', data=payload, headers={'Authorization': f'Bearer {invite_key}', 'Content-Type': 'application/json'}, method='POST')\n"
-    "    urllib.request.urlopen(req, timeout=3)\n"
+    "    body = json.dumps({'jsonrpc': '2.0', 'id': str(uuid.uuid4()), 'method': 'tools/call', 'params': {'name': 'engram_commit', 'arguments': {'content': prompt, 'scope': 'general', 'confidence': 0.8, 'fact_type': 'observation', 'invite_key': invite_key}}}).encode()\n"
+    "    req = urllib.request.Request(server_url.rstrip('/') + '/mcp', data=body, headers={'Authorization': 'Bearer ' + invite_key, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}, method='POST')\n"
+    "    urllib.request.urlopen(req, timeout=5)\n"
     "except Exception: pass\n"
     '"'
 )
