@@ -144,7 +144,7 @@ class TestVerifyCommand:
             )
         )
 
-        # Create Cursor MCP config with engram
+        # Create Cursor MCP config with Engram's hosted remote MCP URL.
         cursor_dir = temp_home / ".cursor"
         cursor_dir.mkdir(parents=True)
         mcp_config = cursor_dir / "mcp.json"
@@ -153,8 +153,7 @@ class TestVerifyCommand:
                 {
                     "mcpServers": {
                         "engram": {
-                            "command": "uvx",
-                            "args": ["--from", "engram-team@latest", "engram", "serve"],
+                            "url": "https://www.engram-memory.com/mcp",
                         }
                     }
                 }

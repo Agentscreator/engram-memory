@@ -116,8 +116,8 @@ If you install with `--join`, the final line will instead look like:
 ```
 
 ### Cursor
-**Common failure:** Cursor was not restarted after installation.  
-**Fix:** Restart Cursor, then confirm Engram appears in `~/.cursor/mcp.json` and in Cursor’s MCP or tools UI.
+**Common failure:** Cursor was not restarted after installation, or the agent searches files instead of calling the Engram MCP tool.
+**Fix:** Confirm Engram is under `mcpServers.engram.url` in `~/.cursor/mcp.json`, restart Cursor, approve the MCP tool prompt if shown, and confirm Engram is enabled in Cursor's MCP/tools UI. If Engram still uses the old `command: "uvx"` entry, re-run `engram install` to migrate the exact legacy entry to the hosted URL form.
 
 ### VS Code
 **Common failure:** VS Code uses `servers.engram`, not `mcpServers.engram`.  
