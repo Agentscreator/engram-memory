@@ -1036,6 +1036,14 @@ class PostgresStorage(BaseStorage):
             row = await conn.fetchrow("SELECT * FROM workspaces WHERE engram_id = $1", engram_id)
         return _row_to_dict(row) if row else None
 
+    async def update_workspace_display_name(self, engram_id: str, display_name: str) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                "UPDATE workspaces SET display_name = $1 WHERE engram_id = $2",
+                display_name,
+                engram_id,
+            )
+
     async def insert_invite_key(
         self,
         key_hash: str,

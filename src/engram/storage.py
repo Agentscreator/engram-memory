@@ -267,6 +267,9 @@ class BaseStorage(ABC):
         """Return workspace row or None."""
         return None
 
+    async def update_workspace_display_name(self, engram_id: str, display_name: str) -> None:
+        """Update the display name for a workspace. Default no-op for local mode."""
+
     async def insert_invite_key(
         self,
         key_hash: str,
@@ -1562,6 +1565,13 @@ class SQLiteStorage(BaseStorage):
         cursor = await self.db.execute("SELECT * FROM workspaces WHERE engram_id = ?", (engram_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+    async def update_workspace_display_name(self, engram_id: str, display_name: str) -> None:
+        await self.db.execute(
+            "UPDATE workspaces SET display_name = ? WHERE engram_id = ?",
+            (display_name, engram_id),
+        )
+        await self.db.commit()
 
     async def insert_invite_key(
         self,

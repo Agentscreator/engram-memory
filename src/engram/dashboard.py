@@ -265,6 +265,73 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
 
         return HTMLResponse(_render_settings(workspace_info))
 
+    async def rename_workspace(request: Request) -> HTMLResponse:
+        from engram.workspace import read_workspace, set_workspace_setting
+
+        error: str | None = None
+        ws = read_workspace()
+
+        if ws is None:
+            error = "No workspace configured."
+        elif not ws.is_creator:
+            error = "Only the workspace creator can rename the workspace."
+        else:
+            try:
+                form = await request.form()
+                new_name = str(form.get("display_name", "")).strip()
+                if not new_name:
+                    raise ValueError("Workspace name cannot be empty.")
+                set_workspace_setting("display_name", new_name)
+                # Persist to database
+                if ws.db_url:
+                    from engram.postgres_storage import PostgresStorage
+
+                    pg = PostgresStorage(
+                        db_url=ws.db_url, workspace_id=ws.engram_id, schema=ws.schema
+                    )
+                    await pg.connect()
+                    await pg.update_workspace_display_name(ws.engram_id, new_name)
+                    await pg.close()
+                else:
+                    await storage.update_workspace_display_name(ws.engram_id, new_name)
+            except Exception as exc:
+                error = str(exc)
+
+        # Re-read updated config
+        ws = read_workspace()
+        workspace_info = None
+        if ws:
+            workspace_info = {
+                "engram_id": ws.engram_id,
+                "schema": ws.schema,
+                "anonymous_mode": ws.anonymous_mode,
+                "anon_agents": ws.anon_agents,
+                "is_creator": ws.is_creator,
+                "display_name": ws.display_name,
+                "description": ws.description,
+            }
+            try:
+                if ws.db_url:
+                    from engram.postgres_storage import PostgresStorage
+
+                    pg_storage = PostgresStorage(
+                        db_url=ws.db_url, workspace_id=ws.engram_id, schema=ws.schema
+                    )
+                    await pg_storage.connect()
+                    workspace_info["invite_keys"] = await pg_storage.get_invite_keys()
+                    await pg_storage.close()
+                else:
+                    workspace_info["invite_keys"] = await storage.get_invite_keys()
+            except Exception:
+                workspace_info["invite_keys"] = []
+
+        if error and workspace_info:
+            workspace_info["rename_error"] = error
+        elif workspace_info:
+            workspace_info["rename_success"] = True
+
+        return HTMLResponse(_render_settings(workspace_info))
+
     return [
         Route("/", landing, methods=["GET"]),
         Route("/dashboard", index, methods=["GET"]),
@@ -278,6 +345,7 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         Route("/dashboard/agents", agents_view, methods=["GET"]),
         Route("/dashboard/expiring", expiring_view, methods=["GET"]),
         Route("/dashboard/settings", settings_view, methods=["GET"]),
+        Route("/dashboard/settings/rename", rename_workspace, methods=["POST"]),
     ]
 
 
@@ -1214,15 +1282,69 @@ def _render_settings(workspace_info: dict | None) -> str:
 
     display_name = workspace_info.get("display_name", "")
     description = workspace_info.get("description", "")
+    is_creator = workspace_info.get("is_creator", False)
+    rename_error = workspace_info.get("rename_error")
+    rename_success = workspace_info.get("rename_success", False)
+
+    if is_creator:
+        success_banner = ""
+        if rename_success:
+            success_banner = """
+            <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:6px;
+                        padding:0.6rem 0.9rem;margin-bottom:1rem;color:#166534;font-size:0.875rem;">
+                ✓ Workspace name updated successfully.
+            </div>"""
+        error_banner = ""
+        if rename_error:
+            error_banner = f"""
+            <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;
+                        padding:0.6rem 0.9rem;margin-bottom:1rem;color:#991b1b;font-size:0.875rem;">
+                {_esc(rename_error)}
+            </div>"""
+        name_section = f"""
+    <div style="margin-bottom:2rem;padding:1.25rem;border:2px solid #6366f1;border-radius:10px;
+                background:#fafafa;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.25rem;">Workspace Name</h3>
+        <p style="font-size:0.8rem;color:#6b7280;margin-bottom:0.75rem;">
+            This name appears in the dashboard header and is visible to all workspace members.
+        </p>
+        {success_banner}{error_banner}
+        <form method="POST" action="/dashboard/settings/rename"
+              style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+            <input
+                type="text"
+                name="display_name"
+                value="{_esc(display_name)}"
+                placeholder="e.g. My Team's Workspace"
+                required
+                style="flex:1;min-width:200px;padding:0.5rem 0.75rem;border:1px solid #d1d5db;
+                       border-radius:6px;font-size:0.95rem;outline:none;"
+            />
+            <button type="submit"
+                    style="padding:0.5rem 1.25rem;background:#6366f1;color:#fff;border:none;
+                           border-radius:6px;font-size:0.95rem;cursor:pointer;font-weight:500;
+                           white-space:nowrap;">
+                Save Name
+            </button>
+        </form>
+    </div>"""
+    else:
+        name_section = f"""
+    <div style="margin-bottom:2rem;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Workspace Name</h3>
+        <code style="background:#f3f4f6;padding:0.5rem;border-radius:4px;">
+            {_esc(display_name) or "(not set)"}
+        </code>
+        <p style="font-size:0.8rem;color:#6b7280;margin-top:0.4rem;">
+            Only the workspace creator can rename this workspace.
+        </p>
+    </div>"""
 
     body = f"""
     <h2>Workspace Settings</h2>
-    
-    <div style="margin-bottom:2rem;">
-        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Display Name</h3>
-        <code style="background:#f3f4f6;padding:0.5rem;border-radius:4px;">{_esc(display_name) or "(not set)"}</code>
-    </div>
-    
+
+    {name_section}
+
     <div style="margin-bottom:2rem;">
         <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Description</h3>
         <code style="background:#f3f4f6;padding:0.5rem;border-radius:4px;">{_esc(description) or "(not set)"}</code>
