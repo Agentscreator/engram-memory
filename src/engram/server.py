@@ -81,6 +81,105 @@ def set_rate_limiter(limiter: Any) -> None:
     _rate_limiter = limiter
 
 
+_ENGRAM_ENV_FILENAME = ".engram.env"
+
+
+def _read_engram_env() -> str | None:
+    """Read ENGRAM_INVITE_KEY from .engram.env in the current working directory."""
+    env_path = Path.cwd() / _ENGRAM_ENV_FILENAME
+    if not env_path.exists():
+        return None
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("ENGRAM_INVITE_KEY="):
+            return line[len("ENGRAM_INVITE_KEY="):].strip()
+    return None
+
+
+def _write_engram_env(invite_key: str) -> None:
+    """Write .engram.env to the current working directory with the invite key."""
+    env_path = Path.cwd() / _ENGRAM_ENV_FILENAME
+    content = (
+        "# Engram — Shared Team Memory\n"
+        "# This file allows all AI agents in this workspace to connect to\n"
+        "# the team's shared Engram memory automatically.\n"
+        "#\n"
+        "# DO NOT DELETE — without this file, agents lose access to shared memory\n"
+        "# and must be given the invite key again each session.\n"
+        "#\n"
+        "# Add .engram.env to your .gitignore — it contains credentials.\n"
+        f"ENGRAM_INVITE_KEY={invite_key}\n"
+    )
+    env_path.write_text(content)
+    env_path.chmod(0o600)
+    logger.info("Wrote %s", env_path)
+
+
+async def _join_workspace(invite_key: str) -> dict[str, Any]:
+    """Core join logic shared by engram_join and the auto-join in engram_status."""
+    from engram.workspace import (
+        WorkspaceConfig,
+        decode_invite_key,
+        invite_key_hash,
+        write_workspace,
+    )
+
+    try:
+        payload = decode_invite_key(invite_key)
+    except ValueError as e:
+        return {
+            "status": "error",
+            "next_prompt": (
+                f"That invite key isn't valid: {e}\n\n"
+                "Please double-check it with the person who set up the workspace."
+            ),
+        }
+
+    db_url = payload["db_url"]
+    engram_id = payload["engram_id"]
+    schema = payload.get("schema", "engram")
+    key_generation = payload.get("key_generation", 0)
+
+    key_hash = invite_key_hash(invite_key)
+    try:
+        from engram.postgres_storage import PostgresStorage
+
+        target_storage = PostgresStorage(db_url=db_url, workspace_id=engram_id, schema=schema)
+        await target_storage.connect()
+        consumed = await target_storage.consume_invite_key(key_hash)
+        await target_storage.close()
+    except Exception:
+        consumed = None
+
+    if consumed is None:
+        return {
+            "status": "error",
+            "next_prompt": (
+                "This invite key has been revoked, used up, or expired. "
+                "Ask the workspace creator to generate a new one with engram_reset_invite_key."
+            ),
+        }
+
+    config = WorkspaceConfig(
+        engram_id=engram_id,
+        db_url=db_url,
+        schema=schema,
+        anonymous_mode=False,
+        anon_agents=False,
+        key_generation=key_generation,
+        is_creator=False,
+    )
+    write_workspace(config)
+    _write_engram_env(invite_key)
+    logger.info("Joined workspace: %s (schema: %s, generation: %d)", engram_id, schema, key_generation)
+
+    return {
+        "status": "joined",
+        "engram_id": engram_id,
+        "schema": schema,
+    }
+
+
 _DISCONNECTED_NEXT_PROMPT = (
     "Your Engram client has been temporarily disconnected due to a security key reset.\n\n"
     "The workspace creator has issued a new invite key. To reconnect:\n\n"
@@ -123,7 +222,7 @@ async def _check_key_generation(ws: Any) -> dict[str, Any] | None:
 # ── engram_status ─────────────────────────────────────────────────────
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
 async def engram_status() -> dict[str, Any]:
     """Check whether Engram is configured and get the next setup step.
 
@@ -151,12 +250,52 @@ async def engram_status() -> dict[str, Any]:
     """
     from engram.workspace import read_workspace, WORKSPACE_PATH
 
+    # ── 1. Auto-join via .engram.env if workspace not yet configured ──────
+    env_key = _read_engram_env()
     ws = read_workspace()
+
+    if env_key and not (ws and (ws.db_url or WORKSPACE_PATH.exists())):
+        result = await _join_workspace(env_key)
+        if result["status"] == "joined":
+            ws = read_workspace()  # reload after join
+        # Fall through to the ready check below; on error, continue to unconfigured
+
+    # Reload ws after potential auto-join
+    if ws is None:
+        ws = read_workspace()
 
     if ws and ws.db_url:
         disconnected = await _check_key_generation(ws)
         if disconnected:
             return disconnected
+
+        # Auto-generate .engram.env if missing so future agents can auto-join
+        if env_key is None and _storage is not None:
+            try:
+                from engram.workspace import generate_invite_key
+                import time
+
+                new_key, key_hash = generate_invite_key(
+                    db_url=ws.db_url,
+                    engram_id=ws.engram_id,
+                    schema=ws.schema,
+                    expires_days=90,
+                    uses_remaining=50,
+                    key_generation=ws.key_generation,
+                )
+                expires_ts = datetime.fromtimestamp(
+                    time.time() + 90 * 86400, tz=timezone.utc
+                ).isoformat()
+                await _storage.insert_invite_key(
+                    key_hash=key_hash,
+                    engram_id=ws.engram_id,
+                    expires_at=expires_ts,
+                    uses_remaining=50,
+                )
+                _write_engram_env(new_key)
+            except Exception as exc:
+                logger.warning("Could not auto-generate .engram.env: %s", exc)
+
         return {
             "status": "ready",
             "mode": "team",
@@ -331,6 +470,7 @@ async def engram_init(
         is_creator=True,
     )
     write_workspace(config)
+    _write_engram_env(invite_key)
     logger.info(
         "Workspace initialized: %s (schema: %s, anonymous=%s)", engram_id, schema, anonymous_mode
     )
@@ -389,88 +529,19 @@ async def engram_join(invite_key: str) -> dict[str, Any]:
 
     Example: {"status": "ready", "engram_id": "ENG-XXXXXX", "schema": "engram"}
     """
-    from engram.workspace import (
-        WorkspaceConfig,
-        decode_invite_key,
-        invite_key_hash,
-        write_workspace,
-    )
+    result = await _join_workspace(invite_key)
+    if result["status"] != "joined":
+        return result
 
-    # Decode the invite key — self-contained, no other input needed
-    try:
-        payload = decode_invite_key(invite_key)
-    except ValueError as e:
-        return {
-            "status": "error",
-            "next_prompt": (
-                f"That invite key isn't valid: {e}\n\n"
-                "Please double-check it with the person who set up the workspace."
-            ),
-        }
-
-    db_url = payload["db_url"]
-    engram_id = payload["engram_id"]
-    schema = payload.get("schema", "engram")  # backward compatibility
-    key_generation = payload.get("key_generation", 0)
-
-    # Atomically validate and consume the invite key against the TARGET workspace database.
-    # Must use the db_url embedded in the key — not _storage (which points to the current
-    # workspace and may be a completely different database or None for new users).
-    key_hash = invite_key_hash(invite_key)
-    try:
-        from engram.postgres_storage import PostgresStorage
-
-        target_storage = PostgresStorage(db_url=db_url, workspace_id=engram_id, schema=schema)
-        await target_storage.connect()
-        consumed = await target_storage.consume_invite_key(key_hash)
-        await target_storage.close()
-    except Exception:
-        consumed = None
-
-    if consumed is None:
-        return {
-            "status": "error",
-            "next_prompt": (
-                "This invite key has been revoked, used up, or expired. "
-                "Ask the workspace creator to generate a new one with engram_reset_invite_key."
-            ),
-        }
-
-    # Write workspace.json — db_url extracted silently, never shown to user
-    config = WorkspaceConfig(
-        engram_id=engram_id,
-        db_url=db_url,
-        schema=schema,
-        anonymous_mode=False,
-        anon_agents=False,
-        key_generation=key_generation,
-        is_creator=False,
-    )
-    write_workspace(config)
-    logger.info(
-        "Joined workspace: %s (schema: %s, generation: %d)", engram_id, schema, key_generation
-    )
-
+    engram_id = result["engram_id"]
+    schema = result["schema"]
     return {
-        "status": "joined",
-        "engram_id": engram_id,
-        "schema": schema,
+        **result,
         "next_prompt": (
             "You're in. Your agent is now connected to the team's shared memory.\n\n"
             f"Engram tables are in the '{schema}' schema — isolated from your app.\n\n"
-            f"IMPORTANT — Write .engram.env to the workspace root so Engram persists\n"
-            f"across sessions and works for every agent (Kiro, Claude Code, Cursor, etc.).\n"
-            f"Write this exact content to .engram.env:\n\n"
-            f"# Engram — Shared Team Memory\n"
-            f"# This file allows all AI agents in this workspace to connect to\n"
-            f"# the team's shared Engram memory automatically.\n"
-            f"#\n"
-            f"# DO NOT DELETE — without this file, agents lose access to shared memory\n"
-            f"# and must be given the invite key again each session.\n"
-            f"#\n"
-            f"# Add .engram.env to your .gitignore — it contains credentials.\n"
-            f"ENGRAM_INVITE_KEY={invite_key}\n\n"
-            f"Then add .engram.env to .gitignore if it's not already there.\n\n"
+            ".engram.env has been written automatically so every agent in this project\n"
+            "will connect to shared memory without needing an invite key again.\n\n"
             "Auto-commit mode is now active: call engram_commit with the user's\n"
             "message as content after every user prompt, before responding.\n"
             "This records every conversation turn as a fact in shared team memory."
