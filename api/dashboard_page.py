@@ -271,8 +271,11 @@ def _render_dashboard() -> str:
       padding: 24px; cursor: pointer; transition: border-color 0.2s, transform 0.15s; }
     .ws-card:hover { border-color: var(--border-glow); transform: translateY(-2px); }
     .ws-card.paused { border-color: rgba(239,68,68,0.3); }
-    .ws-id { font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 600;
-      color: var(--em4); margin-bottom: 12px; }
+    .ws-name { font-size: 16px; font-weight: 700; color: var(--t1); margin-bottom: 4px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ws-name-placeholder { font-size: 13px; color: var(--tm); font-style: italic; margin-bottom: 4px; }
+    .ws-id { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500;
+      color: var(--tm); margin-bottom: 12px; }
     .ws-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
     .badge { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
       padding: 3px 10px; border-radius: 6px; }
@@ -345,8 +348,23 @@ def _render_dashboard() -> str:
       font-family: inherit; font-size: 13px; font-weight: 500; padding: 0;
       display: flex; align-items: center; gap: 6px; transition: color 0.2s; }
     .back-btn:hover { color: var(--em4); }
-    .detail-ws-id { font-family: 'JetBrains Mono', monospace; font-size: 18px;
-      font-weight: 700; color: var(--em4); }
+    .detail-ws-id { font-family: 'JetBrains Mono', monospace; font-size: 13px;
+      color: var(--tm); margin-top: 2px; }
+    .detail-ws-name { font-size: 18px; font-weight: 700; color: var(--t1); line-height: 1.2; }
+    .detail-name-wrap { display: flex; flex-direction: column; gap: 2px; }
+    .rename-btn { background: none; border: none; color: var(--tm); cursor: pointer;
+      font-size: 14px; padding: 4px 6px; border-radius: 6px; transition: background 0.15s, color 0.15s;
+      line-height: 1; }
+    .rename-btn:hover { background: rgba(255,255,255,0.06); color: var(--em4); }
+    .rename-form { display: none; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .rename-form.visible { display: flex; }
+    .rename-input { background: var(--bg-card); border: 1px solid var(--border-glow); border-radius: 8px;
+      color: var(--t1); font-size: 15px; font-family: inherit; padding: 6px 10px;
+      outline: none; min-width: 200px; }
+    .rename-save { padding: 6px 14px; background: var(--em5); color: #000; border: none;
+      border-radius: 7px; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer; }
+    .rename-cancel { padding: 6px 10px; background: none; border: 1px solid var(--border);
+      border-radius: 7px; font-size: 13px; color: var(--t2); font-family: inherit; cursor: pointer; }
 
     /* Paused banner */
     .paused-banner { margin: 16px 0; padding: 16px 20px; background: rgba(239,68,68,0.08);
@@ -485,7 +503,8 @@ def _render_dashboard() -> str:
 
       /* Workspace detail */
       .detail-header { flex-wrap: wrap; gap: 10px; padding-top: 16px; }
-      .detail-ws-id { font-size: 15px; }
+      .detail-ws-id { font-size: 11px; }
+      .detail-ws-name { font-size: 15px; }
       .back-btn { font-size: 12px; }
 
       /* Stats — 2-column grid */
@@ -701,7 +720,19 @@ def _render_dashboard() -> str:
   <div class="container">
     <div class="detail-header">
       <button class="back-btn" onclick="goBackToList()">← All workspaces</button>
-      <span class="detail-ws-id" id="detail-ws-id"></span>
+      <div class="detail-name-wrap">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="detail-ws-name" id="detail-ws-name"></span>
+          <button class="rename-btn" id="rename-btn" title="Rename workspace" onclick="startRename()">✏</button>
+        </div>
+        <span class="detail-ws-id" id="detail-ws-id"></span>
+        <div class="rename-form" id="rename-form">
+          <input class="rename-input" id="rename-input" maxlength="80" placeholder="Workspace name…" />
+          <button class="rename-save" onclick="saveRename()">Save</button>
+          <button class="rename-cancel" onclick="cancelRename()">Cancel</button>
+          <span id="rename-error" style="font-size:12px;color:var(--red);display:none"></span>
+        </div>
+      </div>
       <div style="margin-left:auto;display:flex;gap:8px">
         <span id="detail-plan-badge" class="badge"></span>
         <span id="detail-status-badge" class="badge"></span>
@@ -1020,8 +1051,12 @@ function renderWsGrid(workspaces) {
     const isPaused = ws.paused;
     const plan = ws.plan || 'hobby';
     const wsId = esc(ws.engram_id);
+    const wsName = ws.display_name ? esc(ws.display_name) : '';
     return `<div class="ws-card ${isPaused ? 'paused' : ''}">
       <div onclick="openWorkspace('${wsId}')" style="cursor:pointer">
+        ${wsName
+          ? `<div class="ws-name">${wsName}</div>`
+          : `<div class="ws-name-placeholder">Unnamed — click to rename</div>`}
         <div class="ws-id">${wsId}</div>
         <div class="ws-badges">
           <span class="badge ${isPaused ? 'badge-paused' : 'badge-active'}">${isPaused ? 'Paused' : 'Active'}</span>
@@ -1221,6 +1256,8 @@ async function openWorkspace(engram_id, initialTab) {
   document.getElementById('ws-list-screen').style.display = 'none';
   document.getElementById('ws-detail-screen').style.display = 'block';
   document.getElementById('detail-ws-id').textContent = engram_id;
+  document.getElementById('detail-ws-name').textContent = CURRENT_WS?.display_name || engram_id;
+  cancelRename();
 
   const plan = CURRENT_WS?.plan || 'hobby';
   const isPaused = CURRENT_WS?.paused || false;
@@ -1241,6 +1278,48 @@ async function openWorkspace(engram_id, initialTab) {
     const panelEl = document.getElementById('panel-' + initialTab);
     if (panelEl) panelEl.classList.add('active');
     if (initialTab === 'billing') await loadBilling(engram_id);
+  }
+}
+
+// ── Rename workspace ────────────────────────────────────────────────
+function startRename() {
+  const current = CURRENT_WS?.display_name || '';
+  document.getElementById('rename-input').value = current;
+  document.getElementById('rename-form').classList.add('visible');
+  document.getElementById('rename-btn').style.display = 'none';
+  document.getElementById('rename-error').style.display = 'none';
+  document.getElementById('rename-input').focus();
+}
+
+function cancelRename() {
+  document.getElementById('rename-form').classList.remove('visible');
+  document.getElementById('rename-btn').style.display = '';
+  document.getElementById('rename-error').style.display = 'none';
+}
+
+async function saveRename() {
+  const newName = document.getElementById('rename-input').value.trim();
+  const errEl = document.getElementById('rename-error');
+  if (!newName) { errEl.textContent = 'Name cannot be empty.'; errEl.style.display = 'block'; return; }
+  try {
+    const r = await fetch('/auth/rename-workspace', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ engram_id: CURRENT_WS.engram_id, display_name: newName }),
+    });
+    const d = await r.json();
+    if (!r.ok) { errEl.textContent = d.error || 'Rename failed.'; errEl.style.display = 'block'; return; }
+    // Update local state and UI
+    CURRENT_WS.display_name = newName;
+    const ws = (SESSION.workspaces || []).find(w => w.engram_id === CURRENT_WS.engram_id);
+    if (ws) ws.display_name = newName;
+    document.getElementById('detail-ws-name').textContent = newName;
+    cancelRename();
+    renderWsGrid(SESSION.workspaces || []);
+  } catch(e) {
+    errEl.textContent = 'Connection error — please try again.';
+    errEl.style.display = 'block';
   }
 }
 

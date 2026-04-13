@@ -42,8 +42,10 @@ _AUTH_SCHEMA_STMTS = [
         paused             BOOLEAN     NOT NULL DEFAULT false,
         storage_bytes      BIGINT      NOT NULL DEFAULT 0,
         plan               TEXT        NOT NULL DEFAULT 'hobby',
-        stripe_customer_id TEXT
+        stripe_customer_id TEXT,
+        display_name       TEXT
     )""",
+    f"ALTER TABLE {SCHEMA}.workspaces ADD COLUMN IF NOT EXISTS display_name TEXT",
     f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.users (
         id                 TEXT PRIMARY KEY,
         email              TEXT UNIQUE NOT NULL,
@@ -343,7 +345,7 @@ async def handle_me(request: Request) -> JSONResponse:
             workspaces = await conn.fetch(
                 f"""SELECT uw.engram_id, uw.role,
                           w.paused, w.storage_bytes, w.plan, w.stripe_customer_id AS ws_stripe_id,
-                          w.created_at AS ws_created_at
+                          w.created_at AS ws_created_at, w.display_name
                    FROM {SCHEMA}.user_workspaces uw
                    LEFT JOIN {SCHEMA}.workspaces w ON w.engram_id = uw.engram_id
                    WHERE uw.user_id = $1
@@ -630,6 +632,48 @@ async def handle_options(request: Request) -> Response:
     )
 
 
+async def handle_rename_workspace(request: Request) -> JSONResponse:
+    """Rename a workspace the logged-in user owns. POST {engram_id, display_name}."""
+    session = _get_jwt_from_request(request)
+    if not session:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    engram_id = (body.get("engram_id") or "").strip()
+    display_name = (body.get("display_name") or "").strip()
+
+    if not engram_id:
+        return JSONResponse({"error": "engram_id is required"}, status_code=400)
+    if not display_name:
+        return JSONResponse({"error": "display_name cannot be empty"}, status_code=400)
+    if len(display_name) > 80:
+        return JSONResponse({"error": "display_name must be 80 characters or fewer"}, status_code=400)
+
+    try:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            owns = await conn.fetchrow(
+                f"SELECT 1 FROM {SCHEMA}.user_workspaces WHERE user_id = $1 AND engram_id = $2",
+                session["sub"],
+                engram_id,
+            )
+            if not owns:
+                return JSONResponse({"error": "Workspace not found or access denied"}, status_code=403)
+            await conn.execute(
+                f"UPDATE {SCHEMA}.workspaces SET display_name = $1 WHERE engram_id = $2",
+                display_name,
+                engram_id,
+            )
+    except Exception as exc:
+        return JSONResponse({"error": f"Database error: {exc}"}, status_code=500)
+
+    return JSONResponse({"status": "ok", "engram_id": engram_id, "display_name": display_name})
+
+
 app = Starlette(
     routes=[
         Route("/auth/signup", handle_signup, methods=["POST"]),
@@ -639,6 +683,7 @@ app = Starlette(
         Route("/auth/connect-workspace", handle_connect_workspace, methods=["POST"]),
         Route("/auth/create-workspace", handle_create_workspace, methods=["POST"]),
         Route("/auth/invite-key", handle_invite_key, methods=["POST"]),
+        Route("/auth/rename-workspace", handle_rename_workspace, methods=["POST"]),
         Route("/auth/{path:path}", handle_options, methods=["OPTIONS"]),
     ]
 )
