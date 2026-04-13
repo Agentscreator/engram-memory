@@ -391,74 +391,96 @@ async def _detect_conflicts(
     pool: Any,
     plan: str = "free",
 ) -> None:
-    """LLM-powered conflict detection with temporal awareness.
+    """Narrative coherence detective.
 
-    Facts include timestamps so the LLM understands development progression.
-    Natural evolution (refining, narrowing, expanding) is NOT flagged.
-    Only genuine incompatible claims about the same subject are conflicts.
+    Instead of pairwise contradiction checking, reads the full chronological
+    story of the workspace and identifies where an agent reading this history
+    would get confused. Catches:
+
+    - Reversals: did X → changed to Y → back to X without explanation
+    - Ambiguity: two active facts say different things about the same subject
+    - Stale info: old fact still active but clearly superseded by context
+
+    Inspired by Yu et al.'s consistency model (visibility + ordering),
+    Graphiti's bitemporal approach, and FiFA's finding that unverified
+    inferences are the primary noise source.
     """
     if not OPENAI_API_KEY:
         return
 
     try:
         async with _safe(pool) as conn:
+            # Fetch ALL active facts chronologically (oldest first = story order)
             all_facts = await conn.fetch(
                 """SELECT id, content, scope, committed_at FROM facts
-                   WHERE workspace_id = $1 AND valid_until IS NULL AND id != $2
-                   ORDER BY committed_at DESC""",
+                   WHERE workspace_id = $1 AND valid_until IS NULL
+                   ORDER BY committed_at ASC""",
                 workspace_id,
-                new_fact_id,
             )
 
-        if not all_facts:
+        if len(all_facts) < 2:
             return
 
-        batches: list[list[dict]] = []
-        current_batch: list[dict] = []
-        current_chars = 0
+        # Build the chronological narrative
+        story_lines: list[dict] = []
         for row in all_facts:
             ts = (
                 row["committed_at"].strftime("%Y-%m-%d %H:%M") if row["committed_at"] else "unknown"
             )
-            fact_text = f"[{row['id'][:8]}] [{ts}] ({row['scope']}) {row['content']}"
-            fact_len = len(fact_text)
-            if current_chars + fact_len > _BATCH_CHAR_LIMIT and current_batch:
+            story_lines.append(
+                {
+                    "id": row["id"],
+                    "text": f"[{row['id'][:8]}] {ts} ({row['scope']}) {row['content']}",
+                }
+            )
+
+        # Batch into context windows, but keep chronological order within each
+        batches: list[list[dict]] = []
+        current_batch: list[dict] = []
+        current_chars = 0
+        for line in story_lines:
+            line_len = len(line["text"])
+            if current_chars + line_len > _BATCH_CHAR_LIMIT and current_batch:
                 batches.append(current_batch)
                 current_batch = []
                 current_chars = 0
-            current_batch.append({"id": row["id"], "text": fact_text})
-            current_chars += fact_len
+            current_batch.append(line)
+            current_chars += line_len
         if current_batch:
             batches.append(current_batch)
 
         import asyncio as _aio
 
         async def _check_batch(batch: list[dict]) -> list[dict]:
-            facts_block = "\n".join(f"- {f['text']}" for f in batch)
+            story = "\n".join(f"{i + 1}. {f['text']}" for i, f in enumerate(batch))
             prompt = (
-                "You detect when AI agents are confused about the current state of a project. "
-                "Facts are timestamped — use both date AND time to understand ordering.\n\n"
-                "RULES:\n"
-                "1. Flag only when two facts make genuinely INCOMPATIBLE claims about the "
-                "SAME subject that cannot both be true right now.\n"
-                "2. NATURAL DEVELOPMENT is NOT confusion. Refining, narrowing, expanding, "
-                "or evolving a decision over time is normal — do NOT flag.\n"
-                "3. A newer fact that updates an older one is progression, not conflict.\n"
-                "4. Facts about DIFFERENT subjects are never conflicts.\n"
-                "5. When in doubt, do NOT flag. False positives erode trust.\n"
-                "6. Use timestamps (date + time) — facts minutes apart are likely the same "
-                "conversation evolving. Facts hours/days apart from different scopes are "
-                "more likely genuine confusion.\n\n"
-                f"NEW FACT: {content}\n\n"
-                f"EXISTING FACTS:\n{facts_block}\n\n"
-                "For each genuine confusion, return a JSON object with:\n"
-                '- "fact_id": first 8 chars of the conflicting fact ID\n'
-                '- "question": a concise yes/no question (max 2 sentences) that a human '
-                "can answer to resolve the confusion. Frame it as: 'Is X still true, or "
-                "has it changed to Y?'\n\n"
+                "You are a detective reading the chronological story of a software project's "
+                "shared memory. Each line is a fact committed by an AI agent, with timestamp "
+                "and scope.\n\n"
+                "Read the story and identify points where an agent joining this project "
+                "TODAY would get confused. You're looking for:\n\n"
+                "• REVERSALS — the story says 'we use X', then later 'we switched to Y', "
+                "then even later 'we use X' again. Which is it now?\n"
+                "• AMBIGUITY — two facts that are both currently active say different things "
+                "about the same subject. An agent wouldn't know which to follow.\n"
+                "• STALE CLAIMS — an old fact is clearly outdated based on newer context "
+                "but was never explicitly retired.\n\n"
+                "DO NOT FLAG:\n"
+                "• Natural progression (we did X, then improved to Y) — that's normal\n"
+                "• Facts about different subjects, even if they use similar words\n"
+                "• Facts from the same conversation (minutes apart, same scope) evolving\n"
+                "• Anything where the chronological order makes the current state clear\n\n"
+                "Think about it like this: if a new agent reads these facts top to bottom, "
+                "would they know what's true RIGHT NOW? If yes, no confusion. If they'd "
+                "have to guess, that's a confusion worth flagging.\n\n"
+                f"THE STORY (chronological, oldest first):\n{story}\n\n"
+                "For each confusion you find, return:\n"
+                '- "fact_ids": array of the 8-char IDs of the facts involved\n'
+                '- "question": a 1-2 sentence yes/no question a human can answer to '
+                "clarify. Frame as: 'Is [specific thing] still the case?'\n\n"
                 "Respond with ONLY a JSON array:\n"
-                '[{"fact_id": "abc12345", "question": "Is the queue backed by Postgres, or was it switched to Redis?"}]\n\n'
-                "If no confusions (the common case), respond with: []"
+                '[{"fact_ids": ["abc12345", "def67890"], "question": "Is the API still using REST, or was it switched to GraphQL?"}]\n\n'
+                "If the story is coherent (the common case), respond with: []"
             )
             try:
                 import httpx
@@ -476,11 +498,13 @@ async def _detect_conflicts(
                                 {
                                     "role": "system",
                                     "content": (
-                                        "You detect when AI agents are confused about a project's "
-                                        "current state. Be extremely conservative — only flag "
-                                        "genuine confusion where an agent might act on outdated "
-                                        "or wrong information. Normal development evolution is "
-                                        "not confusion. Respond only with valid JSON arrays."
+                                        "You are a narrative coherence detective for a team's "
+                                        "shared AI memory. Read the chronological story and "
+                                        "identify where a new agent would get confused about "
+                                        "the current state of things. Normal development "
+                                        "progression is not confusion. Only flag genuine "
+                                        "ambiguity that would cause an agent to act on wrong "
+                                        "information. Respond only with valid JSON arrays."
                                     ),
                                 },
                                 {"role": "user", "content": prompt},
@@ -500,52 +524,64 @@ async def _detect_conflicts(
                         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
                     return json.loads(raw)
             except Exception as exc:
-                logger.warning("LLM conflict batch failed: %s", exc)
+                logger.warning("LLM coherence check failed: %s", exc)
                 return []
 
         results = await _aio.gather(*[_check_batch(b) for b in batches])
 
+        # Build ID lookup
         id_lookup: dict[str, str] = {}
         for row in all_facts:
             id_lookup[row["id"][:8]] = row["id"]
 
         async with _safe(pool) as conn:
             for batch_results in results:
-                for conflict in batch_results:
-                    if not isinstance(conflict, dict):
+                for confusion in batch_results:
+                    if not isinstance(confusion, dict):
                         continue
-                    full_id = id_lookup.get(conflict.get("fact_id", ""))
-                    if not full_id:
+                    fact_ids = confusion.get("fact_ids", [])
+                    if len(fact_ids) < 2:
                         continue
+                    # Resolve short IDs to full IDs
+                    full_ids = [id_lookup.get(fid) for fid in fact_ids]
+                    full_ids = [fid for fid in full_ids if fid]
+                    if len(full_ids) < 2:
+                        continue
+                    # Use first two facts as the conflict pair
+                    fa_id, fb_id = full_ids[0], full_ids[1]
+                    # Check if already flagged
                     existing = await conn.fetchrow(
                         """SELECT 1 FROM conflicts WHERE workspace_id = $1
-                             AND ((fact_a_id = $2 AND fact_b_id = $3) OR (fact_a_id = $3 AND fact_b_id = $2))""",
+                             AND ((fact_a_id = $2 AND fact_b_id = $3)
+                               OR (fact_a_id = $3 AND fact_b_id = $2))""",
                         workspace_id,
-                        new_fact_id,
-                        full_id,
+                        fa_id,
+                        fb_id,
                     )
                     if existing:
                         continue
                     cid = str(uuid.uuid4())
-                    explanation = conflict.get("question", "Conflicting information detected")
+                    question = confusion.get("question", "Ambiguous information detected")
                     await conn.execute(
-                        """INSERT INTO conflicts (id, fact_a_id, fact_b_id, explanation, severity, workspace_id)
-                           VALUES ($1, $2, $3, $4, 'medium', $5) ON CONFLICT DO NOTHING""",
+                        """INSERT INTO conflicts
+                           (id, fact_a_id, fact_b_id, explanation, severity, workspace_id)
+                           VALUES ($1, $2, $3, $4, 'medium', $5)
+                           ON CONFLICT DO NOTHING""",
                         cid,
-                        new_fact_id,
-                        full_id,
-                        explanation,
+                        fa_id,
+                        fb_id,
+                        question,
                         workspace_id,
                     )
                     logger.info(
-                        "Conflict detected: %s vs %s — %s",
-                        new_fact_id[:8],
-                        full_id[:8],
-                        explanation,
+                        "Coherence issue: %s vs %s — %s",
+                        fa_id[:8],
+                        fb_id[:8],
+                        question,
                     )
 
     except Exception as exc:
-        logger.warning("LLM conflict detection failed: %s", exc)
+        logger.warning("Narrative coherence detection failed: %s", exc)
 
 
 # ── Tool implementations ─────────────────────────────────────────────
