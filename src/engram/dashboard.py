@@ -1282,6 +1282,24 @@ def _render_settings(workspace_info: dict | None) -> str:
 
     display_name = workspace_info.get("display_name", "")
     description = workspace_info.get("description", "")
+    rename_error = workspace_info.get("rename_error", "")
+    rename_success = workspace_info.get("rename_success", False)
+
+    rename_feedback = ""
+    if rename_error:
+        rename_feedback = f'<p style="color:#dc2626;font-size:0.8rem;margin-top:0.5rem;">{_esc(rename_error)}</p>'
+    elif rename_success:
+        rename_feedback = '<p style="color:#16a34a;font-size:0.8rem;margin-top:0.5rem;">Workspace name updated.</p>'
+
+    name_section = f"""
+    <div style="margin-bottom:2rem;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Display Name</h3>
+        <form method="post" action="/dashboard/settings/rename" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+            <input type="text" name="display_name" value="{_esc(display_name)}" placeholder="e.g. Engineering Team" style="min-width:220px;">
+            <button type="submit">Save</button>
+        </form>
+        {rename_feedback}
+    </div>"""
 
     body = f"""
     <h2>Workspace Settings</h2>

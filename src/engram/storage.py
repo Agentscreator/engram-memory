@@ -1975,6 +1975,107 @@ class SQLiteStorage(BaseStorage):
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
+    async def gdpr_soft_erase_agent(self, agent_id: str) -> dict[str, int]:
+        """Soft-erase: redact PII fields while preserving fact content."""
+        counts: dict[str, int] = {}
+
+        c = await self.db.execute(
+            "UPDATE facts SET engineer = '[redacted]', provenance = NULL "
+            "WHERE agent_id = ? AND workspace_id = ?",
+            (agent_id, self.workspace_id),
+        )
+        counts["facts_redacted"] = c.rowcount
+
+        c = await self.db.execute(
+            "UPDATE conflicts SET explanation = '[redacted]', resolution = '[redacted]' "
+            "WHERE workspace_id = ? AND (fact_a_id IN "
+            "(SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?) "
+            "OR fact_b_id IN "
+            "(SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))",
+            (self.workspace_id, agent_id, self.workspace_id, agent_id, self.workspace_id),
+        )
+        counts["conflicts_scrubbed"] = c.rowcount
+
+        c = await self.db.execute(
+            "UPDATE agents SET engineer = '[redacted]' "
+            "WHERE agent_id = ? AND workspace_id = ?",
+            (agent_id, self.workspace_id),
+        )
+        counts["agents_redacted"] = c.rowcount
+
+        c = await self.db.execute(
+            "UPDATE audit_log SET agent_id = '[redacted]' "
+            "WHERE agent_id = ? AND workspace_id = ?",
+            (agent_id, self.workspace_id),
+        )
+        counts["audit_scrubbed"] = c.rowcount
+
+        await self.db.commit()
+        return counts
+
+    async def gdpr_hard_erase_agent(self, agent_id: str) -> dict[str, int]:
+        """Hard-erase: replace fact content and retire all facts for agent_id."""
+        now = _now_iso()
+        counts: dict[str, int] = {}
+
+        c = await self.db.execute(
+            "UPDATE facts SET content = '[erased]', keywords = NULL, entities = NULL, "
+            "embedding = NULL, engineer = '[redacted]', provenance = NULL, "
+            "valid_until = ?, memory_op = 'delete' "
+            "WHERE agent_id = ? AND workspace_id = ? AND valid_until IS NULL",
+            (now, agent_id, self.workspace_id),
+        )
+        counts["facts_erased"] = c.rowcount
+
+        c = await self.db.execute(
+            "UPDATE facts SET content = '[erased]', keywords = NULL, entities = NULL, "
+            "embedding = NULL, engineer = '[redacted]', provenance = NULL "
+            "WHERE agent_id = ? AND workspace_id = ? AND valid_until IS NOT NULL",
+            (agent_id, self.workspace_id),
+        )
+        counts["facts_scrubbed"] = c.rowcount
+
+        c = await self.db.execute(
+            "UPDATE conflicts SET status = 'resolved', resolution_type = 'gdpr_erasure', "
+            "resolution = '[erased]', explanation = '[erased]', resolved_at = ? "
+            "WHERE workspace_id = ? AND status = 'open' AND "
+            "(fact_a_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?) "
+            "OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))",
+            (now, self.workspace_id, agent_id, self.workspace_id, agent_id, self.workspace_id),
+        )
+        counts["conflicts_dismissed"] = c.rowcount
+
+        c = await self.db.execute(
+            "UPDATE conflicts SET explanation = '[erased]', resolution = '[erased]' "
+            "WHERE workspace_id = ? AND status != 'open' AND "
+            "(fact_a_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?) "
+            "OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))",
+            (self.workspace_id, agent_id, self.workspace_id, agent_id, self.workspace_id),
+        )
+        counts["conflicts_scrubbed"] = c.rowcount
+
+        c = await self.db.execute(
+            "DELETE FROM scope_permissions WHERE agent_id = ?",
+            (agent_id,),
+        )
+        counts["permissions_deleted"] = c.rowcount
+
+        c = await self.db.execute(
+            "UPDATE audit_log SET agent_id = '[redacted]' "
+            "WHERE agent_id = ? AND workspace_id = ?",
+            (agent_id, self.workspace_id),
+        )
+        counts["audit_scrubbed"] = c.rowcount
+
+        await self.db.execute(
+            "UPDATE agents SET engineer = '[redacted]' "
+            "WHERE agent_id = ? AND workspace_id = ?",
+            (agent_id, self.workspace_id),
+        )
+
+        await self.db.commit()
+        return counts
+
     async def generate_agents_md(self) -> str:
         """Generate AGENTS.md content from workspace facts.
 
