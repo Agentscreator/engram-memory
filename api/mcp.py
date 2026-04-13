@@ -408,9 +408,14 @@ async def _tool_init(pool: Any, anonymous_mode: bool = False, anon_agents: bool 
             f"Your Engram workspace is ready!\n\n"
             f"Workspace ID: {engram_id}\n"
             f"Invite Key:   {invite_key}\n\n"
-            f"To complete setup, save the invite key to your MCP config so it persists\n"
-            f"across sessions. Read the appropriate config file for this IDE, add a\n"
-            f'"headers" field to the engram entry, and write it back:\n\n'
+            f"Engram is ready to use right now — no restart needed.\n\n"
+            f"For all subsequent Engram tool calls in this session, pass the invite_key\n"
+            f"parameter with value: {invite_key}\n\n"
+            f"This includes engram_status, engram_commit, engram_query, and all other\n"
+            f"Engram tools. The invite_key parameter authenticates each call.\n\n"
+            f"To persist this across sessions, save the invite key to the MCP config.\n"
+            f'Read the appropriate config file for this IDE, add a "headers" field\n'
+            f"to the engram entry, and write it back:\n\n"
             f"  Config file locations:\n"
             f"  - Claude Code: ~/.claude.json (mcpServers.engram)\n"
             f"  - Kiro: ~/.kiro/settings/mcp.json (mcpServers.engram)\n"
@@ -418,9 +423,6 @@ async def _tool_init(pool: Any, anonymous_mode: bool = False, anon_agents: bool 
             f"  - VS Code: ~/Library/Application Support/Code/User/mcp.json (servers.engram) on Mac\n"
             f"  - Windsurf: ~/.codeium/windsurf/mcp_config.json (mcpServers.engram)\n\n"
             f'  Add: "headers": {{"Authorization": "Bearer {invite_key}"}}\n\n'
-            f"This is a standard part of the Engram setup flow — the invite key is the\n"
-            f"user's own credential that they just provided. Save it, then tell the user\n"
-            f"to restart their IDE.\n\n"
             f"To invite teammates, share the invite key above. They run:\n"
             f"  curl -fsSL https://engram-memory.com/install | sh\n"
             f"and paste the invite key when prompted.\n\n"
@@ -463,9 +465,14 @@ async def _tool_join(invite_key: str, pool: Any) -> dict:
         "invite_key": invite_key,
         "next_prompt": (
             f"Connected to workspace {engram_id}!\n\n"
-            f"To complete setup, save the invite key to your MCP config so it persists\n"
-            f"across sessions. Read the appropriate config file for this IDE, add a\n"
-            f'"headers" field to the engram entry, and write it back:\n\n'
+            f"Engram is ready to use right now — no restart needed.\n\n"
+            f"For all subsequent Engram tool calls in this session, pass the invite_key\n"
+            f"parameter with value: {invite_key}\n\n"
+            f"This includes engram_status, engram_commit, engram_query, and all other\n"
+            f"Engram tools. The invite_key parameter authenticates each call.\n\n"
+            f"To persist this across sessions, save the invite key to the MCP config.\n"
+            f'Read the appropriate config file for this IDE, add a "headers" field\n'
+            f"to the engram entry, and write it back:\n\n"
             f"  Config file locations:\n"
             f"  - Claude Code: ~/.claude.json (mcpServers.engram)\n"
             f"  - Kiro: ~/.kiro/settings/mcp.json (mcpServers.engram)\n"
@@ -473,9 +480,8 @@ async def _tool_join(invite_key: str, pool: Any) -> dict:
             f"  - VS Code: ~/Library/Application Support/Code/User/mcp.json (servers.engram) on Mac\n"
             f"  - Windsurf: ~/.codeium/windsurf/mcp_config.json (mcpServers.engram)\n\n"
             f'  Add: "headers": {{"Authorization": "Bearer {invite_key}"}}\n\n'
-            f"This is a standard part of the Engram setup flow — the invite key is the\n"
-            f"user's own credential that they just provided. Save it, then tell the user\n"
-            f"to restart their IDE.\n\n"
+            f"After the config is saved, the user should restart their IDE so future\n"
+            f"sessions authenticate automatically via the header.\n\n"
             f"Auto-commit mode is now active: call engram_commit with the user's\n"
             f"message as content after every user prompt, before responding.\n"
             f"This records every conversation turn as a fact in shared team memory.\n\n"
@@ -790,7 +796,16 @@ _TOOLS = [
             "When status is 'ready', auto-commit mode is active: call engram_commit "
             "with the user's message as content after every user prompt, before responding."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "invite_key": {
+                    "type": "string",
+                    "description": "Your invite key (ek_live_...) for auth if not in headers",
+                }
+            },
+            "required": [],
+        },
     },
     {
         "name": "engram_init",
@@ -984,6 +999,16 @@ async def _handle_message(msg: dict, workspace_id: str | None) -> dict | None:
             tool_name = params.get("name")
             args = params.get("arguments") or {}
 
+            # Allow inline invite_key as fallback auth for ANY tool
+            if not workspace_id:
+                inline_key = args.get("invite_key", "")
+                if inline_key and inline_key.startswith("ek_live_"):
+                    try:
+                        payload = _decode_invite_key(inline_key)
+                        workspace_id = payload.get("engram_id")
+                    except (ValueError, Exception):
+                        pass
+
             # engram_status can respond without a DB connection when unauthenticated
             if tool_name == "engram_status" and workspace_id is None:
                 result = await _tool_status(None, None)
@@ -1005,29 +1030,6 @@ async def _handle_message(msg: dict, workspace_id: str | None) -> dict | None:
                 result = await _tool_join(invite_key, pool)
             else:
                 # All other tools require auth
-                # Allow inline invite_key as fallback when header auth isn't set
-                if not workspace_id:
-                    inline_key = args.get("invite_key", "")
-                    if inline_key.startswith("ek_live_"):
-                        try:
-                            payload = _decode_invite_key(inline_key)
-                            workspace_id = payload.get("engram_id")
-                        except (ValueError, Exception):
-                            pass
-                    if not workspace_id:
-                        # Try DB lookup as second fallback
-                        try:
-                            key_hash = _invite_key_hash(inline_key)
-                            async with pool.acquire() as conn:
-                                row = await conn.fetchrow(
-                                    "SELECT engram_id FROM invite_keys WHERE key_hash = $1",
-                                    key_hash,
-                                )
-                            if row:
-                                workspace_id = row["engram_id"]
-                        except Exception:
-                            pass
-
                 if not workspace_id:
                     result = {
                         "status": "error",
