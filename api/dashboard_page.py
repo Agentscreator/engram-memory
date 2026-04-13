@@ -385,24 +385,13 @@ def _render_dashboard() -> str:
     .paused-banner-text strong { display: block; margin-bottom: 2px; }
     .paused-banner-text span { font-size: 13px; opacity: 0.8; }
 
-    /* Stats */
-    .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 24px 0 20px; }
-    .stat-card { padding: 24px 20px; text-align: left;
-      background: rgba(255,255,255,0.02);
-      border: 1px solid rgba(255,255,255,0.04); border-radius: 14px;
-      position: relative; overflow: hidden;
-      transition: border-color 0.25s, background 0.25s; }
-    .stat-card:hover { border-color: rgba(52,211,153,0.12);
-      background: rgba(255,255,255,0.03); }
-    .stat-num { font-size: 28px; font-weight: 700; color: var(--t1);
-      letter-spacing: -0.02em; line-height: 1; margin-bottom: 6px;
-      font-variant-numeric: tabular-nums; }
-    .stat-label { font-size: 12px; font-weight: 500; letter-spacing: 0.02em;
-      color: var(--tm); }
-    .stat-ring { display: none; }
-    .stat-card:nth-child(1) .stat-num { color: var(--em4); }
-    .stat-card:nth-child(3) .stat-num { color: var(--yellow); }
-    .stat-card:nth-child(4) .stat-num { color: var(--blue); }
+    /* Conflict indicator */
+    .stats-row { padding: 20px 0 8px; }
+    .conflict-indicator { display: flex; align-items: baseline; gap: 10px; }
+    .conflict-count { font-size: 36px; font-weight: 700; color: var(--red);
+      letter-spacing: -0.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+    .conflict-label { font-size: 14px; font-weight: 500; color: rgba(248,113,113,0.6);
+      letter-spacing: -0.01em; }
 
     /* Tabs */
     .tabs { display: flex; gap: 0; border-bottom: 1px solid rgba(255,255,255,0.06);
@@ -555,15 +544,10 @@ def _render_dashboard() -> str:
       .detail-ws-name { font-size: 15px; }
       .back-btn { font-size: 12px; }
 
-      /* Stats — 2-column grid */
-      .stats-row {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px;
-        padding: 16px 0;
-      }
-      .stat-card { padding: 16px; }
-      .stat-num { font-size: 24px; }
+      /* Conflict indicator */
+      .stats-row { padding: 16px 0 4px; }
+      .conflict-count { font-size: 28px; }
+      .conflict-label { font-size: 13px; }
 
       /* Tabs — horizontally scrollable, no wrapping */
       .tabs {
@@ -619,8 +603,6 @@ def _render_dashboard() -> str:
     }
 
     @media (max-width: 480px) {
-      .stat-num { font-size: 22px; }
-      .stat-card { padding: 12px 14px; }
       .auth-form-panel { padding: 48px 20px; }
       .auth-mobile-logo { margin-bottom: 28px; }
       .pin-digit { width: 46px; height: 54px; font-size: 22px; }
@@ -1542,31 +1524,32 @@ function goBackToList() {
 function renderDetail() {
   if (!WS_DATA) return;
   const { facts, conflicts, agents } = WS_DATA;
-  const active = (facts||[]).filter(f => !f.valid_until).length;
-  const retired = (facts||[]).filter(f => f.valid_until).length;
   const openC = (conflicts||[]).filter(c => c.status === 'open').length;
-  const storageMB = ((WS_DATA.storage_bytes || 0) / (1024 * 1024)).toFixed(2);
 
-  document.getElementById('stats-row').innerHTML = `
-    <div class="stat-card"><div class="stat-num" data-target="${active}">0</div><div class="stat-label">Active Facts</div></div>
-    <div class="stat-card"><div class="stat-num" data-target="${retired}">0</div><div class="stat-label">Retired</div></div>
-    <div class="stat-card"><div class="stat-num" data-target="${openC}">0</div><div class="stat-label">Open Conflicts</div></div>
-    <div class="stat-card"><div class="stat-num" id="storage-stat">${storageMB}</div><div class="stat-label">Storage (MB)</div></div>
-  `;
-  // Animate stat counters
-  document.querySelectorAll('.stat-num[data-target]').forEach(el => {
-    const target = parseInt(el.dataset.target);
-    if (target === 0) { el.textContent = '0'; return; }
-    const duration = 800;
-    const start = performance.now();
-    function tick(now) {
-      const p = Math.min((now - start) / duration, 1);
-      const ease = 1 - Math.pow(1 - p, 3); // ease-out cubic
-      el.textContent = Math.round(target * ease);
-      if (p < 1) requestAnimationFrame(tick);
+  if (openC > 0) {
+    document.getElementById('stats-row').innerHTML = `
+      <div class="conflict-indicator">
+        <span class="conflict-count" data-target="${openC}">0</span>
+        <span class="conflict-label">open conflict${openC !== 1 ? 's' : ''}</span>
+      </div>`;
+    // Animate counter
+    const el = document.querySelector('.conflict-count[data-target]');
+    if (el) {
+      const target = parseInt(el.dataset.target);
+      const duration = 600;
+      const start = performance.now();
+      function tick(now) {
+        const p = Math.min((now - start) / duration, 1);
+        const ease = 1 - Math.pow(1 - p, 3);
+        el.textContent = Math.round(target * ease);
+        if (p < 1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
     }
-    requestAnimationFrame(tick);
-  });
+  } else {
+    document.getElementById('stats-row').innerHTML = '';
+  }
+
   const badge = document.getElementById('conflict-badge');
   if (openC > 0) badge.textContent = '(' + openC + ')';
 
