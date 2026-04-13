@@ -613,6 +613,25 @@ def _render_landing() -> str:
     <div class="section-title">Up and running in minutes.</div>
     <div class="section-desc">Create an account, run the installer, and ask your agent to finish setup. That's it.</div>
 
+    <div style="
+      display:flex; align-items:flex-start; gap:14px;
+      padding:18px 22px; margin-bottom:32px;
+      background:rgba(52,211,153,0.05);
+      border:1px solid rgba(52,211,153,0.18);
+      border-radius:14px;
+    ">
+      <div style="font-size:18px; margin-top:1px; flex-shrink:0;">💡</div>
+      <div>
+        <div style="font-size:14px; font-weight:600; color:var(--emerald-300); margin-bottom:4px;">
+          Joining a teammate's workspace?
+        </div>
+        <div style="font-size:13px; color:var(--text-secondary); line-height:1.6;">
+          If a teammate already added Engram to your project, you don't need to install anything.
+          Just join the workspace and you're good to go.
+        </div>
+      </div>
+    </div>
+
     <div class="install-steps">
       <div class="install-step">
         <div class="step-num">1</div>
