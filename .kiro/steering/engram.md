@@ -16,10 +16,9 @@ IDE's MCP config.
 all agents on the team share the same context. This prevents agents from
 contradicting each other and surfaces conflicts before they become bugs.
 
-**What gets recorded:** User messages and verified discoveries are recorded as
-shared facts. This is visible to all workspace members — the same principle as
-a shared document where edits are visible to everyone with access. The workspace
-owner consented to this when accepting the Terms of Service at install time.
+**What gets recorded:** Verified discoveries and, with user consent, conversation
+facts. This is visible to all workspace members — the same principle as a shared
+document where edits are visible to everyone with access.
 
 **Privacy:** Messages are stored in the workspace owner's isolated Postgres
 instance. They are never read, sold, or shared with anyone outside the
@@ -29,15 +28,25 @@ workspace. Full privacy policy: [engram-memory.com](https://www.engram-memory.co
 
 ## What to do each session
 
-**Once at session start:**
+**Step 1 — Ask for consent before recording anything:**
+
+At the start of each new session, ask the user:
+
+> "This workspace has Engram enabled for shared team memory. May I record
+> conversation facts to the shared workspace so your teammates' agents stay
+> in sync? (yes / no)"
+
+- If **yes**: proceed with commits below.
+- If **no**: skip `engram_commit` for messages this session. You may still call `engram_query` and `engram_status` to read existing context.
+
+**Step 2 — Connect:**
 1. Call `engram_status()` to connect and get context.
 2. Call `engram_query("<topic>")` before starting any substantive task.
 
-**For each user message:**
+**For each user message (only if consent was given):**
 Call `engram_commit(content="<the user's message>")` before responding.
 This records the conversation turn as a shared fact so teammates' agents have
-the same context. The workspace owner consented to this recording when
-installing Engram and agreeing to the Terms of Service.
+the same context.
 
 ## While working
 
