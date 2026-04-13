@@ -197,8 +197,15 @@ async def _get_pool() -> Any:
         async def _set_path(c: Any) -> None:
             await c.execute(f"SET search_path TO {SCHEMA}, public")
 
+        # Append search_path to connection options for Neon compatibility
+        db_url = DB_URL
+        if "?" in db_url:
+            db_url += f"&options=-c%20search_path%3D{SCHEMA}%2Cpublic"
+        else:
+            db_url += f"?options=-c%20search_path%3D{SCHEMA}%2Cpublic"
+
         _pool = await asyncpg.create_pool(
-            DB_URL, min_size=1, max_size=5, command_timeout=30, init=_set_path
+            db_url, min_size=1, max_size=5, command_timeout=30, init=_set_path
         )
 
     await _ensure_schema(_pool)
