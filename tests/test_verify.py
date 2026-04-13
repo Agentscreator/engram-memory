@@ -15,7 +15,12 @@ _REAL_HOME = Path.home()
 
 
 def _rebased_agent_clients(home: Path) -> dict:
-    """Rebuild _AGENT_CLIENTS with paths rooted under *home*."""
+    """Rebuild _MCP_CLIENTS with paths rooted under *home*.
+
+    Any path that can't be made relative to _REAL_HOME (e.g. the ValidPathNotFound
+    sentinel or a Windows APPDATA path on Linux) is mapped to a guaranteed
+    non-existent path under home so tests stay fully isolated.
+    """
     rebuilt = {}
     for name, cfg in _MCP_CLIENTS.items():
         new_cfg = dict(cfg)
@@ -23,7 +28,7 @@ def _rebased_agent_clients(home: Path) -> dict:
             relative = cfg["path"].relative_to(_REAL_HOME)
             new_cfg["path"] = home / relative
         except ValueError:
-            pass  # non-home paths (XDG etc.) — leave as-is
+            new_cfg["path"] = home / "_unreachable" / name
         rebuilt[name] = new_cfg
     return rebuilt
 
@@ -252,9 +257,9 @@ class TestVerifyCommand:
             )
         )
 
-        vscode_dir = temp_home / "Library" / "Application Support" / "Code" / "User"
-        vscode_dir.mkdir(parents=True)
-        (vscode_dir / "mcp.json").write_text(
+        vscode_config = _rebased_agent_clients(temp_home)["VS Code (Copilot)"]["path"]
+        vscode_config.parent.mkdir(parents=True, exist_ok=True)
+        vscode_config.write_text(
             json.dumps(
                 {
                     "servers": {
@@ -476,9 +481,9 @@ class TestVerifyMCPClientDetection:
         )
 
         # VS Code
-        vscode_dir = temp_home / "Library" / "Application Support" / "Code" / "User"
-        vscode_dir.mkdir(parents=True)
-        (vscode_dir / "mcp.json").write_text(
+        vscode_config = _rebased_agent_clients(temp_home)["VS Code (Copilot)"]["path"]
+        vscode_config.parent.mkdir(parents=True, exist_ok=True)
+        vscode_config.write_text(
             json.dumps(
                 {
                     "servers": {
