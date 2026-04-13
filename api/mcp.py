@@ -391,10 +391,11 @@ async def _detect_conflicts(
     pool: Any,
     plan: str = "free",
 ) -> None:
-    """LLM-powered conflict detection. Scans the entire fact corpus.
+    """LLM-powered conflict detection with temporal awareness.
 
-    On every commit, all active facts are batched into 8k-token windows
-    and sent to the LLM to detect semantic contradictions.
+    Facts include timestamps so the LLM understands development progression.
+    Natural evolution (refining, narrowing, expanding) is NOT flagged.
+    Only genuine incompatible claims about the same subject are conflicts.
     """
     if not OPENAI_API_KEY:
         return
@@ -402,7 +403,7 @@ async def _detect_conflicts(
     try:
         async with _safe(pool) as conn:
             all_facts = await conn.fetch(
-                """SELECT id, content, scope FROM facts
+                """SELECT id, content, scope, committed_at FROM facts
                    WHERE workspace_id = $1 AND valid_until IS NULL AND id != $2
                    ORDER BY committed_at DESC""",
                 workspace_id,
@@ -416,7 +417,10 @@ async def _detect_conflicts(
         current_batch: list[dict] = []
         current_chars = 0
         for row in all_facts:
-            fact_text = f"[{row['id'][:8]}] ({row['scope']}) {row['content']}"
+            ts = (
+                row["committed_at"].strftime("%Y-%m-%d %H:%M") if row["committed_at"] else "unknown"
+            )
+            fact_text = f"[{row['id'][:8]}] [{ts}] ({row['scope']}) {row['content']}"
             fact_len = len(fact_text)
             if current_chars + fact_len > _BATCH_CHAR_LIMIT and current_batch:
                 batches.append(current_batch)
@@ -432,15 +436,27 @@ async def _detect_conflicts(
         async def _check_batch(batch: list[dict]) -> list[dict]:
             facts_block = "\n".join(f"- {f['text']}" for f in batch)
             prompt = (
-                "You are a contradiction detector. Given a NEW FACT and a list of EXISTING FACTS, "
-                "identify any existing facts that DIRECTLY CONTRADICT the new fact. "
-                "Two facts contradict if they make incompatible claims about the same subject.\n\n"
-                f"NEW FACT: {content}\n\n"
-                f"EXISTING FACTS:\n{facts_block}\n\n"
-                "Respond with ONLY a JSON array of objects for each contradiction found:\n"
-                '[{"fact_id": "<first 8 chars of ID>", "explanation": "<brief explanation>"}]\n\n'
-                "If no contradictions, respond with: []\n"
-                "Be precise. Only flag genuine contradictions, not merely different topics."
+                "You are a strict contradiction detector for a team knowledge base. "
+                "Facts are timestamped and recorded during active development.\n\n"
+                "RULES — read carefully:\n"
+                "1. A CONTRADICTION is when two facts make genuinely INCOMPATIBLE claims "
+                "about the SAME specific subject that cannot both be true simultaneously.\n"
+                "2. NATURAL PROGRESSION is NOT a contradiction. If a newer fact refines, "
+                "narrows, expands, or evolves an older fact, that is normal development — "
+                "do NOT flag it.\n"
+                "3. A fact that is a SUBSET of another (e.g., 'remove agents card' followed "
+                "by 'remove all cards') is progression, NOT contradiction.\n"
+                "4. Facts about DIFFERENT subjects are never contradictions, even if they "
+                "mention similar words.\n"
+                "5. When in doubt, do NOT flag. False positives are worse than missed "
+                "conflicts.\n"
+                "6. Use timestamps to understand ordering — later facts represent the "
+                "current state of decisions.\n\n"
+                f"NEW FACT (just committed): {content}\n\n"
+                f"EXISTING FACTS (with timestamps):\n{facts_block}\n\n"
+                "Respond with ONLY a JSON array. For each genuine contradiction:\n"
+                '[{"fact_id": "<first 8 chars of ID>", "explanation": "<one sentence>"}]\n\n'
+                "If no contradictions (the common case), respond with: []"
             )
             try:
                 import httpx
@@ -457,7 +473,13 @@ async def _detect_conflicts(
                             "messages": [
                                 {
                                     "role": "system",
-                                    "content": "You detect contradictions between facts. Respond only with valid JSON arrays.",
+                                    "content": (
+                                        "You detect contradictions in a team knowledge base. "
+                                        "Be extremely conservative — only flag facts that are "
+                                        "genuinely incompatible. Development naturally evolves "
+                                        "through refinement; that is not contradiction. "
+                                        "Respond only with valid JSON arrays."
+                                    ),
                                 },
                                 {"role": "user", "content": prompt},
                             ],
