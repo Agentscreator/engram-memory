@@ -402,16 +402,22 @@ async def _tool_init(pool: Any, anonymous_mode: bool = False, anon_agents: bool 
             f"Your Engram workspace is ready!\n\n"
             f"Workspace ID: {engram_id}\n"
             f"Invite Key:   {invite_key}\n\n"
-            f"To save your invite key, update your MCP config to include:\n"
-            f'  "headers": {{"Authorization": "Bearer {invite_key}"}}\n\n'
-            f"In Claude Code I can edit the config for you — just ask.\n\n"
+            f"IMPORTANT — do these two things now:\n\n"
+            f"1. UPDATE YOUR MCP CONFIG to add the invite key as an Authorization header.\n"
+            f"   Find your MCP config file and add a \"headers\" field to the engram entry:\n"
+            f'   "headers": {{"Authorization": "Bearer {invite_key}"}}\n\n'
+            f"   Common config locations:\n"
+            f"   - Claude Code: ~/.claude.json (mcpServers.engram)\n"
+            f"   - Kiro: ~/.kiro/settings/mcp.json (mcpServers.engram)\n"
+            f"   - Cursor: ~/.cursor/mcp.json (mcpServers.engram)\n\n"
+            f"2. RESTART YOUR IDE after updating the config.\n\n"
+            f"Until the header is set, you can still use Engram tools in this session by\n"
+            f"passing invite_key as a parameter to any tool call.\n\n"
             f"To invite teammates, share the invite key above. They run:\n"
             f"  curl -fsSL https://engram-memory.com/install | sh\n"
             f"and paste the invite key when prompted.\n\n"
-            f"To see and manage your team's memory — facts, conflicts, agents, and lineage — "
-            f"visit the Engram dashboard:\n"
-            f"  https://www.engram-memory.com/dashboard\n"
-            f"Log in with your Workspace ID ({engram_id}) and invite key.\n\n"
+            f"Dashboard: https://www.engram-memory.com/dashboard\n"
+            f"Workspace ID: {engram_id}\n\n"
             f"Should commits show who made them, or stay anonymous?"
         ),
     }
@@ -446,15 +452,19 @@ async def _tool_join(invite_key: str, pool: Any) -> dict:
         "invite_key": invite_key,
         "next_prompt": (
             f"Connected to workspace {engram_id}!\n\n"
-            f"Your Workspace ID: {engram_id}\n\n"
-            f"Update your MCP config Authorization header:\n"
-            f"  Bearer {invite_key}\n\n"
-            f"In Claude Code I can edit the config file for you — just ask.\n"
-            f"Otherwise restart your IDE and Engram will be ready.\n\n"
-            f"To see and manage your team's memory — facts, conflicts, agents, and lineage — "
-            f"visit the Engram dashboard:\n"
-            f"  https://www.engram-memory.com/dashboard\n"
-            f"Log in with your Workspace ID ({engram_id}) and invite key."
+            f"IMPORTANT — do these two things now:\n\n"
+            f"1. UPDATE YOUR MCP CONFIG to add the invite key as an Authorization header.\n"
+            f"   Find your MCP config file and add a \"headers\" field to the engram entry:\n"
+            f'   "headers": {{"Authorization": "Bearer {invite_key}"}}\n\n'
+            f"   Common config locations:\n"
+            f"   - Claude Code: ~/.claude.json (mcpServers.engram)\n"
+            f"   - Kiro: ~/.kiro/settings/mcp.json (mcpServers.engram)\n"
+            f"   - Cursor: ~/.cursor/mcp.json (mcpServers.engram)\n\n"
+            f"2. RESTART YOUR IDE after updating the config.\n\n"
+            f"Until the header is set, you can still use Engram tools in this session by\n"
+            f"passing invite_key as a parameter to any tool call.\n\n"
+            f"Dashboard: https://www.engram-memory.com/dashboard\n"
+            f"Workspace ID: {engram_id}"
         ),
     }
 
@@ -811,6 +821,10 @@ _TOOLS = [
                 "content": {"type": "string", "description": "The fact to commit"},
                 "scope": {"type": "string", "description": "Context scope (default: general)"},
                 "confidence": {"type": "number", "description": "Confidence 0-1"},
+                "invite_key": {
+                    "type": "string",
+                    "description": "Your invite key (ek_live_...) for auth if not in headers",
+                },
                 "fact_type": {
                     "type": "string",
                     "enum": ["observation", "decision", "constraint", "warning", "inference"],
@@ -844,6 +858,10 @@ _TOOLS = [
             "properties": {
                 "topic": {"type": "string", "description": "What to search for"},
                 "scope": {"type": "string", "description": "Filter by scope"},
+                "invite_key": {
+                    "type": "string",
+                    "description": "Your invite key (ek_live_...) for auth if not in headers",
+                },
                 "fact_type": {"type": "string", "description": "Filter by fact type"},
                 "limit": {"type": "integer", "description": "Max results (default 10)"},
             },
@@ -966,6 +984,23 @@ async def _handle_message(msg: dict, workspace_id: str | None) -> dict | None:
                 result = await _tool_join(invite_key, pool)
             else:
                 # All other tools require auth
+                # Allow inline invite_key as fallback when header auth isn't set
+                if not workspace_id:
+                    inline_key = args.get("invite_key", "")
+                    if inline_key.startswith("ek_live_"):
+                        try:
+                            _decode_invite_key(inline_key)
+                            key_hash = _invite_key_hash(inline_key)
+                            async with pool.acquire() as conn:
+                                row = await conn.fetchrow(
+                                    "SELECT engram_id FROM invite_keys WHERE key_hash = $1",
+                                    key_hash,
+                                )
+                            if row:
+                                workspace_id = row["engram_id"]
+                        except (ValueError, Exception):
+                            pass
+
                 if not workspace_id:
                     result = {
                         "status": "error",
