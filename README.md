@@ -16,11 +16,13 @@ Persistent memory that survives across sessions and detects when agents contradi
 
 ## What It Does
 
-When one agent discovers something important — a hidden side effect, a failed approach, an undocumented constraint — it commits that fact. Every other agent on your team can query it instantly.
+There are a lot of tools that give agents memory. Engram works alongside any of them.
 
-When two agents develop incompatible beliefs, Engram detects the contradiction and surfaces it for review.
+What makes Engram different: it catches when agents contradict each other. One agent learns something, another agent learns something else, and now they disagree. Engram detects that and surfaces it before it becomes a bug.
 
-**Your data is private.** All data is encrypted, isolated by workspace, and never read, analyzed, or redistributed. We have a deep commitment to privacy.
+Your whole team shares the same memory. Your agents, your teammates' agents — everyone stays in sync. The same context, the same facts, no duplicated mistakes.
+
+Right now it's your personal memory layer that survives across sessions. The bigger picture is a consistency layer for teams of hundreds of agents working on the same codebase at once.
 
 ---
 
