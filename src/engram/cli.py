@@ -27,9 +27,7 @@ _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 _PATH_SYSTEM_HOME = Path.home()
 _PATH_APPDATA_DIR = Path(os.environ["APPDATA"]) if "APPDATA" in os.environ else None
 _PATH_APPSUPPORT_DIR = (
-    _PATH_SYSTEM_HOME / "Library" / "Application Support"
-    if platform.system() == "Darwin"
-    else None
+    _PATH_SYSTEM_HOME / "Library" / "Application Support" if platform.system() == "Darwin" else None
 )
 _PATH_XDG_DIR = (
     Path(os.environ["XDG_CONFIG_HOME"])
