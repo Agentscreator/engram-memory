@@ -1115,11 +1115,12 @@ function renderWsGrid(workspaces) {
     return;
   }
   el.innerHTML = workspaces.map(ws => {
-    const storageMib = ((ws.storage_bytes || 0) / (1024*1024)).toFixed(1);
-    const pct = Math.min(100, ((ws.storage_bytes || 0) / (512*1024*1024)) * 100);
+    const commits = ws.commit_count_month || 0;
+    const commitLimit = ws.commit_limit || 500;
+    const pct = Math.min(100, (commits / commitLimit) * 100);
     const fillClass = pct >= 100 ? 'over' : pct >= 80 ? 'near' : '';
     const isPaused = ws.paused;
-    const plan = ws.plan || 'hobby';
+    const plan = ws.plan || 'free';
     const wsId = esc(ws.engram_id);
     const wsName = ws.display_name ? esc(ws.display_name) : '';
     return `<div class="ws-card ${isPaused ? 'paused' : ''}">
@@ -1129,10 +1130,10 @@ function renderWsGrid(workspaces) {
           : `<div class="ws-id-main">${wsId}</div>`}
         <div class="ws-badges">
           <span class="badge ${isPaused ? 'badge-paused' : 'badge-active'}">${isPaused ? 'Paused' : 'Active'}</span>
-          <span class="badge ${plan === 'pro' ? 'badge-pro' : 'badge-hobby'}">${plan}</span>
+          <span class="badge badge-${plan === 'pro' ? 'pro' : 'free'}">${plan}</span>
         </div>
         <div class="ws-usage-bar"><div class="ws-usage-fill ${fillClass}" style="width:${pct}%"></div></div>
-        <div class="ws-usage-label">${storageMib} MB / 512 MB free</div>
+        <div class="ws-usage-label">${commits.toLocaleString()} / ${commitLimit.toLocaleString()} commits</div>
       </div>
       <div class="ws-card-footer">
         <button class="ws-rename-btn" onclick="event.stopPropagation();openWorkspaceAndRename('${wsId}')">
@@ -1372,9 +1373,9 @@ async function openWorkspace(engram_id, initialTab) {
   document.getElementById('detail-ws-name').textContent = CURRENT_WS?.display_name || engram_id;
   cancelRename();
 
-  const plan = CURRENT_WS?.plan || 'hobby';
+  const plan = CURRENT_WS?.plan || 'free';
   const isPaused = CURRENT_WS?.paused || false;
-  document.getElementById('detail-plan-badge').className = `badge ${plan === 'pro' ? 'badge-pro' : 'badge-hobby'}`;
+  document.getElementById('detail-plan-badge').className = `badge ${plan === 'pro' ? 'badge-pro' : 'badge-free'}`;
   document.getElementById('detail-plan-badge').textContent = plan;
   document.getElementById('detail-status-badge').className = `badge ${isPaused ? 'badge-paused' : 'badge-active'}`;
   document.getElementById('detail-status-badge').textContent = isPaused ? 'Paused' : 'Active';
@@ -1998,14 +1999,13 @@ function renderBilling(b) {
   const fillClass = pct >= 100 ? 'over' : pct >= 80 ? 'near' : '';
   const isPaused = b.paused;
   const hasSubscription = b.has_subscription;
-  const suggestionsOn = b.suggestions_enabled;
   const badgeClass = `plan-badge plan-badge-${plan}`;
 
   const planDefs = [
-    { key:'free',    name:'Free',    price:'$0',  commits:'500',     suggestions:false },
-    { key:'builder', name:'Builder', price:'$12', commits:'5,000',   suggestions:true  },
-    { key:'team',    name:'Team',    price:'$39', commits:'25,000',  suggestions:true  },
-    { key:'scale',   name:'Scale',   price:'$99', commits:'100,000', suggestions:true  },
+    { key:'free',    name:'Free',    price:'$0',  commits:'500'     },
+    { key:'builder', name:'Builder', price:'$12', commits:'5,000'   },
+    { key:'team',    name:'Team',    price:'$39', commits:'25,000'  },
+    { key:'scale',   name:'Scale',   price:'$99', commits:'100,000' },
   ];
 
   el.innerHTML = `
@@ -2021,7 +2021,7 @@ function renderBilling(b) {
       <div class="usage-bar-lg"><div class="usage-fill-lg ${fillClass}" style="width:${pct.toFixed(1)}%"></div></div>
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--tm)">
         <span>${pct.toFixed(1)}% of monthly limit</span>
-        <span>LLM suggestions: <strong style="color:${suggestionsOn ? 'var(--em4)' : 'rgba(255,255,255,0.25)'}">${suggestionsOn ? 'included' : 'not included'}</strong></span>
+        <span>LLM suggestions: <strong style="color:var(--em4)">included</strong></span>
       </div>
       ${isPaused ? `<div style="margin-top:14px;padding:12px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.15);border-radius:8px;color:var(--red);font-size:13px">
         Workspace paused — limit reached or payment issue. Upgrade or check billing below.
@@ -2036,7 +2036,8 @@ function renderBilling(b) {
             <div class="plan-card-name">${p.name}</div>
             <div class="plan-card-price">${p.price}<span>/mo</span></div>
             <div class="plan-card-commits">${p.commits} commits</div>
-            <div class="plan-card-feature ${p.suggestions ? 'yes' : 'no'}">${p.suggestions ? '✓ LLM conflicts' : '✗ LLM conflicts'}</div>
+            <div class="plan-card-feature yes">✓ LLM suggestions</div>
+            <div class="plan-card-feature yes">✓ Conflict detection</div>
             ${p.key === plan
               ? '<div class="plan-card-label">Current plan</div>'
               : p.key !== 'free'
