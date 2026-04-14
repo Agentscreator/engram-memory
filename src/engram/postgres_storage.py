@@ -771,9 +771,7 @@ class PostgresStorage(BaseStorage):
                 self.workspace_id,
             )
 
-    async def get_facts_with_empty_entities(
-        self, limit: int = 200, offset: int = 0
-    ) -> list[dict]:
+    async def get_facts_with_empty_entities(self, limit: int = 200, offset: int = 0) -> list[dict]:
         async with self.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT id, content, scope FROM facts

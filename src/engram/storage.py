@@ -1271,9 +1271,7 @@ class SQLiteStorage(BaseStorage):
         )
         await self.db.commit()
 
-    async def get_facts_with_empty_entities(
-        self, limit: int = 200, offset: int = 0
-    ) -> list[dict]:
+    async def get_facts_with_empty_entities(self, limit: int = 200, offset: int = 0) -> list[dict]:
         """Return current facts whose entities column is NULL or the empty JSON array.
 
         Used by the startup entity backfill to re-extract entities for facts that

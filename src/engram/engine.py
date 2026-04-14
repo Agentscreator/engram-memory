@@ -1928,9 +1928,7 @@ class EngramEngine:
         batch = 200
         total_updated = 0
         while True:
-            facts = await self.storage.get_facts_with_empty_entities(
-                limit=batch, offset=offset
-            )
+            facts = await self.storage.get_facts_with_empty_entities(limit=batch, offset=offset)
             if not facts:
                 break
             for fact in facts:
@@ -1938,9 +1936,7 @@ class EngramEngine:
                     new_entities = extract_entities(fact["content"])
                     if not new_entities:
                         continue
-                    await self.storage.update_fact_entities(
-                        fact["id"], json.dumps(new_entities)
-                    )
+                    await self.storage.update_fact_entities(fact["id"], json.dumps(new_entities))
                     try:
                         self._detection_queue.put_nowait(fact["id"])
                     except asyncio.QueueFull:
