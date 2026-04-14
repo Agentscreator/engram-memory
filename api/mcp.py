@@ -16,6 +16,7 @@ import hmac
 import json
 import logging
 import os
+import re as _re
 import secrets
 import time
 import uuid
@@ -382,8 +383,6 @@ _CONFLICT_MODEL = "gpt-4o-mini"
 _BATCH_CHAR_LIMIT = 24000  # ~6k tokens of facts per batch
 
 # Regex patterns for simple heuristic contradiction detection
-import re as _re
-
 _UNLIMITED_RE = _re.compile(
     r"\bunlimited\b|\bno\s+limit\b|\bno\s+cap\b|\bno\s+maximum\b"
     r"|\bremov\w+\s+\w*\s*(?:cap|limit)\b|\bwithout\s+limit\b",
@@ -441,7 +440,6 @@ async def _detect_conflicts_heuristic(workspace_id: str, pool: Any) -> None:
         if len(facts) < 2:
             return
 
-        now = datetime.now(timezone.utc)
         to_insert: list[tuple[str, str, str]] = []  # (fa_id, fb_id, explanation)
 
         # Group by scope for same-scope checks
