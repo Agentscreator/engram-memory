@@ -24,6 +24,8 @@ from engram.storage import BaseStorage
 
 logger = logging.getLogger("engram")
 
+SEMANTIC_DEDUP_THRESHOLD = 0.95
+
 
 def _load_entities(raw: Any) -> list[dict[str, Any]]:
     """Return a parsed entity list from a fact row's entities field.
@@ -78,6 +80,37 @@ def _effective_confidence(
         confidence -= 0.20
 
     return _clamp(confidence)
+
+
+def _has_numeric_entity_conflict(
+    left_entities: list[dict[str, Any]],
+    right_entities: list[dict[str, Any]],
+) -> bool:
+    """Return True when two facts name the same numeric entity with different values."""
+    right_numeric: dict[tuple[str, str | None], Any] = {}
+    for entity in right_entities:
+        if entity.get("type") != "numeric":
+            continue
+        key = (str(entity.get("name") or ""), entity.get("unit"))
+        right_numeric[key] = entity.get("value")
+
+    for entity in left_entities:
+        if entity.get("type") != "numeric":
+            continue
+        key = (str(entity.get("name") or ""), entity.get("unit"))
+        if key in right_numeric and right_numeric[key] != entity.get("value"):
+            return True
+    return False
+
+
+def _has_negation_mismatch(left: str, right: str) -> bool:
+    """Avoid semantic dedup when one fact explicitly negates the other."""
+    negation_terms = ("not", "never", "no", "without", "disabled")
+    left_tokens = {token.strip(".,:;!?()[]{}\"'").lower() for token in left.split()}
+    right_tokens = {token.strip(".,:;!?()[]{}\"'").lower() for token in right.split()}
+    return bool(left_tokens.intersection(negation_terms)) != bool(
+        right_tokens.intersection(negation_terms)
+    )
 
 
 class EngramEngine:
@@ -327,7 +360,30 @@ class EngramEngine:
         # Step 8: Register/update agent
         await self.storage.upsert_agent(agent_id, engineer or "unknown")
 
-        # Step 9: Determine lineage_id and handle update/auto-update
+        # Step 9: Semantic dedup for near-identical add commits.
+        # Updates/corrections intentionally bypass this path because the caller
+        # is asking to change lineage, not reinforce an existing fact.
+        if operation == "add" and not corrects_lineage:
+            semantic_duplicate = await self._find_semantic_duplicate(
+                content=content,
+                content_embedding=emb,
+                entities=entities,
+                scope=scope,
+                agent_id=agent_id,
+            )
+            if semantic_duplicate:
+                return {
+                    "fact_id": semantic_duplicate["fact_id"],
+                    "committed_at": datetime.now(timezone.utc).isoformat(),
+                    "duplicate": True,
+                    "dedup_reason": "semantic",
+                    "semantic_similarity": round(semantic_duplicate["similarity"], 4),
+                    "corroborated": semantic_duplicate["corroborated"],
+                    "conflicts_detected": False,
+                    "suggestions": [],
+                }
+
+        # Step 10: Determine lineage_id and handle update/auto-update
         supersedes_fact_id: str | None = None
 
         # Validate user-supplied corrects_lineage before using it.
@@ -382,7 +438,7 @@ class EngramEngine:
         else:
             lineage_id = uuid.uuid4().hex
 
-        # Step 10: Build fact record
+        # Step 11: Build fact record
         now = datetime.now(timezone.utc).isoformat()
         fact_id = uuid.uuid4().hex
 
@@ -419,13 +475,13 @@ class EngramEngine:
             "durability": durability,
         }
 
-        # Step 11: INSERT (write lock held ~1ms)
+        # Step 12: INSERT (write lock held ~1ms)
         await self.storage.insert_fact(fact)
 
-        # Step 12: Increment agent commit count
+        # Step 13: Increment agent commit count
         await self.storage.increment_agent_commits(agent_id)
 
-        # Step 13: Check for corroboration (Phase 2: multi-agent consensus)
+        # Step 14: Check for corroboration (Phase 2: multi-agent consensus)
         # Find semantically similar facts from different agents in the same scope
         await self._check_corroboration(fact_id, emb, agent_id, scope)
 
@@ -1911,6 +1967,60 @@ class EngramEngine:
                 )
         except Exception:
             logger.exception("Corroboration check failed for fact %s", fact_id)
+
+    async def _find_semantic_duplicate(
+        self,
+        *,
+        content: str,
+        content_embedding: np.ndarray,
+        entities: list[dict[str, Any]],
+        scope: str,
+        agent_id: str,
+        threshold: float = SEMANTIC_DEDUP_THRESHOLD,
+    ) -> dict[str, Any] | None:
+        """Find a high-confidence near-duplicate fact in the same scope.
+
+        This is intentionally conservative: numeric disagreements and facts
+        already linked to conflicts are left alone so conflict detection can
+        handle them instead of silently collapsing disputed memory.
+        """
+        try:
+            candidates = await self.storage.get_active_facts_with_embeddings(scope=scope, limit=50)
+            best_fact: dict[str, Any] | None = None
+            best_similarity = 0.0
+
+            for candidate in candidates:
+                if not candidate.get("embedding"):
+                    continue
+                if await self.storage.get_conflicting_fact_ids(candidate["id"]):
+                    continue
+                if _has_negation_mismatch(content, candidate.get("content") or ""):
+                    continue
+
+                candidate_entities = _load_entities(candidate.get("entities"))
+                if _has_numeric_entity_conflict(entities, candidate_entities):
+                    continue
+
+                candidate_embedding = embeddings.bytes_to_embedding(candidate["embedding"])
+                similarity = embeddings.cosine_similarity(content_embedding, candidate_embedding)
+                if similarity >= threshold and similarity > best_similarity:
+                    best_similarity = similarity
+                    best_fact = candidate
+
+            if best_fact is None:
+                return None
+
+            if best_fact.get("agent_id") != agent_id:
+                await self.storage.increment_corroboration(best_fact["id"])
+
+            return {
+                "fact_id": best_fact["id"],
+                "similarity": best_similarity,
+                "corroborated": best_fact.get("agent_id") != agent_id,
+            }
+        except Exception:
+            logger.exception("Semantic dedup check failed in scope %s", scope)
+            return None
 
     # ── Startup entity backfill ──────────────────────────────────────
 
