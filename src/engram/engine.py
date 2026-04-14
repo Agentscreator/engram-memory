@@ -56,6 +56,8 @@ class EngramEngine:
         self._suggestion_task = asyncio.create_task(self._suggestion_worker())
         self._escalation_task = asyncio.create_task(self._escalation_loop())
         self._webhook_task = asyncio.create_task(self._webhook_delivery_worker())
+        # Back-fill entities for facts committed before the entity extractor was updated.
+        asyncio.create_task(self._entity_backfill())
         logger.info("Detection worker started")
 
     async def stop(self) -> None:
@@ -1906,6 +1908,49 @@ class EngramEngine:
                 )
         except Exception:
             logger.exception("Corroboration check failed for fact %s", fact_id)
+
+    # ── Startup entity backfill ──────────────────────────────────────
+
+    async def _entity_backfill(self) -> None:
+        """Re-extract and store entities for facts that have an empty entities column.
+
+        Facts committed before entity extraction was introduced (or before new
+        patterns were added) have entities = NULL or '[]'. This one-time startup
+        task fixes them so Tier 0/2 conflict detection can compare them against
+        newly committed facts.
+
+        After updating each fact's entities, the fact is queued for detection so
+        any conflicts against already-stored facts are surfaced immediately.
+        """
+        # Brief delay so the detection worker is warm before we flood the queue.
+        await asyncio.sleep(2)
+        offset = 0
+        batch = 200
+        total_updated = 0
+        while True:
+            facts = await self.storage.get_facts_with_empty_entities(
+                limit=batch, offset=offset
+            )
+            if not facts:
+                break
+            for fact in facts:
+                try:
+                    new_entities = extract_entities(fact["content"])
+                    if not new_entities:
+                        continue
+                    await self.storage.update_fact_entities(
+                        fact["id"], json.dumps(new_entities)
+                    )
+                    try:
+                        self._detection_queue.put_nowait(fact["id"])
+                    except asyncio.QueueFull:
+                        pass
+                    total_updated += 1
+                except Exception:
+                    logger.exception("Entity backfill failed for fact %s", fact["id"])
+            offset += batch
+        if total_updated:
+            logger.info("Entity backfill complete: updated %d facts", total_updated)
 
     # ── Periodic TTL expiry ──────────────────────────────────────────
 

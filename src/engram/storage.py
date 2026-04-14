@@ -214,6 +214,14 @@ class BaseStorage(ABC):
     ) -> None: ...
 
     @abstractmethod
+    async def update_fact_entities(self, fact_id: str, entities_json: str) -> None: ...
+
+    @abstractmethod
+    async def get_facts_with_empty_entities(
+        self, limit: int = 200, offset: int = 0
+    ) -> list[dict]: ...
+
+    @abstractmethod
     async def get_facts_since(
         self, after: str, scope_prefix: str | None = None, limit: int = 1000
     ) -> list[dict]: ...
@@ -1254,6 +1262,33 @@ class SQLiteStorage(BaseStorage):
             (embedding, embedding_model, embedding_ver, fact_id),
         )
         await self.db.commit()
+
+    async def update_fact_entities(self, fact_id: str, entities_json: str) -> None:
+        """Overwrite the entities column for an existing fact."""
+        await self.db.execute(
+            "UPDATE facts SET entities = ? WHERE id = ?",
+            (entities_json, fact_id),
+        )
+        await self.db.commit()
+
+    async def get_facts_with_empty_entities(
+        self, limit: int = 200, offset: int = 0
+    ) -> list[dict]:
+        """Return current facts whose entities column is NULL or the empty JSON array.
+
+        Used by the startup entity backfill to re-extract entities for facts that
+        were committed before the entity extractor was updated.
+        """
+        cursor = await self.db.execute(
+            """SELECT id, content, scope FROM facts
+               WHERE valid_until IS NULL
+                 AND (entities IS NULL OR entities = '[]' OR entities = '')
+               ORDER BY committed_at DESC
+               LIMIT ? OFFSET ?""",
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
 
     # ── Federation: facts since watermark ─────────────────────────────
 

@@ -762,6 +762,32 @@ class PostgresStorage(BaseStorage):
                 self.workspace_id,
             )
 
+    async def update_fact_entities(self, fact_id: str, entities_json: str) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                "UPDATE facts SET entities = $1 WHERE id = $2 AND workspace_id = $3",
+                entities_json,
+                fact_id,
+                self.workspace_id,
+            )
+
+    async def get_facts_with_empty_entities(
+        self, limit: int = 200, offset: int = 0
+    ) -> list[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, content, scope FROM facts
+                   WHERE workspace_id = $1
+                     AND valid_until IS NULL
+                     AND (entities IS NULL OR entities = '[]' OR entities = '')
+                   ORDER BY committed_at DESC
+                   LIMIT $2 OFFSET $3""",
+                self.workspace_id,
+                limit,
+                offset,
+            )
+        return [_row_to_dict(r) for r in rows]
+
     async def get_facts_since(
         self, after: str, scope_prefix: str | None = None, limit: int = 1000
     ) -> list[dict]:
