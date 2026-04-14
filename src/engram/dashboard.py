@@ -889,7 +889,7 @@ def _render_conflicts_page(conflicts: list[dict], stats: dict | None = None) -> 
     else:
         cards_html = '<div class="conflict-cards">' + "".join(_render_conflict_card(c) for c in conflicts) + "</div>"
 
-    filter_form = f"""
+    filter_form = """
     <form method="get" action="/dashboard/conflicts" class="filter-bar">
       <input name="scope" placeholder="Filter by scope…" value="">
       <select name="status">
