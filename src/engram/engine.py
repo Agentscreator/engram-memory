@@ -893,10 +893,48 @@ class EngramEngine:
 
     # ── engram_conflicts ─────────────────────────────────────────────
 
+    async def _ensure_detection_current(self, scope: str | None = None) -> int:
+        """Re-extract entities and run detection for facts that slipped through.
+
+        Facts committed before the entity extractor was updated (or before a
+        new pattern was added) have entities = '[]'.  This method finds them,
+        backfills their entities, and runs detection inline so that
+        get_conflicts always reflects the current state of the extractor.
+
+        Limited to 50 facts per call so it does not block request handling.
+        Returns the number of facts re-processed.
+        """
+        candidates = await self.storage.get_facts_with_empty_entities(limit=50)
+        if scope:
+            candidates = [
+                f for f in candidates if f["scope"] == scope or f["scope"].startswith(scope + "/")
+            ]
+        count = 0
+        for fact in candidates:
+            new_entities = extract_entities(fact["content"])
+            if not new_entities:
+                continue
+            await self.storage.update_fact_entities(fact["id"], json.dumps(new_entities))
+            try:
+                await self._run_detection(fact["id"])
+            except Exception:
+                logger.exception("On-demand detection failed for fact %s", fact["id"])
+            count += 1
+        if count:
+            logger.info("On-demand detection: processed %d facts with stale entities", count)
+        return count
+
     async def get_conflicts(
         self, scope: str | None = None, status: str = "open"
     ) -> list[dict[str, Any]]:
-        """Get conflicts, optionally filtered by scope and status."""
+        """Get conflicts, optionally filtered by scope and status.
+
+        Before querying, backfills entity extraction for any facts that were
+        committed before the entity extractor recognised their patterns.  This
+        makes conflict detection self-healing: stale facts are caught on the
+        first call to get_conflicts rather than requiring a server restart.
+        """
+        await self._ensure_detection_current(scope=scope)
         rows = await self.storage.get_conflicts(scope=scope, status=status)
         results = []
         for r in rows:
