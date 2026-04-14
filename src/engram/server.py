@@ -1521,3 +1521,53 @@ async def engram_check_permission(
         "can_write": bool(permission["can_write"]),
         "has_permission": bool(permission["can_read"]) or bool(permission["can_write"]),
     }
+
+
+# ── engram_replay ────────────────────────────────────────────────────────────────
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def engram_replay(
+    as_of: str,
+    scope: str | None = None,
+) -> dict[str, Any]:
+    """Reconstruct workspace state at a past timestamp.
+
+    What did agents believe at a specific point in time? This is invaluable
+    for incident postmortems - reconstruct exactly what agents believed when
+    they took a destructive action.
+
+    Parameters:
+    - as_of: ISO 8601 timestamp (e.g. '2026-04-01T14:00:00Z').
+    - scope: Optional scope to filter facts.
+
+    Returns: {facts: [...], as_of, fact_count}
+    """
+    engine = get_engine()
+    from engram.workspace import read_workspace as _rw
+
+    _ws = _rw()
+    _disc = await _check_key_generation(_ws)
+    if _disc:
+        return _disc
+
+    results = await engine.get_current_facts_in_scope(
+        scope=scope,
+        as_of=as_of,
+        limit=500,
+    )
+    return {
+        "facts": [
+            {
+                "id": r.get("id"),
+                "content": r.get("content"),
+                "scope": r.get("scope"),
+                "agent_id": r.get("agent_id"),
+                "valid_from": r.get("valid_from"),
+                "valid_until": r.get("valid_until"),
+            }
+            for r in results
+        ],
+        "as_of": as_of,
+        "fact_count": len(results),
+    }
