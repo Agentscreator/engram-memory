@@ -10,6 +10,8 @@ Every agent on the team sees the same verified facts. When agents contradict eac
 [![MCP](https://img.shields.io/badge/MCP-compatible-8b5cf6?style=flat-square)](https://modelcontextprotocol.io)
 [![Python](https://img.shields.io/badge/python-3.11+-3776ab?style=flat-square)](https://python.org)
 
+<video src="docs/demo-video-1.mp4" controls width="100%"></video>
+
 </div>
 
 ---
