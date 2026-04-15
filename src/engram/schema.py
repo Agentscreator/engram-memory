@@ -192,6 +192,20 @@ CREATE INDEX IF NOT EXISTS idx_facts_lineage      ON facts(lineage_id);
 CREATE INDEX IF NOT EXISTS idx_facts_agent        ON facts(agent_id);
 CREATE INDEX IF NOT EXISTS idx_facts_type         ON facts(fact_type);
 
+-- Archive table for compressed lineages (#58)
+CREATE TABLE IF NOT EXISTS fact_archives (
+    id              TEXT PRIMARY KEY,
+    lineage_id      TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    first_commit    TEXT NOT NULL,
+    last_commit     TEXT NOT NULL,
+    version_count   INTEGER NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_archives_lineage ON fact_archives(lineage_id, workspace_id);
+
 -- FTS5 for lexical retrieval
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
     content, scope, keywords,
@@ -365,6 +379,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
     timestamp    TEXT NOT NULL,
     workspace_id TEXT NOT NULL DEFAULT 'local'
 );
+
+-- Memory compression archives
+CREATE TABLE IF NOT EXISTS fact_archives (
+    id              TEXT PRIMARY KEY,
+    lineage_id      TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL DEFAULT 'local',
+    content         TEXT NOT NULL,
+    first_commit    TEXT NOT NULL,
+    last_commit     TEXT NOT NULL,
+    version_count   INTEGER NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_archives_lineage ON fact_archives(lineage_id, workspace_id);
 """
 
 # ── Post-migration indexes (SQLite) ─────────────────────────────────
@@ -411,6 +439,8 @@ CREATE TABLE IF NOT EXISTS facts (
     corroborating_agents INTEGER NOT NULL DEFAULT 0,
     durability       TEXT NOT NULL DEFAULT 'durable',
     query_hits       INTEGER NOT NULL DEFAULT 0,
+    archived         INTEGER NOT NULL DEFAULT 0,
+    archive_ref      TEXT,
     search_vector    tsvector GENERATED ALWAYS AS (
         to_tsvector('english', coalesce(content, '') || ' ' || coalesce(scope, '') || ' ' || coalesce(keywords, ''))
     ) STORED
@@ -425,6 +455,20 @@ CREATE INDEX IF NOT EXISTS idx_facts_workspace    ON facts(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_facts_durability   ON facts(durability, valid_until);
 CREATE INDEX IF NOT EXISTS idx_facts_fts          ON facts USING GIN(search_vector);
 CREATE INDEX IF NOT EXISTS idx_facts_embedding    ON facts USING ivfflat(embedding vector_cosine_ops) WITH (lists = 100);
+
+-- Archive table for compressed lineages (#58)
+CREATE TABLE IF NOT EXISTS fact_archives (
+    id              TEXT PRIMARY KEY,
+    lineage_id      TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    first_commit    TIMESTAMPTZ NOT NULL,
+    last_commit     TIMESTAMPTZ NOT NULL,
+    version_count   INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_archives_lineage ON fact_archives(lineage_id, workspace_id);
 
 -- Conflict tracking
 CREATE TABLE IF NOT EXISTS conflicts (
@@ -569,4 +613,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
     timestamp    TIMESTAMPTZ NOT NULL,
     workspace_id TEXT NOT NULL DEFAULT 'local'
 );
+
+-- Memory compression archives
+CREATE TABLE IF NOT EXISTS fact_archives (
+    id              TEXT PRIMARY KEY,
+    lineage_id      TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL DEFAULT 'local',
+    content         TEXT NOT NULL,
+    first_commit    TEXT NOT NULL,
+    last_commit     TEXT NOT NULL,
+    version_count   INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_archives_lineage ON fact_archives(lineage_id, workspace_id);
 """

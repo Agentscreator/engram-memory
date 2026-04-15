@@ -1811,3 +1811,101 @@ async def engram_replay(
         "as_of": as_of,
         "fact_count": len(results),
     }
+
+
+# ── engram_compress ─────────────────────────────────────────────────────────────
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def engram_compress(
+    lineage_id: str,
+    threshold: int = 10,
+) -> dict[str, Any]:
+    """Compress a lineage chain if it exceeds the version threshold.
+
+    Memory compression squashes long lineage chains (by default, >10 versions)
+    into a single archive entry. This reduces storage costs and query latency
+    while preserving the full history for audit and restore.
+
+    Use this when a fact has been updated many times and the lineage is getting
+    unwieldy. Compression is reversible — call engram_get_archive to view the
+    full history, or engram_restore to recreate individual facts.
+
+    Parameters:
+    - lineage_id: The lineage UUID to compress.
+    - threshold: Minimum superseded versions before compression (default 10).
+
+    Returns: {compressed, archive_id, version_count, lineage_id, first_commit, last_commit}
+    """
+    engine = get_engine()
+    return await engine.compress_lineage(lineage_id, threshold=threshold)
+
+
+# ── engram_get_archive ─────────────────────────────────────────────────────────
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def engram_get_archive(
+    lineage_id: str,
+) -> dict[str, Any]:
+    """Retrieve the archived history for a lineage chain.
+
+    When a lineage has been compressed, use this to view the full version
+    history. The archive contains all superseded versions in chronological order.
+
+    Parameters:
+    - lineage_id: The lineage UUID to look up.
+
+    Returns: {archive_id, lineage_id, version_count, content, first_commit, last_commit}
+    """
+    engine = get_engine()
+    archive = await engine.get_archive(lineage_id)
+    if not archive:
+        return {"error": f"No archive found for lineage '{lineage_id}'"}
+    return archive
+
+
+# ── engram_restore ──────────────────────────────────────────────────────────────
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def engram_restore(
+    lineage_id: str,
+) -> dict[str, Any]:
+    """Restore a compressed lineage to full fact history.
+
+    Reverses compression by unpacking the archived timeline back into individual
+    fact rows. Use this when you need to query or modify a specific historical
+    version.
+
+    WARNING: This deletes the archive after restoring.
+
+    Parameters:
+    - lineage_id: The lineage UUID to restore.
+
+    Returns: {restored, fact_count, lineage_id}
+    """
+    engine = get_engine()
+    return await engine.restore_from_archive(lineage_id)
+
+
+# ── engram_compression_candidates ─────────────────────────────────────────────
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def engram_compression_candidates(
+    threshold: int = 10,
+) -> dict[str, Any]:
+    """List lineages that qualify for compression.
+
+    Returns all lineages that have more than the threshold number of superseded
+    versions. Use this to identify candidates before running compression.
+
+    Parameters:
+    - threshold: Minimum superseded versions to qualify (default 10).
+
+    Returns: {candidates: [{lineage_id, version_count, first_commit, last_commit}]}
+    """
+    engine = get_engine()
+    candidates = await engine.get_compression_candidates(threshold=threshold)
+    return {"candidates": candidates, "count": len(candidates)}

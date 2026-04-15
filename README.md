@@ -2,9 +2,9 @@
 
 # Engram
 
-**Shared memory for your team's AI agents**
+**Shared memory for AI agent teams**
 
-Every agent on the team sees the same verified facts. When agents contradict each other, Engram catches it before it becomes a bug.
+Engram is a memory layer for teams running multiple AI agents in parallel. It persists discoveries across sessions, detects when agents contradict each other, and stops context fragmentation before it costs you hours.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](./LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8b5cf6?style=flat-square)](https://modelcontextprotocol.io)
@@ -14,11 +14,20 @@ Every agent on the team sees the same verified facts. When agents contradict eac
 
 ---
 
-## How It Works
+## Best Fit For
 
-When your team works in the same codebase, your AI agents work in parallel — and drift apart. One agent learns something, another learns something different, and now they disagree. Engram detects that and surfaces it before it becomes a bug.
+Engram is built for teams who:
 
-Every agent's messages are automatically committed to shared memory as facts. No manual step. No copy-pasting context between sessions. The team's collective knowledge accumulates and every agent benefits from it instantly.
+- **Run multiple agents in parallel** — Multiple agents touching the same codebase need a shared source of truth
+- **Work with long-lived context** — When session history grows stale or gets dropped, institutional knowledge disappears
+- **Care about consistency** — Catch contradictions early instead of shipping conflicting changes and discovering it in review
+- **Need auditability** — Track what was decided, when, and why — not just what changed in the code
+
+**Not the right fit?** Engram isn't designed for single-agent workflows or projects with one-off, disposable context.
+
+---
+
+## What It Does
 
 ### Demo Video
 
@@ -101,7 +110,27 @@ Full design: [`docs/CONFLICT_DETECTIVE.md`](./docs/CONFLICT_DETECTIVE.md)
 
 ---
 
-## Privacy & Data
+## Why Teams Use Engram
+
+```
+┌──────────────────────────────────────────┐
+│            MCP Tools                     │
+│  engram_commit  — Write a fact           │
+│  engram_query   — Read team knowledge    │
+│  engram_conflicts — See disagreements    │
+│  engram_resolve — Settle conflicts       │
+├──────────────────────────────────────────┤
+│        Conflict Detection                │
+│  Tier 0: Entity exact-match              │
+│  Tier 1: NLI cross-encoder (local)       │
+│  Tier 2: Numeric/temporal rules          │
+│  Tier 3: LLM escalation (rare)           │
+├──────────────────────────────────────────┤
+│          Hosted Storage                  │
+│  Managed Postgres — zero setup           │
+│  Isolated per workspace                  │
+└──────────────────────────────────────────┘
+```
 
 - **Isolated per workspace.** Your data is never mixed with other workspaces.
 - **Encrypted in transit and at rest.**
