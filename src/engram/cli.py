@@ -1054,6 +1054,106 @@ def search(topic: str, scope: str | None, limit: int, as_json: bool) -> None:
     click.echo(output)
 
 
+# ── engram commit-check ────────────────────────────────────────────────
+
+
+@main.command("commit-check")
+@click.option("--message", default=None, help="Commit message text to include in the query.")
+@click.option(
+    "--message-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to a commit message file (useful from commit-msg hooks).",
+)
+@click.option(
+    "--staged/--no-staged",
+    default=False,
+    help="Include staged diff and staged file paths in the query.",
+)
+@click.option(
+    "--limit",
+    default=5,
+    type=click.IntRange(1, 50),
+    show_default=True,
+    help="Maximum matching facts to inspect.",
+)
+@click.option(
+    "--threshold",
+    default=0.35,
+    type=click.FloatRange(0.0, 1.0),
+    show_default=True,
+    help="Minimum relevance score required to print a warning.",
+)
+@click.option("--strict", is_flag=True, help="Exit with status 1 when relevant facts are found.")
+@click.option("--json", "as_json", is_flag=True, help="Print raw JSON output for scripting.")
+def commit_check(
+    message: str | None,
+    message_file: Path | None,
+    staged: bool,
+    limit: int,
+    threshold: float,
+    strict: bool,
+    as_json: bool,
+) -> None:
+    """Check staged commit context against Engram workspace memory."""
+    from engram.commit_check import (
+        build_commit_query,
+        filter_relevant_facts,
+        format_commit_warning,
+        get_staged_diff,
+        get_staged_files,
+        load_credentials,
+        query_workspace,
+    )
+
+    if message and message_file is not None:
+        raise click.ClickException("Use either --message or --message-file, not both.")
+
+    commit_message = message
+    if message_file is not None:
+        commit_message = message_file.read_text().strip()
+
+    changed_files: list[str] = []
+    staged_diff = ""
+    if staged:
+        try:
+            changed_files = get_staged_files()
+            staged_diff = get_staged_diff()
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    query = build_commit_query(commit_message, changed_files, staged_diff)
+    if not query:
+        click.echo("Nothing to scan. Provide --message and/or --staged.")
+        return
+
+    server_url, invite_key = load_credentials(Path.cwd())
+    try:
+        results = query_workspace(server_url, invite_key, query, limit=limit)
+    except Exception as exc:
+        click.echo(f"Engram commit check skipped: {exc}")
+        return
+
+    matches = filter_relevant_facts(results, threshold)
+    payload = {
+        "query": query,
+        "threshold": threshold,
+        "strict": strict,
+        "matches_found": len(matches),
+        "matches": matches,
+    }
+
+    if as_json:
+        click.echo(json.dumps(payload, indent=2))
+    elif matches:
+        click.echo(format_commit_warning(matches, threshold=threshold, strict=strict))
+    else:
+        click.echo("No relevant Engram facts found for this commit.")
+
+    if strict and matches:
+        raise SystemExit(1)
+
+
 # ── engram import ────────────────────────────────────────────────────
 
 
