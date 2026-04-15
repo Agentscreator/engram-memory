@@ -10,13 +10,15 @@ set -euo pipefail
 # ── Validate required env vars ────────────────────────────────────────
 
 if [[ -z "${ENGRAM_SERVER_URL:-}" ]]; then
-  echo "::error::ENGRAM_SERVER_URL is required"
-  exit 1
+  echo "::warning::ENGRAM_SERVER_URL is not configured for this workflow run — skipping scan."
+  echo "facts_found=0" >> "$GITHUB_OUTPUT"
+  exit 0
 fi
 
 if [[ -z "${ENGRAM_INVITE_KEY:-}" ]]; then
-  echo "::error::ENGRAM_INVITE_KEY is required"
-  exit 1
+  echo "::warning::ENGRAM_INVITE_KEY is not configured for this workflow run — skipping scan."
+  echo "facts_found=0" >> "$GITHUB_OUTPUT"
+  exit 0
 fi
 
 if [[ -z "${PR_NUMBER:-}" ]]; then
