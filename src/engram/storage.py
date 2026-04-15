@@ -502,30 +502,35 @@ class SQLiteStorage(BaseStorage):
 
     async def insert_fact(self, fact: dict[str, Any]) -> int:
         """Insert a fact row. Returns the rowid for FTS5 sync."""
+        import hashlib
+        import uuid
+
+        # Work on a copy so we don't mutate the caller's dict
+        fact = dict(fact)
+
+        # Auto-generate content_hash if not provided
+        if not fact.get("content_hash"):
+            content = fact.get("content", "")
+            normalized = " ".join(content.lower().split())
+            fact["content_hash"] = hashlib.sha256(normalized.encode()).hexdigest()
+
+        # Fill in other required NOT NULL fields with sensible defaults
+        now = _now_iso()
+        fact.setdefault("id", str(uuid.uuid4()))
+        fact.setdefault("lineage_id", str(uuid.uuid4()))
+        fact.setdefault("scope", "general")
+        fact.setdefault("confidence", 0.8)
+        fact.setdefault("fact_type", "observation")
+        fact.setdefault("agent_id", "unknown")
+        fact.setdefault("embedding_model", "")
+        fact.setdefault("embedding_ver", "")
+        fact.setdefault("committed_at", now)
+        fact.setdefault("valid_from", now)
+        fact.setdefault("memory_op", "add")
+        fact.setdefault("durability", "durable")
+        fact.setdefault("workspace_id", self.workspace_id)
+
         cols = [
-            "id",
-            "lineage_id",
-            "content",
-            "content_hash",
-            "scope",
-            "confidence",
-            "fact_type",
-            "agent_id",
-            "engineer",
-            "provenance",
-            "keywords",
-            "entities",
-            "artifact_hash",
-            "embedding",
-            "embedding_model",
-            "embedding_ver",
-            "committed_at",
-            "valid_from",
-            "valid_until",
-            "ttl_days",
-            "memory_op",
-            "supersedes_fact_id",
-            "durability",
             "id",
             "lineage_id",
             "content",
