@@ -22,11 +22,9 @@ Every agent's messages are automatically committed to shared memory as facts. No
 
 ## Why It Matters
 
-Conflict detection for AI agents is as foundational as accounting was for finance. Accounting didn't just track money — it created the liability infrastructure that made safe, auditable scaling of the entire financial economy possible. Engram does the same for AI agents.
+Conflict detection for AI agents is as foundational as accounting was for finance. Accounting didn't just track money — it created the liability infrastructure that made the entire financial economy possible.
 
-Everyone is racing to build the engine — faster models, smarter agents, more automation. But engines without brakes aren't progress, they're liability. Engram is the brakes: the layer that lets teams move fast without losing control of where they're headed.
-
-When agents make consequential decisions, someone has to be accountable. Engram creates a verifiable audit trail — every instruction, every committed fact, every contradiction surfaced — so liability lands on the organizations deploying agents, not the tools themselves.
+When agents make consequential decisions, someone has to be accountable. Engram creates a verifiable audit trail — every instruction, every committed fact, every contradiction surfaced — so liability lands on the organizations deploying agents.
 
 ### Demo Video
 
