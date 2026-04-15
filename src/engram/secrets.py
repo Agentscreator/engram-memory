@@ -30,12 +30,25 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"\b[0-9]+-[0-9A-Za-z_]{30}\.apps\.googleusercontent\.com\b"),
     ),
     ("Stripe Secret Key", re.compile(r"\b(?:sk|pk)_(?:test|live)_[0-9a-zA-Z]{24,}\b")),
-    ("Stripe Restricted Key", re.compile(r"\b(rk)_(?:test|live)_[0-9a-zA-Z]{24,}\b")),
+    (
+        "OAuth Refresh Token",
+        re.compile(r"(?i)(refresh[_\-]?token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{20,}['\"]?"),
+    ),
+    (
+        "OAuth Client Secret",
+        re.compile(r"(?i)(client[_\-]?secret)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}['\"]?"),
+    ),
     (
         "Generic Password Assignment",
         re.compile(r"(?i)(password|passwd|pwd|secret|token)\s*[:=]\s*['\"][^'\"]{8,}['\"]"),
     ),
-    # IP Addresses (Private & Public)
+    (
+        "High-Entropy Secret Value",
+        re.compile(
+            r"(?i)(secret|token|auth)[_\-]?(key|token|secret)\s*[:=]\s*['\"]?[A-Za-z0-9+/=]{32,}['\"]?"
+        ),
+    ),
+    # IP Addresses
     (
         "Private IP Address (10.x.x.x)",
         re.compile(
@@ -52,28 +65,6 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "Private IP Address (172.16-31.x.x)",
         re.compile(
             r"\b172\.(?:(?:1[6-9]|2[0-9]|3[01])\.)(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.)(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
-        ),
-    ),
-    (
-        "Public IP Address",
-        re.compile(
-            r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
-        ),
-    ),
-    # OAuth Tokens
-    (
-        "OAuth Refresh Token",
-        re.compile(r"(?i)(refresh[_-]?token)\s*[:=]\s*['\"]?[A-Za-z0-9_-]{20,}['\"]?"),
-    ),
-    (
-        "OAuth Client Secret",
-        re.compile(r"(?i)(client[_-]?secret)\s*[:=]\s*['\"]?[A-Za-z0-9_-]{16,}['\"]?"),
-    ),
-    # Generic High-Entropy Secrets
-    (
-        "High-Entropy Secret Value",
-        re.compile(
-            r"(?i)(secret|token|auth)[_\-]?(key|token|secret)\s*[:=]\s*['\"]?[A-Za-z0-9+/=]{32,}['\"]?"
         ),
     ),
     # PII Patterns (Issue #82)
