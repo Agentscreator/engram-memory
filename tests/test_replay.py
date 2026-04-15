@@ -12,7 +12,7 @@ async def test_replay_with_as_of(tmp_path):
     await storage.connect()
 
     lineage_id = str(uuid.uuid4())
-    fact_id = await storage.insert_fact(
+    await storage.insert_fact(
         {
             "content": "Initial value",
             "lineage_id": lineage_id,
