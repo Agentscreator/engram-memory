@@ -38,8 +38,6 @@ When agents make consequential decisions, someone has to be accountable. Engram 
 
 ### If you're setting up Engram for your team
 
-You do this once. Your teammates don't need to install anything.
-
 **Step 1 — Create a workspace**
 
 Go to [engram-memory.com/dashboard](https://engram-memory.com/dashboard), sign in, and create a new workspace. You'll get an invite link to share with your team.
