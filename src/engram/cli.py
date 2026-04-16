@@ -1173,6 +1173,126 @@ def promote(fact_id: str | None, list_ephemeral: bool) -> None:
     asyncio.run(run_promote())
 
 
+# ── engram webhook ───────────────────────────────────────────────────
+
+
+@main.command()
+@click.option("--url", required=True, help="Webhook URL to register.")
+@click.option(
+    "--events",
+    default="conflict.detected",
+    help="Comma-separated events (e.g., 'conflict.detected,conflict.resolved').",
+)
+@click.option("--secret", default=None, help="Optional secret for HMAC signature.")
+def webhook(url: str, events: str, secret: str | None) -> None:
+    """Register a webhook for event notifications.
+
+    Receive notifications when conflicts are detected or resolved.
+
+    Examples:
+        engram webhook --url https://example.com/hook --events conflict.detected
+        engram webhook --url https://example.com/hook --events conflict.detected,conflict.resolved --secret mysecret
+    """
+    import asyncio
+    import os
+    from engram.workspace import read_workspace
+    from engram.engine import EngramEngine
+    from engram.storage import SQLiteStorage
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: No workspace configured. Run 'engram init' or 'engram join' first.")
+        return
+
+    db_url = os.environ.get("ENGRAM_DB_URL", "")
+    storage = SQLiteStorage(db_url or None, workspace_id=ws.engram_id)
+    engine = EngramEngine(storage)
+
+    events_list = [e.strip() for e in events.split(",")]
+
+    async def run_webhook():
+        try:
+            result = await engine.create_webhook(url=url, events=events_list, secret=secret)
+            click.echo(f"✓ Webhook registered successfully")
+            click.echo(f"  Webhook ID: {result['webhook_id']}")
+            click.echo(f"  URL: {result['url']}")
+            click.echo(f"  Events: {', '.join(result['events'])}")
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+        finally:
+            await storage.close()
+
+    asyncio.run(run_webhook())
+
+
+@main.command("webhook:list")
+def webhook_list() -> None:
+    """List all registered webhooks."""
+    import asyncio
+    import os
+    from engram.workspace import read_workspace
+    from engram.engine import EngramEngine
+    from engram.storage import SQLiteStorage
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: No workspace configured.")
+        return
+
+    db_url = os.environ.get("ENGRAM_DB_URL", "")
+    storage = SQLiteStorage(db_url or None, workspace_id=ws.engram_id)
+    engine = EngramEngine(storage)
+
+    async def run_list():
+        try:
+            webhooks = await engine.list_webhooks()
+            if not webhooks:
+                click.echo("No webhooks registered.")
+                return
+            click.echo("=== Registered Webhooks ===")
+            for wh in webhooks:
+                click.echo(f"  ID: {wh['webhook_id']}")
+                click.echo(f"  URL: {wh['url']}")
+                click.echo(f"  Events: {', '.join(wh['events'])}")
+                click.echo(f"  Created: {wh['created_at'][:19]}")
+                click.echo("")
+        finally:
+            await storage.close()
+
+    asyncio.run(run_list())
+
+
+@main.command("webhook:delete")
+@click.argument("webhook_id")
+def webhook_delete(webhook_id: str) -> None:
+    """Delete a registered webhook."""
+    import asyncio
+    import os
+    from engram.workspace import read_workspace
+    from engram.engine import EngramEngine
+    from engram.storage import SQLiteStorage
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: No workspace configured.")
+        return
+
+    db_url = os.environ.get("ENGRAM_DB_URL", "")
+    storage = SQLiteStorage(db_url or None, workspace_id=ws.engram_id)
+    engine = EngramEngine(storage)
+
+    async def run_delete():
+        try:
+            result = await engine.delete_webhook(webhook_id)
+            click.echo(f"✓ Webhook {webhook_id} deleted")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+        finally:
+            await storage.close()
+
+    asyncio.run(run_delete())
+
+
 # ── engram re-embed ───────────────────────────────────────────────────
 
 
