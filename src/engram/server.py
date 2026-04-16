@@ -263,6 +263,35 @@ async def _check_key_generation(ws: Any) -> dict[str, Any] | None:
 # ── engram_status ─────────────────────────────────────────────────────
 
 
+async def _conflict_detection_summary() -> dict[str, Any]:
+    """Return conflict detection counters for status observability."""
+    fallback: dict[str, Any] = {
+        "status": "unavailable",
+        "open": 0,
+        "resolved": 0,
+        "dismissed": 0,
+        "total": 0,
+        "by_tier": {},
+        "by_type": {},
+    }
+    try:
+        stats = await get_engine().get_stats()
+    except Exception as exc:
+        logger.debug("Conflict detection stats unavailable: %s", exc)
+        return fallback
+
+    conflicts = stats.get("conflicts") or {}
+    return {
+        "status": "available",
+        "open": conflicts.get("open", 0),
+        "resolved": conflicts.get("resolved", 0),
+        "dismissed": conflicts.get("dismissed", 0),
+        "total": conflicts.get("total", 0),
+        "by_tier": conflicts.get("by_tier", {}),
+        "by_type": conflicts.get("by_type", {}),
+    }
+
+
 @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
 async def engram_status() -> dict[str, Any]:
     """Check whether Engram is configured and get the next setup step.
@@ -346,6 +375,7 @@ async def engram_status() -> dict[str, Any]:
             "engram_id": ws.engram_id,
             "schema": ws.schema,
             "anonymous_mode": ws.anonymous_mode,
+            "conflict_detection": await _conflict_detection_summary(),
             "next_prompt": (
                 "Engram is connected and ready.\n\n"
                 "User messages are captured automatically by IDE-level hooks. "
@@ -363,6 +393,7 @@ async def engram_status() -> dict[str, Any]:
             "status": "ready",
             "mode": "local",
             "engram_id": "local",
+            "conflict_detection": await _conflict_detection_summary(),
             "next_prompt": (
                 "Engram is connected and ready (local mode).\n\n"
                 "User messages are captured automatically by IDE-level hooks. "
