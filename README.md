@@ -126,6 +126,10 @@ Engram works with any AI coding environment. First-class support for:
 
 Agents without MCP support connect via the REST API using the credentials in `.engram.env`. Instructions are in `AGENTS.md` at the root of every Engram-enabled repo.
 
+Framework integrations:
+
+- [LangChain / LangGraph](./docs/integrations/langchain.md)
+
 ---
 
 ## CLI Reference
