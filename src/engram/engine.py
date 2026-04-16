@@ -1325,7 +1325,6 @@ class EngramEngine:
                 # The conflict is between the first and last assertions
                 # (which assert the same thing, creating confusion)
                 first_fact_id = None
-                last_fact_id = fact_id  # current fact triggered this
 
                 # Try to find the first fact in the sequence via TKG edges
                 entity_name = rev.get("entity", "")

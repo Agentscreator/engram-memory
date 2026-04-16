@@ -99,7 +99,7 @@ class TestRelationshipExtraction:
 async def test_tkg_node_creation(storage: Storage):
     """Ingesting a fact creates entity nodes in the TKG."""
     tkg = TemporalKnowledgeGraph(storage)
-    edges = await tkg.ingest_fact(
+    await tkg.ingest_fact(
         fact_id="fact-001",
         content="The auth service uses Redis for caching",
         scope="infra",
