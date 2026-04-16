@@ -93,6 +93,11 @@ class BaseStorage(ABC):
         ...
 
     @abstractmethod
+    async def get_facts_by_durability(self, durability: str) -> list[dict]:
+        """Return all facts with the given durability level."""
+        ...
+
+    @abstractmethod
     async def retire_stale_facts(self) -> int:
         """Retire stale, low-value facts via importance-based decay.
 
@@ -666,6 +671,15 @@ class SQLiteStorage(BaseStorage):
             "SELECT * FROM facts WHERE durability = 'ephemeral' AND valid_until IS NULL "
             "AND workspace_id = ? AND query_hits >= ?",
             (self.workspace_id, min_hits),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_facts_by_durability(self, durability: str) -> list[dict]:
+        """Return all facts with the given durability level."""
+        cursor = await self.db.execute(
+            "SELECT * FROM facts WHERE durability = ? AND valid_until IS NULL AND workspace_id = ?",
+            (durability, self.workspace_id),
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]

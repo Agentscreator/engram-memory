@@ -1109,6 +1109,70 @@ def verify(verbose: bool) -> None:
     click.echo("=" * 50 + "\n")
 
 
+# ── engram promote ───────────────────────────────────────────────────
+
+
+@main.command()
+@click.argument("fact_id", required=False)
+@click.option("--list", "list_ephemeral", is_flag=True, help="List all ephemeral facts.")
+def promote(fact_id: str | None, list_ephemeral: bool) -> None:
+    """Promote ephemeral facts to durable.
+
+    When an ephemeral fact has proven valuable, promote it to durable
+    to make it visible in default queries and enable conflict detection.
+
+    Examples:
+        engram promote                    # Interactive mode
+        engram promote ABC123            # Promote specific fact
+        engram promote --list            # List all ephemeral facts
+    """
+    import asyncio
+    import os
+    from engram.workspace import read_workspace
+    from engram.engine import EngramEngine
+    from engram.storage import SQLiteStorage
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: No workspace configured. Run 'engram init' or 'engram join' first.")
+        return
+
+    db_url = os.environ.get("ENGRAM_DB_URL", "")
+    storage = SQLiteStorage(db_url or None, workspace_id=ws.engram_id)
+    engine = EngramEngine(storage)
+
+    async def run_promote():
+        if list_ephemeral:
+            facts = await storage.get_facts_by_durability("ephemeral")
+            if not facts:
+                click.echo("No ephemeral facts found.")
+                return
+            click.echo("=== Ephemeral Facts ===")
+            for f in facts:
+                committed = f.get("committed_at", "unknown")[:19]
+                click.echo(f"  {f['id'][:12]} | {f['scope']} | {committed}")
+                click.echo(f"    {f['content'][:80]}...")
+            click.echo(f"\nTotal: {len(facts)} ephemeral facts")
+            return
+
+        if not fact_id:
+            click.echo("Error: Provide a fact_id or use --list")
+            click.echo("Usage: engram promote <fact_id>")
+            return
+
+        try:
+            result = await engine.promote(fact_id)
+            click.echo(f"✓ Promoted fact {fact_id[:12]} to durable")
+            click.echo(f"  Fact ID: {result['fact_id']}")
+            click.echo(f"  Durability: {result['durability']}")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+        finally:
+            await storage.close()
+
+    asyncio.run(run_promote())
+
+
 # ── engram re-embed ───────────────────────────────────────────────────
 
 

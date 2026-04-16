@@ -340,6 +340,17 @@ class PostgresStorage(BaseStorage):
             )
         return [_row_to_dict(r) for r in rows]
 
+    async def get_facts_by_durability(self, durability: str) -> list[dict]:
+        """Return all facts with the given durability level."""
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM facts WHERE durability = $1 AND valid_until IS NULL "
+                "AND workspace_id = $2",
+                durability,
+                self.workspace_id,
+            )
+        return [_row_to_dict(r) for r in rows]
+
     async def retire_stale_facts(self) -> int:
         """Retire stale, low-value facts via importance-based decay."""
         now = _now_ts()
