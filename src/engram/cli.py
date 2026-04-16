@@ -1694,7 +1694,24 @@ def stats(output_json: bool) -> None:
                 click.echo(f"Expiring Soon: {facts.get('expiring_soon', 0)}")
                 click.echo(f"Open Conflicts: {conflicts.get('open', 0)}")
                 click.echo(f"Resolved: {conflicts.get('resolved', 0)}")
+                click.echo(f"Conflict Rate: {(conflicts.get('rate') or 0.0):.2%}")
                 click.echo(f"Total Agents: {agents.get('total', 0)}")
+                most_active = agents.get("most_active") or []
+                if isinstance(most_active, list) and most_active:
+                    click.echo("Most Active Agents:")
+                    for agent in most_active[:5]:
+                        click.echo(
+                            f"  - {agent.get('agent_id')}: {agent.get('total_commits', 0)} commits"
+                        )
+                most_queried = facts.get("most_queried") or []
+                if isinstance(most_queried, list) and most_queried:
+                    click.echo("Most Queried Facts:")
+                    for fact in most_queried[:5]:
+                        click.echo(
+                            f"  - {fact.get('id')} "
+                            f"[{fact.get('scope')}] "
+                            f"{fact.get('query_hits', 0)} queries"
+                        )
     except urllib.error.HTTPError:
         click.echo("=== Workspace Stats ===")
         click.echo(f"Workspace: {ws.engram_id}")

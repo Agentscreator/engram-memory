@@ -18,6 +18,8 @@ import aiosqlite
 from engram.schema import POST_MIGRATION_INDEXES, SCHEMA_SQL, SCHEMA_VERSION
 
 DEFAULT_DB_PATH = Path.home() / ".engram" / "knowledge.db"
+ANALYTICS_BUCKET_LIMIT = 30
+ANALYTICS_TOP_LIMIT = 10
 
 
 class BaseStorage(ABC):
@@ -1642,6 +1644,18 @@ class SQLiteStorage(BaseStorage):
         by_durability = {r["durability"]: r["cnt"] for r in await cur.fetchall()}
 
         cur = await self.db.execute(
+            """SELECT id, scope, fact_type, query_hits
+               FROM facts
+               WHERE valid_until IS NULL
+                 AND workspace_id = ?
+                 AND query_hits > 0
+               ORDER BY query_hits DESC, committed_at DESC
+               LIMIT ?""",
+            (ws, ANALYTICS_TOP_LIMIT),
+        )
+        most_queried = [dict(r) for r in await cur.fetchall()]
+
+        cur = await self.db.execute(
             "SELECT COUNT(*) as cnt FROM facts "
             "WHERE ttl_days IS NOT NULL AND valid_until IS NULL AND workspace_id = ? "
             "AND datetime(valid_from, '+' || ttl_days || ' days') < datetime('now', '+7 days')",
@@ -1658,6 +1672,8 @@ class SQLiteStorage(BaseStorage):
         conflict_by_status: dict[str, int] = {}
         for r in await cur.fetchall():
             conflict_by_status[r["status"]] = r["cnt"]
+        total_conflicts = sum(conflict_by_status.values())
+        conflict_rate = round(total_conflicts / total_facts, 4) if total_facts else 0.0
 
         cur = await self.db.execute(
             "SELECT detection_tier, COUNT(*) as cnt FROM conflicts "
@@ -1673,15 +1689,47 @@ class SQLiteStorage(BaseStorage):
         )
         conflict_by_type = {r["conflict_type"]: r["cnt"] for r in await cur.fetchall()}
 
+        cur = await self.db.execute(
+            """SELECT substr(detected_at, 1, 10) AS date,
+                      status,
+                      COUNT(*) AS cnt
+               FROM conflicts
+               WHERE workspace_id = ?
+               GROUP BY date, status
+               ORDER BY date DESC
+               LIMIT ?""",
+            (ws, ANALYTICS_BUCKET_LIMIT * 3),
+        )
+        buckets: dict[str, dict[str, int | str]] = {}
+        for r in await cur.fetchall():
+            date = r["date"]
+            bucket = buckets.setdefault(
+                date,
+                {"date": date, "open": 0, "resolved": 0, "dismissed": 0, "total": 0},
+            )
+            status = r["status"] if r["status"] in {"open", "resolved", "dismissed"} else "total"
+            if status != "total":
+                bucket[status] = int(bucket[status]) + r["cnt"]
+            bucket["total"] = int(bucket["total"]) + r["cnt"]
+        conflict_over_time = sorted(buckets.values(), key=lambda item: str(item["date"]))
+
         # ── agents ──────────────────────────────────────────────────
         cur = await self.db.execute(
-            "SELECT agent_id, total_commits, flagged_commits FROM agents "
+            "SELECT agent_id, total_commits, flagged_commits, last_seen FROM agents "
             "WHERE workspace_id = ? ORDER BY total_commits DESC",
             (ws,),
         )
         agent_rows = await cur.fetchall()
         total_agents = len(agent_rows)
-        most_active = agent_rows[0]["agent_id"] if agent_rows else None
+        most_active = [
+            {
+                "agent_id": r["agent_id"],
+                "total_commits": r["total_commits"],
+                "flagged_commits": r["flagged_commits"],
+                "last_seen": r["last_seen"],
+            }
+            for r in agent_rows[:ANALYTICS_TOP_LIMIT]
+        ]
         trust_scores = [
             1.0 - (r["flagged_commits"] / r["total_commits"]) if r["total_commits"] > 0 else 0.8
             for r in agent_rows
@@ -1705,12 +1753,15 @@ class SQLiteStorage(BaseStorage):
                 "by_scope": by_scope,
                 "by_type": by_type,
                 "by_durability": by_durability,
+                "most_queried": most_queried,
             },
             "conflicts": {
                 "open": conflict_by_status.get("open", 0),
                 "resolved": conflict_by_status.get("resolved", 0),
                 "dismissed": conflict_by_status.get("dismissed", 0),
-                "total": sum(conflict_by_status.values()),
+                "total": total_conflicts,
+                "rate": conflict_rate,
+                "over_time": conflict_over_time,
                 "by_tier": conflict_by_tier,
                 "by_type": conflict_by_type,
             },

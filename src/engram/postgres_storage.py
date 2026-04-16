@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from engram.schema import POSTGRES_SCHEMA_SQL
-from engram.storage import BaseStorage
+from engram.storage import ANALYTICS_BUCKET_LIMIT, ANALYTICS_TOP_LIMIT, BaseStorage
 
 logger = logging.getLogger("engram")
 
@@ -1110,6 +1110,19 @@ class PostgresStorage(BaseStorage):
             )
             by_durability = {r["durability"]: r["cnt"] for r in dur_rows}
 
+            most_queried_rows = await conn.fetch(
+                """SELECT id, scope, fact_type, query_hits
+                   FROM facts
+                   WHERE valid_until IS NULL
+                     AND workspace_id = $1
+                     AND query_hits > 0
+                   ORDER BY query_hits DESC, committed_at DESC
+                   LIMIT $2""",
+                ws,
+                ANALYTICS_TOP_LIMIT,
+            )
+            most_queried = [_row_to_dict(r) for r in most_queried_rows]
+
             # expiring soon (within 7 days)
             exp_row = await conn.fetchrow(
                 "SELECT COUNT(*) AS cnt FROM facts "
@@ -1126,6 +1139,8 @@ class PostgresStorage(BaseStorage):
                 ws,
             )
             conflict_by_status: dict[str, int] = {r["status"]: r["cnt"] for r in conflict_rows}
+            total_conflicts = sum(conflict_by_status.values())
+            conflict_rate = round(total_conflicts / total_facts, 4) if total_facts else 0.0
 
             # conflicts by tier
             tier_rows = await conn.fetch(
@@ -1143,14 +1158,51 @@ class PostgresStorage(BaseStorage):
             )
             conflict_by_type = {r["conflict_type"]: r["cnt"] for r in type_conflict_rows}
 
+            over_time_rows = await conn.fetch(
+                """SELECT to_char(detected_at, 'YYYY-MM-DD') AS date,
+                          status,
+                          COUNT(*) AS cnt
+                   FROM conflicts
+                   WHERE workspace_id = $1
+                   GROUP BY to_char(detected_at, 'YYYY-MM-DD'), status
+                   ORDER BY date DESC
+                   LIMIT $2""",
+                ws,
+                ANALYTICS_BUCKET_LIMIT * 3,
+            )
+            buckets: dict[str, dict[str, int | str]] = {}
+            for r in over_time_rows:
+                date = r["date"]
+                bucket = buckets.setdefault(
+                    date,
+                    {"date": date, "open": 0, "resolved": 0, "dismissed": 0, "total": 0},
+                )
+                status = (
+                    r["status"] if r["status"] in {"open", "resolved", "dismissed"} else "total"
+                )
+                if status != "total":
+                    bucket[status] = int(bucket[status]) + r["cnt"]
+                bucket["total"] = int(bucket["total"]) + r["cnt"]
+            conflict_over_time = sorted(buckets.values(), key=lambda item: str(item["date"]))
+
             # agents
             agent_rows = await conn.fetch(
-                "SELECT agent_id, total_commits, flagged_commits FROM agents "
+                "SELECT agent_id, total_commits, flagged_commits, last_seen FROM agents "
                 "WHERE workspace_id = $1 ORDER BY total_commits DESC",
                 ws,
             )
             total_agents = len(agent_rows)
-            most_active = agent_rows[0]["agent_id"] if agent_rows else None
+            most_active = [
+                {
+                    "agent_id": r["agent_id"],
+                    "total_commits": r["total_commits"],
+                    "flagged_commits": r["flagged_commits"],
+                    "last_seen": r["last_seen"].isoformat()
+                    if isinstance(r["last_seen"], datetime)
+                    else r["last_seen"],
+                }
+                for r in agent_rows[:ANALYTICS_TOP_LIMIT]
+            ]
             trust_scores = [
                 1.0 - (r["flagged_commits"] / r["total_commits"]) if r["total_commits"] > 0 else 0.8
                 for r in agent_rows
@@ -1174,12 +1226,15 @@ class PostgresStorage(BaseStorage):
                 "by_scope": by_scope,
                 "by_type": by_type,
                 "by_durability": by_durability,
+                "most_queried": most_queried,
             },
             "conflicts": {
                 "open": conflict_by_status.get("open", 0),
                 "resolved": conflict_by_status.get("resolved", 0),
                 "dismissed": conflict_by_status.get("dismissed", 0),
-                "total": sum(conflict_by_status.values()),
+                "total": total_conflicts,
+                "rate": conflict_rate,
+                "over_time": conflict_over_time,
                 "by_tier": conflict_by_tier,
                 "by_type": conflict_by_type,
             },

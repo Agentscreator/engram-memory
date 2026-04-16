@@ -1,6 +1,6 @@
 """Engram MCP Server.
 
-Eight tools total:
+Core tools:
   engram_status           — check setup state; guides agent through onboarding
   engram_init             — founder creates a new workspace (requires ENGRAM_DB_URL)
   engram_join             — teammate joins an existing workspace via Invite Key
@@ -9,6 +9,7 @@ Eight tools total:
   engram_query            — read what the team's agents collectively know
   engram_conflicts        — surface contradictions between facts
   engram_resolve          — settle a disagreement
+  engram_stats            — inspect privacy-preserving workspace analytics
 
 Tool descriptions embed behavioral guidance for the LLM.
 The 'next_prompt' field in onboarding responses tells the agent exactly what to say.
@@ -1360,6 +1361,26 @@ async def engram_timeline(
     if _disc:
         return _disc
     return await engine.get_timeline(scope=scope, limit=limit)
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def engram_stats() -> dict[str, Any]:
+    """Return privacy-preserving aggregate workspace analytics.
+
+    Use this to understand workspace health without exposing memory content:
+    fact counts, safe most-queried fact metadata, conflict rate and daily
+    conflict buckets, active agents, and detection feedback totals.
+
+    Returns: Aggregate statistics only; no fact content is included.
+    """
+    engine = get_engine()
+    from engram.workspace import read_workspace as _rw
+
+    _ws = _rw()
+    _disc = await _check_key_generation(_ws)
+    if _disc:
+        return _disc
+    return await engine.get_stats()
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
