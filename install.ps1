@@ -76,13 +76,6 @@ try {
     Write-Host "  ! CLI install failed — run manually: uv tool install engram-team"
 }
 
-# ── Ask for invite key if not provided ─────────────────────────────
-if (-not $InviteKey) {
-    $hasKey = Read-Host "`nDo you have an invite key from a teammate? (y/n)"
-    if ($hasKey -eq 'y' -or $hasKey -eq 'Y') {
-        $InviteKey = Read-Host 'Paste your invite key'
-    }
-}
 
 # ── Per-IDE JSON patchers ──────────────────────────────────────────
 

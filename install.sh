@@ -49,15 +49,6 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-# ── Ask for invite key if not provided ─────────────────────────────
-if [ -z "$INVITE_KEY" ]; then
-  printf "\nDo you have an invite key from a teammate? (y/n): "
-  read HAS_KEY
-  if [ "$HAS_KEY" = "y" ] || [ "$HAS_KEY" = "Y" ]; then
-    printf "Paste your invite key: "
-    read INVITE_KEY
-  fi
-fi
 
 # ── Write shared Python patcher to a temp file ─────────────────────
 PATCHER="$(mktemp /tmp/engram_patch.XXXXXX.py)"

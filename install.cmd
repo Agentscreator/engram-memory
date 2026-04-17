@@ -44,12 +44,6 @@ if %errorlevel% equ 0 (
     )
 )
 
-REM ── Ask for invite key ───────────────────────────────────────────
-echo.
-set /p "HAS_KEY=Do you have an invite key from a teammate? (y/n): "
-if /i "%HAS_KEY%"=="y" (
-    set /p "INVITE_KEY=Paste your invite key: "
-)
 
 REM ── Write shared Python patcher ──────────────────────────────────
 set "PATCHER=%TEMP%\engram_patch.py"
