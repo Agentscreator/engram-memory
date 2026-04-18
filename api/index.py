@@ -574,7 +574,7 @@ def _render_landing() -> str:
         <a href="/dashboard">Dashboard</a>
         <a href="#privacy">Privacy</a>
         <a href="https://github.com/Agentscreator/Engram" target="_blank">GitHub</a>
-        <a href="https://discord.gg/2SQ34TfA" target="_blank">Discord</a>
+        <a href="https://discord.gg/xnQDXrAq" target="_blank">Discord</a>
       </nav>
       <button class="hamburger" id="hamburger" onclick="toggleMenu()" aria-label="Open menu" aria-expanded="false">
         <span></span><span></span><span></span>
@@ -585,7 +585,7 @@ def _render_landing() -> str:
       <a href="/dashboard" onclick="toggleMenu()">Dashboard</a>
       <a href="#privacy" onclick="toggleMenu()">Privacy</a>
       <a href="https://github.com/Agentscreator/Engram" target="_blank">GitHub ↗</a>
-      <a href="https://discord.gg/2SQ34TfA" target="_blank">Discord ↗</a>
+      <a href="https://discord.gg/xnQDXrAq" target="_blank">Discord ↗</a>
     </nav>
   </div>
 </header>
@@ -730,7 +730,7 @@ def _render_landing() -> str:
       <span class="footer-logo">engram<span class="footer-logo-memory">memory</span></span>
       <a href="https://github.com/Agentscreator/Engram" target="_blank">GitHub</a>
       <a href="https://github.com/Agentscreator/Engram/blob/main/LICENSE" target="_blank">Apache 2.0</a>
-      <a href="https://discord.gg/2SQ34TfA" target="_blank">Discord</a>
+      <a href="https://discord.gg/xnQDXrAq" target="_blank">Discord</a>
     </div>
     <p class="footer-tagline">An engram is the physical trace a memory leaves in the brain</p>
   </div>
