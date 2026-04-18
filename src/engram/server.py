@@ -1415,6 +1415,45 @@ async def engram_stats() -> dict[str, Any]:
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
+async def engram_audit_trail(
+    agent_id: str | None = None,
+    operation: str | None = None,
+    from_timestamp: str | None = None,
+    to_timestamp: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Query the workspace audit trail for tracking agent activities.
+
+    Returns a chronological record of all operations performed in the workspace,
+    including commits, resolutions, imports, and other actions. Useful for
+    auditing what changes were made, when, and by whom.
+
+    Parameters:
+    - agent_id: Optional filter by specific agent (e.g. 'agent-1').
+    - operation: Optional filter by operation type ('commit', 'resolve', 'import', etc).
+    - from_timestamp: Filter entries after this ISO timestamp.
+    - to_timestamp: Filter entries before this ISO timestamp.
+    - limit: Max entries to return (1-1000, default 100).
+
+    Returns: List of audit log entries with timestamps, operations, and details.
+    """
+    engine = get_engine()
+    from engram.workspace import read_workspace as _rw
+
+    _ws = _rw()
+    _disc = await _check_key_generation(_ws)
+    if _disc:
+        return _disc
+    return await engine.get_audit_log(
+        agent_id=agent_id,
+        operation=operation,
+        from_ts=from_timestamp,
+        to_ts=to_timestamp,
+        limit=limit,
+    )
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
 async def engram_agents() -> list[dict[str, Any]]:
     """List all registered agents and their activity statistics.
 
