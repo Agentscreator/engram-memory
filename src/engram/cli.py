@@ -1916,6 +1916,121 @@ def webhook_delete(webhook_id: str) -> None:
     asyncio.run(run_delete())
 
 
+# ── engram conflicts ───────────────────────────────────────────────────────────
+
+@main.command("conflicts")
+@click.option("--status", default="open", type=click.Choice(["open", "resolved", "all"]), help="Filter by status.")
+@click.option("--limit", default=20, help="Max conflicts to show.")
+def conflicts_list(status: str, limit: int) -> None:
+    """List workspace conflicts for terminal-based conflict resolution.
+
+    Shows open conflicts with details about fact pairs, severity,
+    and detection method. Useful for reviewing and resolving conflicts
+    from the command line.
+
+    Example:
+        engram conflicts --status open --limit 10
+    """
+    import asyncio
+    import os
+    from engram.workspace import read_workspace
+    from engram.engine import EngramEngine
+    from engram.storage import SQLiteStorage, DEFAULT_DB_PATH
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: No workspace configured.")
+        return
+
+    db_url = os.getenv("ENGRAM_DB_URL")
+    if db_url:
+        storage = PostgresStorage(db_url=db_url, workspace_id=ws.engram_id, schema=ws.schema)
+    else:
+        storage = SQLiteStorage(db_path=str(DEFAULT_DB_PATH), workspace_id=ws.engram_id)
+
+    engine = EngramEngine(storage)
+
+    async def run_conflicts():
+        await storage.connect()
+        try:
+            conflicts = await engine.get_conflicts(status=status, limit=limit)
+            if not conflicts:
+                click.echo("No conflicts found.")
+                return
+            for c in conflicts:
+                click.echo(f"\nConflict: {c.get('id', 'N/A')[:12]}...")
+                click.echo(f"  Severity: {c.get('severity', 'unknown')}")
+                click.echo(f"  Status: {c.get('status', 'unknown')}")
+                click.echo(f"  Type: {c.get('conflict_type', 'unknown')}")
+                fact_a = c.get("fact_a_content", "N/A")[:50]
+                fact_b = c.get("fact_b_content", "N/A")[:50]
+                click.echo(f"  Fact A: {fact_a}...")
+                click.echo(f"  Fact B: {fact_b}...")
+        finally:
+            await storage.close()
+
+    asyncio.run(run_conflicts())
+
+
+@main.command("conflicts:resolve")
+@click.argument("conflict_id")
+@click.option("--resolution", type=click.Choice(["winner", "merge", "dismiss"]), required=True, help="Resolution type.")
+@click.option("--winning-fact", default=None, help="Fact ID to keep (required for winner resolution).")
+def conflicts_resolve(conflict_id: str, resolution: str, winning_fact: str | None) -> None:
+    """Resolve a conflict from the terminal.
+
+    Arguments:
+        conflict_id: The ID of the conflict to resolve.
+
+    Options:
+        --resolution: How to resolve (winner, merge, dismiss)
+        --winning-fact: The fact ID to keep (required for winner resolution)
+
+    Example:
+        engram conflicts:resolve abc123 --resolution winner --winning-fact fact_xyz
+        engram conflicts:resolve abc123 --resolution dismiss
+    """
+    import asyncio
+    import os
+    from engram.workspace import read_workspace
+    from engram.engine import EngramEngine
+    from engram.storage import SQLiteStorage, DEFAULT_DB_PATH
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: No workspace configured.")
+        return
+
+    if resolution == "winner" and not winning_fact:
+        click.echo("Error: --winning-fact is required for winner resolution.", err=True)
+        return
+
+    db_url = os.getenv("ENGRAM_DB_URL")
+    if db_url:
+        storage = PostgresStorage(db_url=db_url, workspace_id=ws.engram_id, schema=ws.schema)
+    else:
+        storage = SQLiteStorage(db_path=str(DEFAULT_DB_PATH), workspace_id=ws.engram_id)
+
+    engine = EngramEngine(storage)
+
+    async def run_resolve():
+        await storage.connect()
+        try:
+            result = await engine.resolve(
+                conflict_id=conflict_id,
+                resolution_type=resolution,
+                resolution=resolution,
+                winning_claim_id=winning_fact
+            )
+            click.echo(f"✓ Conflict {conflict_id[:12]}... resolved as {resolution}")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+        finally:
+            await storage.close()
+
+    asyncio.run(run_resolve())
+
+
 # ── engram whoami ───────────────────────────────────────────────────────────
 
 
