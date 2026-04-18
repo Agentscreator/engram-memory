@@ -36,25 +36,28 @@ _STYLE = Style.from_dict(
         "output.cmd": "bold #00dd55",
         "output.error": "#ff4444",
         "output.dim": "#555555",
+        "menu.selected": "bold #00dd55",
+        "menu.item": "#aaaaaa",
+        "menu.desc": "#555555",
+        "menu.arrow": "bold #00dd55",
         "toolbar": "bg:#111111 #444444",
         "toolbar.key": "bg:#111111 #00dd55",
         "toolbar.sep": "bg:#111111 #333333",
     }
 )
 
-# Commands that the TUI passes through to the engram binary
-_VALID_COMMANDS = {
-    "conflicts",
-    "search",
-    "status",
-    "whoami",
-    "info",
-    "tail",
-    "export",
-    "stats",
-    "verify",
-    "doctor",
-}
+_MENU_ITEMS: list[tuple[str, str, str]] = [
+    ("conflicts", "conflicts", "review open memory conflicts"),
+    ("search", "search <q>", "query workspace memory"),
+    ("tail", "tail", "stream live workspace facts"),
+    ("status", "status", "workspace info"),
+    ("whoami", "whoami", "show identity"),
+    ("export", "export", "export workspace data"),
+]
+
+_VALID_COMMANDS = {cmd for cmd, _, _ in _MENU_ITEMS} | {"info", "stats", "verify", "doctor"}
+
+_MENU_HEIGHT = len(_MENU_ITEMS) + 2  # blank line top + blank line bottom
 
 _HELP_LINES: list[tuple[str, str]] = [
     ("class:output.dim", "\n"),
@@ -65,8 +68,8 @@ _HELP_LINES: list[tuple[str, str]] = [
     ("class:output", "    whoami      — show identity\n"),
     ("class:output", "    tail        — stream live facts\n"),
     ("class:output", "    export      — export workspace data\n"),
-    ("class:output", "    clear       — clear this output  (Ctrl+L)\n"),
-    ("class:output", "    quit / q    — exit               (Ctrl+C)\n"),
+    ("class:output", "    clear       — clear output  (Ctrl+L)\n"),
+    ("class:output", "    quit / q    — exit          (Ctrl+C)\n"),
     ("class:output.dim", "\n"),
 ]
 
@@ -87,13 +90,11 @@ def run_tui(ws: Any, ctx: Any) -> None:
     except ValueError:
         cwd = os.getcwd()
 
-    output_lines: list[tuple[str, str]] = [
-        ("class:output.dim", "\n"),
-        ("class:output", "  Type a command or ? for help.\n"),
-        ("class:output.dim", "\n"),
-    ]
+    # Mutable state
+    state: dict[str, Any] = {"selected": 0}
+    output_lines: list[tuple[str, str]] = []
 
-    # ── formatted text producers ─────────────────────────────────────────
+    # ── formatted text producers ──────────────────────────────────────────
 
     def header_text() -> AnyFormattedText:
         return [
@@ -115,36 +116,56 @@ def run_tui(ws: Any, ctx: Any) -> None:
         return list(output_lines)
 
     def output_cursor_pos() -> Point:
-        """Always position cursor at end of output so the window auto-scrolls."""
-        total_lines = sum(t.count("\n") for _, t in output_lines)
-        return Point(x=0, y=max(0, total_lines - 1))
+        total = sum(t.count("\n") for _, t in output_lines)
+        return Point(x=0, y=max(0, total - 1))
+
+    def menu_text() -> AnyFormattedText:
+        result: list[tuple[str, str]] = [("class:output.dim", "\n")]
+        for i, (_, display, desc) in enumerate(_MENU_ITEMS):
+            if i == state["selected"]:
+                result.append(("class:menu.arrow", "  ❯ "))
+                result.append(("class:menu.selected", f"{display:<14}"))
+                result.append(("class:menu.desc", f"  {desc}\n"))
+            else:
+                result.append(("", "    "))
+                result.append(("class:menu.item", f"{display:<14}"))
+                result.append(("class:menu.desc", f"  {desc}\n"))
+        result.append(("class:output.dim", "\n"))
+        return result
 
     def toolbar_text() -> AnyFormattedText:
         return [
-            ("class:toolbar.key", "  ?"),
-            ("class:toolbar", " help"),
+            ("class:toolbar.key", "  ↑↓"),
+            ("class:toolbar", " navigate"),
             ("class:toolbar.sep", "   ·   "),
-            ("class:toolbar", "conflicts"),
-            ("class:toolbar.sep", "  ·  "),
-            ("class:toolbar", "search <q>"),
-            ("class:toolbar.sep", "  ·  "),
-            ("class:toolbar", "status"),
-            ("class:toolbar.sep", "  ·  "),
-            ("class:toolbar", "quit"),
+            ("class:toolbar.key", "Enter"),
+            ("class:toolbar", " select"),
+            ("class:toolbar.sep", "   ·   "),
+            ("class:toolbar", "or type a command"),
+            ("class:toolbar.sep", "   ·   "),
+            ("class:toolbar.key", "Ctrl+C"),
+            ("class:toolbar", " quit"),
             ("class:toolbar", "  "),
         ]
 
-    # ── input handling ────────────────────────────────────────────────────
+    # ── input & key handling ──────────────────────────────────────────────
 
     input_buf = Buffer(name="main_input", multiline=False)
+
+    def run_cmd(cmd: str, arg: str, app: Application) -> None:
+        output_lines.append(("class:output.cmd", f"\n  > {cmd}{' ' + arg if arg else ''}\n"))
+        _run_engram_command(cmd, arg, output_lines)
+        app.invalidate()
 
     def handle_command(text: str, app: Application) -> None:
         text = text.strip()
         if not text:
+            # Enter with empty input = run selected menu item
+            cmd, _, _ = _MENU_ITEMS[state["selected"]]
+            run_cmd(cmd, "", app)
             return
 
         output_lines.append(("class:output.cmd", f"\n  > {text}\n"))
-
         parts = text.split(None, 1)
         cmd = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
@@ -152,15 +173,12 @@ def run_tui(ws: Any, ctx: Any) -> None:
         if cmd in ("quit", "exit", "q"):
             app.exit()
             return
-
         if cmd in ("?", "help"):
             output_lines.extend(_HELP_LINES)
             return
-
         if cmd == "clear":
             output_lines.clear()
             return
-
         if cmd not in _VALID_COMMANDS:
             output_lines.append(
                 ("class:output.error", f"  Unknown command: {cmd}. Type ? for help.\n")
@@ -171,29 +189,44 @@ def run_tui(ws: Any, ctx: Any) -> None:
 
     kb = KeyBindings()
 
+    @kb.add("up")
+    def _up(event: Any) -> None:
+        state["selected"] = max(0, state["selected"] - 1)
+        event.app.invalidate()
+
+    @kb.add("down")
+    def _down(event: Any) -> None:
+        state["selected"] = min(len(_MENU_ITEMS) - 1, state["selected"] + 1)
+        event.app.invalidate()
+
     @kb.add("enter")
-    def _on_enter(event: Any) -> None:
+    def _enter(event: Any) -> None:
         text = input_buf.text
         input_buf.reset()
         handle_command(text, event.app)
 
     @kb.add("c-c")
     @kb.add("c-d")
-    def _on_exit(event: Any) -> None:
+    def _exit(event: Any) -> None:
         event.app.exit()
 
     @kb.add("c-l")
-    def _on_clear(event: Any) -> None:
+    def _clear(event: Any) -> None:
         output_lines.clear()
         event.app.invalidate()
 
-    # ── layout ───────────────────────────────────────────────────────────
-
-    output_control = FormattedTextControl(
-        output_text,
-        get_cursor_position=output_cursor_pos,
-        focusable=False,
-    )
+    # ── layout ────────────────────────────────────────────────────────────
+    #
+    # Order (top → bottom):
+    #   Header         (fixed 3 lines)
+    #   Separator      (fixed 1 line)
+    #   Output area    (flexible — empty space at top like Claude Code,
+    #                   fills with command output as you use it)
+    #   Separator      (fixed 1 line)
+    #   Menu list      (fixed — always visible above input)
+    #   Separator      (fixed 1 line)
+    #   Input bar      (fixed 1 line)
+    #   Toolbar        (fixed 1 line)
 
     layout = Layout(
         HSplit(
@@ -208,10 +241,25 @@ def run_tui(ws: Any, ctx: Any) -> None:
                     height=D.exact(1),
                     dont_extend_height=True,
                 ),
+                # Flexible output: starts empty (blank space), fills as commands run
                 Window(
-                    output_control,
+                    FormattedTextControl(
+                        output_text,
+                        get_cursor_position=output_cursor_pos,
+                        focusable=False,
+                    ),
                     wrap_lines=True,
-                    dont_extend_width=False,
+                ),
+                Window(
+                    FormattedTextControl(separator_text, focusable=False),
+                    height=D.exact(1),
+                    dont_extend_height=True,
+                ),
+                # Always-visible menu — arrow keys navigate, Enter selects
+                Window(
+                    FormattedTextControl(menu_text, focusable=False),
+                    height=D.exact(_MENU_HEIGHT),
+                    dont_extend_height=True,
                 ),
                 Window(
                     FormattedTextControl(separator_text, focusable=False),
@@ -244,48 +292,39 @@ def run_tui(ws: Any, ctx: Any) -> None:
         full_screen=True,
         cursor=CursorShape.BLINKING_BLOCK,
         mouse_support=False,
-        color_depth=None,
     )
 
     app.run()
 
 
-# ── command runner ────────────────────────────────────────────────────
+# ── command runner ─────────────────────────────────────────────────────
 
 
 def _run_engram_command(cmd: str, arg: str, output_lines: list[tuple[str, str]]) -> None:
-    """Run an engram subcommand via subprocess and append output."""
     engram_bin = _find_engram_bin()
     cli_args = [engram_bin, cmd]
     if arg:
         cli_args.extend(arg.split())
 
     try:
-        result = subprocess.run(
-            cli_args,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        result = subprocess.run(cli_args, capture_output=True, text=True, timeout=30)
         combined = (result.stdout + result.stderr).strip()
         if combined:
+            err = result.returncode != 0
             for line in combined.splitlines():
-                style = "class:output.error" if result.returncode != 0 else "class:output"
+                style = "class:output.error" if err else "class:output"
                 output_lines.append((style, f"  {line}\n"))
         else:
             output_lines.append(("class:output.dim", "  (no output)\n"))
     except subprocess.TimeoutExpired:
         output_lines.append(("class:output.error", "  Command timed out after 30s\n"))
     except FileNotFoundError:
-        output_lines.append(
-            ("class:output.error", f"  Could not find engram binary: {engram_bin}\n")
-        )
+        output_lines.append(("class:output.error", f"  Could not find: {engram_bin}\n"))
     except Exception as e:
         output_lines.append(("class:output.error", f"  Error: {e}\n"))
 
 
 def _find_engram_bin() -> str:
-    """Return the path to the engram binary."""
     argv0 = sys.argv[0]
     if os.path.isfile(argv0) and os.access(argv0, os.X_OK):
         return argv0
