@@ -24,26 +24,26 @@ _VERSION = "0.1.1"
 
 _STYLE = Style.from_dict(
     {
-        "header.title": "bold ansiwhite",
-        "header.version": "ansibrightblack",
-        "header.mode": "bold ansigreen",
-        "header.id": "ansibrightblack",
-        "header.cwd": "ansibrightblack",
-        "header.tagline": "ansiyellow",
-        "header.logo": "bold ansigreen",
-        "separator": "ansibrightblack",
-        "prompt": "bold ansigreen",
-        "output": "ansigray",
-        "output.cmd": "bold ansigreen",
-        "output.error": "ansired",
-        "output.dim": "ansibrightblack",
-        "menu.selected": "bold ansiwhite bg:default noreverse",
-        "menu.item": "ansiwhite",
-        "menu.desc": "ansiwhite",
-        "menu.arrow": "bold ansigreen",
-        "toolbar": "bg:ansiblack ansigray",
-        "toolbar.key": "bg:ansiblack ansigreen",
-        "toolbar.sep": "bg:ansiblack ansibrightblack",
+        "header.title": "bold noinherit #ffffff",
+        "header.version": "noinherit #555555",
+        "header.mode": "bold noinherit #00dd55",
+        "header.id": "noinherit #555555",
+        "header.cwd": "noinherit #555555",
+        "header.tagline": "noinherit #ff8800",
+        "header.logo": "bold noinherit #00dd55",
+        "separator": "noinherit #333333",
+        "prompt": "bold noinherit #00dd55",
+        "output": "noinherit #cccccc",
+        "output.cmd": "bold noinherit #00dd55",
+        "output.error": "noinherit #ff5555",
+        "output.dim": "noinherit #555555",
+        "menu.selected": "bold noinherit #00dd55",
+        "menu.item": "noinherit #aaaaaa",
+        "menu.desc": "noinherit #555555",
+        "menu.arrow": "bold noinherit #00dd55",
+        "toolbar": "noinherit bg:#111111 #444444",
+        "toolbar.key": "noinherit bg:#111111 #00dd55",
+        "toolbar.sep": "noinherit bg:#111111 #333333",
     }
 )
 
@@ -195,6 +195,10 @@ def run_tui(ws: Any, ctx: Any) -> None:
         if not text:
             # Enter with empty input = run selected menu item
             cmd, _, _ = _MENU_ITEMS[state["selected"]]
+            if cmd == "search":
+                # Pre-fill input so user can type their query
+                input_buf.set_document(input_buf.document.__class__("search ", cursor_position=7))
+                return
             run_cmd(cmd, "", app)
             return
 
