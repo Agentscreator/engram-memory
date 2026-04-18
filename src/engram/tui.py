@@ -24,25 +24,26 @@ _VERSION = "0.1.1"
 
 _STYLE = Style.from_dict(
     {
-        "header.title": "bold #ffffff",
-        "header.version": "#555555",
-        "header.mode": "bold #00dd55",
-        "header.id": "#555555",
-        "header.cwd": "#555555",
-        "header.tagline": "#ff8800",
-        "separator": "#333333",
-        "prompt": "bold #00dd55",
-        "output": "#cccccc",
-        "output.cmd": "bold #00dd55",
-        "output.error": "#ff4444",
-        "output.dim": "#555555",
-        "menu.selected": "bold #00dd55",
-        "menu.item": "#aaaaaa",
-        "menu.desc": "#555555",
-        "menu.arrow": "bold #00dd55",
-        "toolbar": "bg:#111111 #444444",
-        "toolbar.key": "bg:#111111 #00dd55",
-        "toolbar.sep": "bg:#111111 #333333",
+        "header.title": "bold ansiwhite",
+        "header.version": "ansibrightblack",
+        "header.mode": "bold ansigreen",
+        "header.id": "ansibrightblack",
+        "header.cwd": "ansibrightblack",
+        "header.tagline": "ansiyellow",
+        "header.logo": "bold ansigreen",
+        "separator": "ansibrightblack",
+        "prompt": "bold ansigreen",
+        "output": "ansigray",
+        "output.cmd": "bold ansigreen",
+        "output.error": "ansired",
+        "output.dim": "ansibrightblack",
+        "menu.selected": "bold ansigreen",
+        "menu.item": "ansigray",
+        "menu.desc": "ansibrightblack",
+        "menu.arrow": "bold ansigreen",
+        "toolbar": "bg:ansiblack ansigray",
+        "toolbar.key": "bg:ansiblack ansigreen",
+        "toolbar.sep": "bg:ansiblack ansibrightblack",
     }
 )
 
@@ -96,18 +97,26 @@ def run_tui(ws: Any, ctx: Any) -> None:
 
     # ── formatted text producers ──────────────────────────────────────────
 
+    _LOGO = [
+        "  ▄████▄  ",
+        " ████████ ",
+        " ███▀▀███ ",
+        " ▀ ▀  ▀ ▀ ",
+    ]
+
     def header_text() -> AnyFormattedText:
-        return [
-            ("class:header.title", "  Engram"),
-            ("class:header.version", f"  v{_VERSION}"),
-            ("", "\n"),
-            ("class:header.mode", f"  {mode_label}"),
-            ("class:header.id", f"  ·  {workspace_id}"),
-            ("class:header.cwd", f"  ·  {cwd}"),
-            ("", "\n"),
-            ("class:header.tagline", "  Shared memory for engineering teams"),
-            ("", "\n"),
+        lines = [
+            [("class:header.logo", _LOGO[0]), ("class:header.title", "   Engram "), ("class:header.version", f"v{_VERSION}")],
+            [("class:header.logo", _LOGO[1]), ("class:header.mode", f"   {mode_label} "), ("class:header.id", f"· {workspace_id}")],
+            [("class:header.logo", _LOGO[2]), ("class:header.cwd", f"   {cwd}")],
+            [("class:header.logo", _LOGO[3]), ("class:header.tagline", "   Shared memory for engineering teams")]
         ]
+        
+        result: list[tuple[str, str]] = []
+        for line in lines:
+            result.extend(line)
+            result.append(("", "\n"))
+        return result
 
     def separator_text() -> AnyFormattedText:
         return [("class:separator", "─" * 200)]
@@ -233,7 +242,7 @@ def run_tui(ws: Any, ctx: Any) -> None:
             [
                 Window(
                     FormattedTextControl(header_text, focusable=False),
-                    height=D.exact(3),
+                    height=D.exact(4),
                     dont_extend_height=True,
                 ),
                 Window(
