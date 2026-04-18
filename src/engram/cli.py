@@ -1439,6 +1439,7 @@ async def _tail_once(
     after: str,
     scope: str | None,
     limit: int,
+    invite_key: str = "",
 ) -> tuple[list[dict[str, object]], str]:
     """Fetch facts newer than the watermark from the REST API."""
     import urllib.parse
@@ -1449,8 +1450,12 @@ async def _tail_once(
         params["scope"] = scope
 
     url = f"{base_url.rstrip('/')}/api/tail?{urllib.parse.urlencode(params)}"
+    headers = {"Accept": "application/json"}
+    if invite_key:
+        headers["Authorization"] = f"Bearer {invite_key}"
+    req = urllib.request.Request(url, headers=headers)
 
-    with urllib.request.urlopen(url, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
 
     facts = payload.get("facts", [])
@@ -1485,6 +1490,23 @@ def tail(scope: str | None, limit: int, interval: float, base_url: str) -> None:
     """Stream new workspace facts from the terminal."""
     from datetime import datetime, timezone
 
+    invite_key = ""
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws and ws.server_url and not ws.db_url:
+            base_url = ws.server_url.rstrip("/")
+    except Exception:
+        pass
+
+    try:
+        from engram.commit_check import load_credentials
+
+        _, invite_key = load_credentials()
+    except Exception:
+        invite_key = ""
+
     click.echo("Starting tail stream. Press Ctrl+C to stop.")
 
     after = datetime.now(timezone.utc).isoformat()
@@ -1497,6 +1519,7 @@ def tail(scope: str | None, limit: int, interval: float, base_url: str) -> None:
                     after=after,
                     scope=scope,
                     limit=limit,
+                    invite_key=invite_key,
                 )
             )
 
@@ -2930,12 +2953,25 @@ def export_cmd(format: str, output: str | None, scope: str | None) -> None:
         click.echo("Error: No workspace configured")
         return
 
-    mcp_url = os.environ.get("ENGRAM_MCP_URL", "http://localhost:7474")
-    base_url = mcp_url.replace("/mcp", "") if "/mcp" in mcp_url else mcp_url
+    try:
+        from engram.commit_check import load_credentials
+
+        _, invite_key = load_credentials()
+    except Exception:
+        invite_key = ""
+
+    if ws and ws.server_url and not ws.db_url:
+        base_url = ws.server_url.rstrip("/")
+    else:
+        mcp_url = os.environ.get("ENGRAM_MCP_URL", "http://localhost:7474")
+        base_url = mcp_url.replace("/mcp", "") if "/mcp" in mcp_url else mcp_url
 
     try:
         url = f"{base_url}/api/facts?scope={scope or ''}&limit=10000"
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        auth_headers = {"Accept": "application/json"}
+        if invite_key:
+            auth_headers["Authorization"] = f"Bearer {invite_key}"
+        req = urllib.request.Request(url, headers=auth_headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
             facts = data.get("facts", [])
