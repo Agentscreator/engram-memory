@@ -97,6 +97,8 @@ Run the same installer as above for your OS. This configures your IDE and instal
 
 Click the invite link, sign in at [engram-memory.com](https://engram-memory.com), and accept the workspace invite. Your agent will connect automatically.
 
+Then repeat **Steps 4 and 5** above.
+
 ---
 
 ## What Gets Committed
