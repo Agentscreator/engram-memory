@@ -130,7 +130,7 @@ class BaseStorage(ABC):
 
     @abstractmethod
     async def conflict_exists(
-        self, fact_a_id: str, fact_b_id: str, status: str = "open"
+        self, fact_a_id: str, fact_b_id: str, status: str | None = None
     ) -> bool: ...
 
     @abstractmethod
@@ -1006,6 +1006,11 @@ class SQLiteStorage(BaseStorage):
     # ── Conflict operations ──────────────────────────────────────────
 
     async def insert_conflict(self, conflict: dict[str, Any]) -> None:
+        # Normalize pair order so the unique index (idx_conflicts_pair_unique) treats (A,B) == (B,A).
+        a, b = conflict.get("fact_a_id", ""), conflict.get("fact_b_id", "")
+        if a > b:
+            conflict = {**conflict, "fact_a_id": b, "fact_b_id": a}
+
         cols = [
             "id",
             "fact_a_id",
@@ -1024,17 +1029,19 @@ class SQLiteStorage(BaseStorage):
         defaults = {"workspace_id": self.workspace_id, "conflict_type": "genuine"}
         values = [conflict.get(c, defaults.get(c)) for c in cols]
         await self.db.execute(
-            f"INSERT INTO conflicts ({col_names}) VALUES ({placeholders})", values
+            f"INSERT OR IGNORE INTO conflicts ({col_names}) VALUES ({placeholders})", values
         )
         await self.db.commit()
 
-    async def conflict_exists(self, fact_a_id: str, fact_b_id: str, status: str = "open") -> bool:
+    async def conflict_exists(self, fact_a_id: str, fact_b_id: str, status: str | None = None) -> bool:
         """Check if a conflict already exists between two facts (in either order) within this workspace.
+
+        Defaults to checking all statuses so resolved/dismissed conflicts block re-detection.
 
         Args:
             fact_a_id: First fact ID
             fact_b_id: Second fact ID
-            status: Only check conflicts with this status (default: "open"). Pass None to check all.
+            status: Filter by status. None (default) checks all statuses.
         """
         conditions = [
             "workspace_id = ?",

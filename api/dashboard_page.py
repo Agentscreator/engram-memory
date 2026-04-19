@@ -1614,7 +1614,15 @@ function goBackToList() {
 function renderDetail() {
   if (!WS_DATA) return;
   const { facts, conflicts, agents } = WS_DATA;
-  const openC = (conflicts||[]).filter(c => c.status === 'open').length;
+  // Deduplicate by fact pair before counting, same as renderConflicts.
+  const pairSeen = new Set();
+  const openC = (conflicts||[]).filter(c => {
+    if (c.status !== 'open') return false;
+    const key = [c.fact_a_id, c.fact_b_id].sort().join('|');
+    if (pairSeen.has(key)) return false;
+    pairSeen.add(key);
+    return true;
+  }).length;
 
   if (openC > 0) {
     document.getElementById('stats-row').innerHTML = `
@@ -1925,14 +1933,23 @@ function renderConflicts() {
   if (!WS_DATA) return;
   const { conflicts, facts } = WS_DATA;
   const el = document.getElementById('conflict-list');
-  if (!conflicts.length) { el.innerHTML = '<div class="empty-state">No confusions detected — your agents are aligned.</div>'; return; }
+
+  // Deduplicate by fact pair — keep one per (fact_a_id, fact_b_id), preferring open over resolved.
+  const pairMap = new Map();
+  for (const c of conflicts) {
+    const key = [c.fact_a_id, c.fact_b_id].sort().join('|');
+    const existing = pairMap.get(key);
+    if (!existing || (c.status === 'open' && existing.status !== 'open')) {
+      pairMap.set(key, c);
+    }
+  }
+  const deduped = [...pairMap.values()];
+  const openConflicts = deduped.filter(c => c.status === 'open');
+
+  if (!openConflicts.length) { el.innerHTML = '<div class="empty-state">No confusions detected — your agents are aligned.</div>'; return; }
   const factMap = {};
   (facts||[]).forEach(f => factMap[f.id] = f);
-  const sorted = [...conflicts].sort((a,b) => {
-    if (a.status === 'open' && b.status !== 'open') return -1;
-    if (a.status !== 'open' && b.status === 'open') return 1;
-    return new Date(b.detected_at) - new Date(a.detected_at);
-  });
+  const sorted = [...openConflicts].sort((a,b) => new Date(b.detected_at) - new Date(a.detected_at));
   el.innerHTML = sorted.map(c => {
     const fa = factMap[c.fact_a_id], fb = factMap[c.fact_b_id];
     const isOpen = c.status === 'open';
@@ -1990,10 +2007,16 @@ async function resolveConflict(conflictId, answer) {
         params: { name: 'engram_resolve', arguments: args }
       })
     });
-    // Update local state
+    // Mark all conflicts with the same fact pair as resolved locally.
     if (WS_DATA) {
-      const c = WS_DATA.conflicts.find(x => x.id === conflictId);
-      if (c) { c.status = 'resolved'; c.resolution_type = resolution_type; }
+      const resolved = WS_DATA.conflicts.find(x => x.id === conflictId);
+      if (resolved) {
+        const pairKey = [resolved.fact_a_id, resolved.fact_b_id].sort().join('|');
+        WS_DATA.conflicts.forEach(x => {
+          const k = [x.fact_a_id, x.fact_b_id].sort().join('|');
+          if (k === pairKey) { x.status = 'resolved'; x.resolution_type = resolution_type; }
+        });
+      }
     }
     renderConflicts();
     renderDetail();

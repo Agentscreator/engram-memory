@@ -509,13 +509,14 @@ async def _detect_conflicts_heuristic(workspace_id: str, pool: Any) -> None:
 
         async with _safe(pool) as conn:
             for fa_id, fb_id, explanation in to_insert:
+                # Normalize pair order to match the LEAST/GREATEST unique index.
+                norm_a, norm_b = (fa_id, fb_id) if fa_id < fb_id else (fb_id, fa_id)
                 existing = await conn.fetchrow(
                     """SELECT 1 FROM conflicts WHERE workspace_id = $1
-                         AND ((fact_a_id = $2 AND fact_b_id = $3)
-                           OR (fact_a_id = $3 AND fact_b_id = $2))""",
+                         AND fact_a_id = $2 AND fact_b_id = $3""",
                     workspace_id,
-                    fa_id,
-                    fb_id,
+                    norm_a,
+                    norm_b,
                 )
                 if existing:
                     continue
@@ -524,14 +525,15 @@ async def _detect_conflicts_heuristic(workspace_id: str, pool: Any) -> None:
                     """INSERT INTO conflicts
                        (id, fact_a_id, fact_b_id, explanation, severity, workspace_id)
                        VALUES ($1, $2, $3, $4, 'medium', $5)
-                       ON CONFLICT DO NOTHING""",
+                       ON CONFLICT (workspace_id, LEAST(fact_a_id, fact_b_id), GREATEST(fact_a_id, fact_b_id))
+                       DO NOTHING""",
                     cid,
-                    fa_id,
-                    fb_id,
+                    norm_a,
+                    norm_b,
                     explanation,
                     workspace_id,
                 )
-                logger.info("Heuristic conflict: %s vs %s", fa_id[:8], fb_id[:8])
+                logger.info("Heuristic conflict: %s vs %s", norm_a[:8], norm_b[:8])
     except Exception as exc:
         logger.warning("Heuristic conflict detection failed: %s", exc)
 

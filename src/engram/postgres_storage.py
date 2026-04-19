@@ -502,6 +502,11 @@ class PostgresStorage(BaseStorage):
     # ── Conflict operations ──────────────────────────────────────────
 
     async def insert_conflict(self, conflict: dict[str, Any]) -> None:
+        # Normalize pair order so the unique index treats (A,B) == (B,A).
+        a, b = conflict.get("fact_a_id", ""), conflict.get("fact_b_id", "")
+        if a > b:
+            conflict = {**conflict, "fact_a_id": b, "fact_b_id": a}
+
         cols = [
             "id",
             "fact_a_id",
@@ -521,16 +526,19 @@ class PostgresStorage(BaseStorage):
         values = [conflict.get(c, _defaults.get(c)) for c in cols]
         async with self.acquire() as conn:
             await conn.execute(
-                f"INSERT INTO conflicts ({col_names}) VALUES ({placeholders})", *values
+                f"INSERT INTO conflicts ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
+                *values,
             )
 
-    async def conflict_exists(self, fact_a_id: str, fact_b_id: str, status: str = "open") -> bool:
+    async def conflict_exists(self, fact_a_id: str, fact_b_id: str, status: str | None = None) -> bool:
         """Check if a conflict already exists between two facts (in either order) within this workspace.
+
+        Defaults to checking all statuses so resolved/dismissed conflicts block re-detection.
 
         Args:
             fact_a_id: First fact ID
             fact_b_id: Second fact ID
-            status: Only check conflicts with this status (default: "open"). Pass None to check all.
+            status: Filter by status. None (default) checks all statuses.
         """
         conditions = [
             "((fact_a_id = $1 AND fact_b_id = $2) OR (fact_a_id = $2 AND fact_b_id = $1))",

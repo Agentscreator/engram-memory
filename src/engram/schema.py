@@ -20,7 +20,7 @@ Two schemas are maintained:
 - POSTGRES_SCHEMA_SQL: PostgreSQL (team mode, asyncpg)
 """
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # Incremental ALTER TABLE migrations keyed by target version.
 MIGRATIONS: dict[int, list[str]] = {
@@ -191,6 +191,15 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE facts ADD COLUMN pinned_at TEXT",
         "ALTER TABLE facts ADD COLUMN endorsements INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE facts ADD COLUMN downvotes INTEGER NOT NULL DEFAULT 0",
+    ],
+    15: [
+        # Unique constraint on conflict pairs (normalized order) to prevent race-condition duplicates.
+        # Uses CASE WHEN to normalize (fact_a_id, fact_b_id) so (A,B) == (B,A).
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_conflicts_pair_unique ON conflicts(
+            workspace_id,
+            CASE WHEN fact_a_id < fact_b_id THEN fact_a_id ELSE fact_b_id END,
+            CASE WHEN fact_a_id < fact_b_id THEN fact_b_id ELSE fact_a_id END
+        )""",
     ],
 }
 

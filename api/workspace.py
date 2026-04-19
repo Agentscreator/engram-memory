@@ -94,6 +94,9 @@ CREATE TABLE IF NOT EXISTS conflicts (
     resolution_type TEXT,
     workspace_id TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conflicts_pair_unique ON conflicts(
+    workspace_id, LEAST(fact_a_id, fact_b_id), GREATEST(fact_a_id, fact_b_id)
+);
 
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT NOT NULL,
