@@ -315,7 +315,6 @@ def _format_conflicts(conflicts: list[dict[str, Any]]) -> list[tuple[str, str]]:
         if fb_content:
             scope_tag = f" ({fb_scope})" if fb_scope else ""
             lines.append(("class:output.dim", f"      B{scope_tag}: {fb_content}\n"))
-        lines.append(("class:output.dim", f"      resolve {short} keep_a  /  keep_b  /  dismiss\n"))
         lines.append(("class:output.dim", "\n"))
 
     return lines
