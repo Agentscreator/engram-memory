@@ -211,36 +211,28 @@ def _commit_user_message(ws: Any, message: str) -> None:
     _http_post(f"{base}/api/commit", args, timeout=8, headers=auth)
 
 
-def _openai_chat(ws: Any, message: str, output_lines: list[tuple[str, str]]) -> None:
-    """Send message to the server /api/chat endpoint (server holds the API key)."""
+def _openai_chat(
+    ws: Any,
+    message: str,
+    output_lines: list[tuple[str, str]],
+    history: list[dict[str, str]] | None = None,
+) -> str | None:
+    """Send message to the server chat endpoint. Returns assistant reply or None."""
     if _is_hosted(ws):
-        # Commit this message as a fact, then query for related memories
-        _mcp_call(
+        result = _mcp_call(
             ws,
-            "engram_commit",
-            {
-                "content": message,
-                "agent_id": "tui-user",
-                "scope": "global",
-                "confidence": 0.9,
-                "fact_type": "observation",
-            },
+            "engram_chat",
+            {"message": message, "history": history or []},
         )
-        output_lines.append(("class:output.dim", "  ✓ Saved to memory.\n\n"))
-
-        result = _mcp_call(ws, "engram_query", {"topic": message, "limit": 5})
-        facts = (result or {}).get("facts", []) if isinstance(result, dict) else []
-        if facts:
-            for f in facts:
-                content = (f.get("content") or "").strip()
-                agent = f.get("agent_id") or "agent"
-                scope = f.get("scope") or ""
-                scope_tag = f"  [{scope}]" if scope and scope != "global" else ""
-                output_lines.append(("class:output.ai", f"  {content}\n"))
-                output_lines.append(("class:output.dim", f"  — {agent}{scope_tag}\n\n"))
+        reply = (result or {}).get("reply") if isinstance(result, dict) else None
+        if reply:
+            output_lines.append(("class:output.dim", "\n"))
+            for line in reply.splitlines():
+                output_lines.append(("class:output.ai", f"  {line}\n"))
+            output_lines.append(("class:output.dim", "\n"))
         else:
-            output_lines.append(("class:output.dim", "  Nothing in memory yet on that topic.\n\n"))
-        return
+            output_lines.append(("class:output.dim", "  (no response from server)\n\n"))
+        return reply
 
     base = _server_url(ws)
     output_lines.append(("class:output.dim", "  Thinking...\n"))
@@ -457,6 +449,7 @@ def run_tui(ws: Any, ctx: Any) -> None:
         "scan_frame": 0,
     }
     output_lines: list[tuple[str, str]] = []
+    conversation_history: list[dict[str, str]] = []
 
     # ── formatted text producers ──────────────────────────────────────────
 
@@ -726,8 +719,14 @@ def run_tui(ws: Any, ctx: Any) -> None:
         elif cmd in _VALID_COMMANDS:
             _run_engram_command(cmd, arg + (" " + extra if extra else ""), output_lines)
         else:
-            # Unknown command → treat as free-text chat with OpenAI + fact corpus
-            _openai_chat(ws, text, output_lines)
+            # Unknown command → conversational chat with memory context
+            reply = _openai_chat(ws, text, output_lines, history=conversation_history)
+            if reply is not None:
+                conversation_history.append({"role": "user", "content": text})
+                conversation_history.append({"role": "assistant", "content": reply})
+                # Keep history bounded to last 10 turns
+                if len(conversation_history) > 20:
+                    del conversation_history[:2]
 
         app.invalidate()
 

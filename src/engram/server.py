@@ -1806,3 +1806,93 @@ async def engram_check_conflicts(
         "conflicts": [],
         "message": "No conflicts detected. Safe to proceed.",
     }
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def engram_chat(
+    message: str,
+    history: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Conversational interface to Engram's active memory.
+
+    Understands context from open conflicts and stored facts. Short inputs
+    like "B" are resolved against active conflicts. Maintains conversation
+    history for multi-turn exchanges.
+
+    Parameters:
+    - message: The user's message.
+    - history: Prior turns as [{role: user|assistant, content: str}].
+
+    Returns: {reply: str, action: str | None}
+    """
+    import os
+
+    engine = get_engine()
+    if engine is None:
+        return {"error": "Engine not initialized"}
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {"error": "ANTHROPIC_API_KEY is not set on the server."}
+
+    try:
+        import anthropic
+    except ImportError:
+        return {"error": "anthropic package not installed on server."}
+
+    # Gather context: open conflicts + relevant memory facts
+    conflicts = await engine.get_conflicts(status="open")
+    facts = await engine.query(topic=message, limit=8)
+
+    conflicts_text = ""
+    if conflicts:
+        lines = [f"Open conflicts ({len(conflicts)} total):"]
+        for c in conflicts[:5]:
+            cid = (c.get("id") or "")[:8]
+            exp = c.get("explanation") or "Conflicting information"
+            fa = (c.get("fact_a") or {}).get("content") or c.get("fact_a_content") or ""
+            fb = (c.get("fact_b") or {}).get("content") or c.get("fact_b_content") or ""
+            lines.append(f"  [{cid}] {exp}")
+            if fa:
+                lines.append(f"    A: {fa[:120]}")
+            if fb:
+                lines.append(f"    B: {fb[:120]}")
+        conflicts_text = "\n".join(lines)
+
+    facts_text = ""
+    if facts:
+        lines = ["Relevant memory facts:"]
+        for f in facts:
+            agent = f.get("agent_id") or "agent"
+            content = (f.get("content") or "")[:150]
+            lines.append(f"  [{agent}] {content}")
+        facts_text = "\n".join(lines)
+
+    system = (
+        "You are Engram, a shared team memory layer for AI agents. "
+        "You respond through a terminal TUI. Be concise and direct — "
+        "like Claude Code: 1-3 sentences max, no headers or bullet lists unless asked.\n\n"
+        "When the user sends a short or ambiguous message, interpret it in context of "
+        "the open conflicts below. For example if there is a conflict 'B or C?' and "
+        "the user says 'B', confirm you are resolving it as B and tell them the command "
+        "to run (e.g. `resolve <id> keep_a`). If input is truly unclear, ask one short "
+        "clarifying question.\n\n"
+        "When you resolve or act on something, clearly state what you did.\n\n"
+    )
+    if conflicts_text:
+        system += conflicts_text + "\n\n"
+    if facts_text:
+        system += facts_text + "\n\n"
+
+    messages: list[dict[str, str]] = list(history or [])
+    messages.append({"role": "user", "content": message})
+
+    client = anthropic.AsyncAnthropic(api_key=api_key)
+    response = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=256,
+        system=system,
+        messages=messages,
+    )
+    reply = response.content[0].text.strip()
+    return {"reply": reply}
