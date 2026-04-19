@@ -2162,10 +2162,10 @@ function renderBilling(b) {
   const badgeClass = `plan-badge plan-badge-${plan}`;
 
   const planDefs = [
-    { key:'free',    name:'Free',    price:'$0',  commits:'500'     },
-    { key:'builder', name:'Builder', price:'$12', commits:'5,000'   },
-    { key:'team',    name:'Team',    price:'$39', commits:'25,000'  },
-    { key:'scale',   name:'Scale',   price:'$99', commits:'100,000' },
+    { key:'free',    name:'Free',    price:'$0',  hours:'1 hr/day',  desc:'On-demand scanning'              },
+    { key:'builder', name:'Builder', price:'$12', hours:'2 hrs/day', desc:'Nightly scan + morning briefing' },
+    { key:'team',    name:'Team',    price:'$39', hours:'8 hrs/day', desc:'Real-time file watching'         },
+    { key:'scale',   name:'Scale',   price:'$99', hours:'24 hrs/day',desc:'Always-on, org-wide'             },
   ];
 
   el.innerHTML = `
@@ -2197,8 +2197,8 @@ function renderBilling(b) {
           <div class="plan-card ${p.key === plan ? 'plan-card-current' : ''}" style="${isDisabled ? 'opacity:0.45;pointer-events:none;filter:grayscale(0.4)' : ''}">
             <div class="plan-card-name">${p.name}</div>
             <div class="plan-card-price">${p.price}<span>/mo</span></div>
-            <div class="plan-card-commits">${p.commits} commits</div>
-            <div class="plan-card-feature yes">✓ LLM suggestions</div>
+            <div class="plan-card-commits">${p.hours} active</div>
+            <div class="plan-card-feature yes">✓ ${p.desc}</div>
             <div class="plan-card-feature yes">✓ Conflict detection</div>
             ${p.key === plan
               ? '<div class="plan-card-label">Current plan</div>'
@@ -2209,9 +2209,8 @@ function renderBilling(b) {
         }).join('')}
       </div>
       <p class="pricing-note" style="margin-top:14px;padding:10px 14px;background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.15);border-radius:8px;color:rgba(251,191,36,0.8)">
-        ⏸ Paid plan upgrades are temporarily disabled while we are in testing and development. You'll be able to upgrade soon.
+        ⏸ Paid plans are coming soon — upgrades are temporarily disabled while we finish testing.
       </p>
-      ${b.overage_price_per_commit ? `<p class="pricing-note">Paid plans: overage billed at <strong>$${b.overage_price_per_commit}/commit</strong> above monthly limit.</p>` : ''}
     </div>
 
     ${hasSubscription ? `
