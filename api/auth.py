@@ -835,6 +835,61 @@ async def handle_leave_workspace(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "engram_id": engram_id})
 
 
+async def handle_delete_account(request: Request) -> JSONResponse:
+    """Permanently delete the authenticated user's account. POST (no body required).
+
+    - Removes the user from all workspaces they are a member of.
+    - For each workspace where they were the last member, deletes the workspace
+      and all its facts, conflicts, and keys.
+    - Finally deletes the user row and clears the session cookie.
+    """
+    session = _get_jwt_from_request(request)
+    if not session:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    user_id = session["sub"]
+    try:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            # Find all workspaces this user belongs to
+            rows = await conn.fetch(
+                f"SELECT engram_id FROM {SCHEMA}.user_workspaces WHERE user_id = $1",
+                user_id,
+            )
+            for row in rows:
+                eid = row["engram_id"]
+                await conn.execute(
+                    f"DELETE FROM {SCHEMA}.user_workspaces WHERE user_id = $1 AND engram_id = $2",
+                    user_id,
+                    eid,
+                )
+                remaining = await conn.fetchval(
+                    f"SELECT COUNT(*) FROM {SCHEMA}.user_workspaces WHERE engram_id = $1",
+                    eid,
+                )
+                if remaining == 0:
+                    for table in ("facts", "conflicts"):
+                        await conn.execute(
+                            f"DELETE FROM {SCHEMA}.{table} WHERE workspace_id = $1", eid
+                        )
+                    await conn.execute(
+                        f"DELETE FROM {SCHEMA}.workspace_keys WHERE engram_id = $1", eid
+                    )
+                    await conn.execute(
+                        f"DELETE FROM {SCHEMA}.workspaces WHERE engram_id = $1", eid
+                    )
+
+            # Delete the user record
+            await conn.execute(f"DELETE FROM {SCHEMA}.users WHERE id = $1", user_id)
+
+    except Exception as exc:
+        return JSONResponse({"error": f"Database error: {exc}"}, status_code=500)
+
+    resp = JSONResponse({"status": "deleted"})
+    resp.delete_cookie("engram_session", path="/")
+    return resp
+
+
 app = Starlette(
     routes=[
         Route("/auth/signup", handle_signup, methods=["POST"]),
@@ -847,6 +902,7 @@ app = Starlette(
         Route("/auth/rename-workspace", handle_rename_workspace, methods=["POST"]),
         Route("/auth/leave-workspace", handle_leave_workspace, methods=["POST"]),
         Route("/auth/reset-invite-key", handle_reset_invite_key, methods=["POST"]),
+        Route("/auth/delete-account", handle_delete_account, methods=["POST"]),
         Route("/auth/{path:path}", handle_options, methods=["OPTIONS"]),
     ]
 )

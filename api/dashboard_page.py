@@ -274,7 +274,8 @@ def _render_dashboard() -> str:
     .screen-title { font-size: 22px; font-weight: 700; color: var(--t1); }
     .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
     .ws-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px;
-      padding: 24px; cursor: pointer; transition: border-color 0.2s, transform 0.15s; }
+      padding: 24px; cursor: pointer; transition: border-color 0.2s, transform 0.15s;
+      position: relative; }
     .ws-card:hover { border-color: var(--border-glow); transform: translateY(-2px); }
     .ws-card.paused { border-color: rgba(239,68,68,0.3); }
     .ws-name { font-size: 16px; font-weight: 700; color: var(--t1); margin-bottom: 4px;
@@ -355,6 +356,13 @@ def _render_dashboard() -> str:
       background: rgba(239,68,68,0.07); border: 1px solid rgba(239,68,68,0.2); color: var(--red);
       cursor: pointer; font-family: inherit; transition: background 0.2s; }
     .ws-delete-btn:hover { background: rgba(239,68,68,0.15); }
+    .ws-delete-corner { position: absolute; top: 12px; right: 12px; width: 26px; height: 26px;
+      border-radius: 6px; background: transparent; border: 1px solid transparent;
+      color: var(--tm); cursor: pointer; font-size: 15px; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s, color 0.15s, border-color 0.15s; z-index: 2; }
+    .ws-delete-corner:hover { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.3);
+      color: var(--red); }
 
     /* ── WORKSPACE DETAIL ───────────────────────────────────────── */
     #ws-detail-screen { display: none; }
@@ -871,6 +879,27 @@ def _render_dashboard() -> str:
   </div>
 </div>
 
+<!-- ── DELETE ACCOUNT MODAL ─────────────────────────────────────── -->
+<div class="modal-overlay" id="delete-account-modal">
+  <div class="modal" style="max-width:420px;">
+    <h3 style="color:var(--red);">Delete your account?</h3>
+    <p class="subtitle" style="margin-bottom:16px;">This is permanent and cannot be undone.</p>
+    <p style="font-size:13px;color:var(--tm);margin-bottom:20px;">
+      Your account, all workspaces you created, and all their facts and history will be permanently deleted.
+      Workspaces you share with others will remove you as a member only.
+    </p>
+    <div id="delete-account-error" style="display:none;color:var(--red);font-size:13px;margin-bottom:12px;"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="ws-rename-btn" onclick="closeDeleteAccountModal()">Cancel</button>
+      <button onclick="confirmDeleteAccount()"
+        style="padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;font-family:inherit;
+               background:var(--red);color:#fff;border:none;cursor:pointer;">
+        Delete my account
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ── CONNECT WORKSPACE MODAL ──────────────────────────────────── -->
 <div class="modal-overlay" id="connect-modal">
   <div class="modal">
@@ -1039,6 +1068,10 @@ function updateHeader() {
   document.getElementById('header-right').innerHTML = `
     <span class="user-email">${esc(SESSION.email)}</span>
     <button class="btn-sm btn-ghost" onclick="logout()">Sign out</button>
+    <button class="btn-sm" onclick="openDeleteAccountModal()"
+      style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);color:var(--red);">
+      Delete account
+    </button>
   `;
 }
 
@@ -1146,10 +1179,12 @@ function renderWsGrid(workspaces) {
     const wsId = esc(ws.engram_id);
     const wsName = ws.display_name ? esc(ws.display_name) : '';
     return `<div class="ws-card ${isPaused ? 'paused' : ''}">
+      <button class="ws-delete-corner" title="Delete workspace"
+        onclick="event.stopPropagation();openDeleteModal('${wsId}', '${wsName || wsId}')">✕</button>
       <div onclick="openWorkspace('${wsId}')" style="cursor:pointer">
         ${wsName
-          ? `<div class="ws-name">${wsName}</div><div class="ws-id">${wsId}</div>`
-          : `<div class="ws-id-main">${wsId}</div>`}
+          ? `<div class="ws-name" style="padding-right:28px;">${wsName}</div><div class="ws-id">${wsId}</div>`
+          : `<div class="ws-id-main" style="padding-right:28px;">${wsId}</div>`}
         <div class="ws-badges">
           <span class="badge ${isPaused ? 'badge-paused' : 'badge-active'}">${isPaused ? 'Paused' : 'Active'}</span>
           <span class="badge badge-${plan === 'pro' ? 'pro' : 'free'}">${plan}</span>
@@ -1159,10 +1194,7 @@ function renderWsGrid(workspaces) {
         <button class="ws-rename-btn" onclick="event.stopPropagation();openWorkspaceAndRename('${wsId}')">
           ${wsName ? 'Rename' : '+ Name this workspace'}
         </button>
-        <div style="display:flex;gap:6px;">
-          <button class="ws-key-btn" onclick="event.stopPropagation();openKeyModal('${wsId}')">View invite key</button>
-          <button class="ws-delete-btn" onclick="event.stopPropagation();openDeleteModal('${wsId}', '${wsName || wsId}')">Delete</button>
-        </div>
+        <button class="ws-key-btn" onclick="event.stopPropagation();openKeyModal('${wsId}')">View invite key</button>
       </div>
     </div>`;
   }).join('');
@@ -1197,6 +1229,34 @@ async function confirmDelete() {
     closeDeleteModal();
     SESSION.workspaces = (SESSION.workspaces || []).filter(w => w.engram_id !== _deleteWsId);
     renderWsGrid(SESSION.workspaces);
+  } catch(e) {
+    errEl.textContent = 'Connection error — please try again.';
+    errEl.style.display = 'block';
+  }
+}
+
+// ── Delete account modal ────────────────────────────────────────────
+function openDeleteAccountModal() {
+  document.getElementById('delete-account-error').style.display = 'none';
+  document.getElementById('delete-account-modal').classList.add('open');
+}
+function closeDeleteAccountModal() {
+  document.getElementById('delete-account-modal').classList.remove('open');
+}
+async function confirmDeleteAccount() {
+  const errEl = document.getElementById('delete-account-error');
+  errEl.style.display = 'none';
+  try {
+    const r = await fetch('/auth/delete-account', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+    });
+    const d = await r.json();
+    if (!r.ok) { errEl.textContent = d.error || 'Delete failed.'; errEl.style.display = 'block'; return; }
+    SESSION = null;
+    closeDeleteAccountModal();
+    showAuthScreen();
   } catch(e) {
     errEl.textContent = 'Connection error — please try again.';
     errEl.style.display = 'block';
