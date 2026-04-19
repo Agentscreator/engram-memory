@@ -233,6 +233,7 @@ def run_tui(ws: Any, ctx: Any) -> None:
                     height=D.exact(1),
                     dont_extend_height=True,
                 ),
+                Window(),  # pushes output down toward input
                 Window(
                     FormattedTextControl(
                         output_text,
@@ -240,6 +241,7 @@ def run_tui(ws: Any, ctx: Any) -> None:
                         focusable=False,
                     ),
                     wrap_lines=True,
+                    dont_extend_height=True,
                 ),
                 Window(
                     FormattedTextControl(separator_text, focusable=False),
