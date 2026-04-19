@@ -216,20 +216,17 @@ def _openai_chat(ws: Any, message: str, output_lines: list[tuple[str, str]]) -> 
     if _is_hosted(ws):
         result = _mcp_call(ws, "engram_query", {"topic": message, "limit": 5})
         output_lines.append(("class:output.dim", "\n"))
-        if result and isinstance(result, dict):
-            facts = result.get("facts", [])
-            if facts:
-                output_lines.append(("class:output.dim", "  From memory:\n"))
-                for f in facts:
-                    content = (f.get("content") or "")[:120]
-                    output_lines.append(("class:output", f"  · {content}\n"))
-            else:
-                output_lines.append(
-                    ("class:output.dim", "  ✓ Saved to memory. Nothing relevant found yet.\n")
-                )
+        facts = (result or {}).get("facts", []) if isinstance(result, dict) else []
+        if facts:
+            for f in facts:
+                content = (f.get("content") or "").strip()
+                agent = f.get("agent_id") or "agent"
+                scope = f.get("scope") or ""
+                scope_tag = f"  [{scope}]" if scope and scope != "global" else ""
+                output_lines.append(("class:output.ai", f"  {content}\n"))
+                output_lines.append(("class:output.dim", f"  — {agent}{scope_tag}\n\n"))
         else:
-            output_lines.append(("class:output.dim", "  ✓ Saved to memory.\n"))
-        output_lines.append(("class:output.dim", "\n"))
+            output_lines.append(("class:output.dim", "  Nothing in memory yet on that topic.\n\n"))
         return
 
     base = _server_url(ws)
