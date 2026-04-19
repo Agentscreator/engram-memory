@@ -283,7 +283,6 @@ def _format_conflicts(conflicts: list[dict[str, Any]]) -> list[tuple[str, str]]:
             lines.append(("class:output.dim", f"      B{scope_tag}: {fb_content}\n"))
         lines.append(("class:output.dim", "\n"))
 
-    lines.append(("class:output.dim", "  Changes sync instantly with the web dashboard.\n"))
     return lines
 
 
@@ -768,11 +767,6 @@ def run_tui(ws: Any, ctx: Any) -> None:
                 ),
                 Window(
                     FormattedTextControl(separator_text, focusable=False),
-                    height=D.exact(1),
-                    dont_extend_height=True,
-                ),
-                Window(
-                    FormattedTextControl(question_text, focusable=False),
                     height=D.exact(1),
                     dont_extend_height=True,
                 ),
