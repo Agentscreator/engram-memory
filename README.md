@@ -4,13 +4,19 @@
 
 **Active memory for your AI agents — outlasting sessions, never sleeping**
 
-Every agent sees the same verified facts. When agents contradict each other, Engram catches it before it becomes a bug.
+Most agent errors aren't disagreements between agents. They're disagreements between the agent and reality. Engram verifies what agents believe against what the code actually says.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](./LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8b5cf6?style=flat-square)](https://modelcontextprotocol.io)
 [![Python](https://img.shields.io/badge/python-3.11+-3776ab?style=flat-square)](https://python.org)
 
 </div>
+
+---
+
+## North Star
+
+Engram's north star isn't agent consensus — it's agent accuracy. The hardest bugs to catch aren't when agent A says X and agent B says Y. They're when an agent is confident about something that isn't true — a config value it misread, a file it thinks it created, a migration it believes it ran. Engram treats the codebase as the source of truth and catches the gap between what agents believe and what the code actually reflects.
 
 ---
 
@@ -109,9 +115,11 @@ Facts accumulate. The next time any agent opens this codebase — yours or anyon
 
 ## Conflict Detection
 
-Every commit triggers conflict detection across the full fact corpus. When two agents have recorded contradictory facts, Engram surfaces the contradiction on the dashboard before either agent acts on stale information.
+Engram runs conflict detection at two levels:
 
-Engram reads the workspace's commit history as a chronological story and asks: *where would a new agent get confused about what's currently true?* It catches reversals and ambiguity that simple pairwise comparison misses.
+**Codebase vs. agent (Tier 0)** — The highest-value conflicts. On startup and every 10 minutes, Engram scans your codebase — config files, dependency manifests, Dockerfiles — and compares what it finds against what agents have committed to memory. When an agent claims the rate limit is 1000 but the config says 500, that's a high-severity conflict surfaced immediately.
+
+**Agent vs. agent** — Every commit also triggers detection across the full fact corpus. When two agents have recorded contradictory facts, Engram surfaces the contradiction before either agent acts on stale information. It reads the workspace's commit history as a chronological story and asks: *where would a new agent get confused about what's currently true?*
 
 Full design: [`docs/CONFLICT_DETECTIVE.md`](./docs/CONFLICT_DETECTIVE.md)
 
