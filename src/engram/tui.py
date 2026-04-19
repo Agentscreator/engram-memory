@@ -233,18 +233,56 @@ def _openai_chat(
             output_lines.append(("class:output.dim", "\n"))
             return reply
 
-        # engram_chat not yet available on this server — fall back to memory query
-        qresult = _mcp_call(ws, "engram_query", {"topic": message, "limit": 5})
+        # engram_chat not yet deployed — query memory for context then respond locally
+        qresult = _mcp_call(ws, "engram_query", {"topic": message, "limit": 6})
         facts = (qresult or {}).get("facts", []) if isinstance(qresult, dict) else []
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if api_key:
+            try:
+                import anthropic
+
+                memory_ctx = "\n".join(
+                    f"- {(f.get('content') or '').strip()[:200]}" for f in facts if f.get("content")
+                )
+                sys_prompt = (
+                    "You are Engram, a shared team memory assistant. "
+                    "Respond conversationally and concisely. "
+                    "Use the memory context below if relevant, but don't just recite it — "
+                    "synthesise and respond naturally to the user's message. "
+                    "If the user's input is ambiguous (e.g. a single letter), "
+                    "ask a clarifying question.\n\n"
+                    f"Memory context:\n{memory_ctx or '(empty)'}"
+                )
+                msgs: list[dict[str, str]] = list(history or [])
+                msgs.append({"role": "user", "content": message})
+                client = anthropic.Anthropic(api_key=api_key)
+                resp = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=300,
+                    system=sys_prompt,
+                    messages=msgs,
+                )
+                reply = resp.content[0].text if resp.content else None
+                if reply:
+                    output_lines.append(("class:output.dim", "\n"))
+                    for line in reply.splitlines():
+                        output_lines.append(("class:output.ai", f"  {line}\n"))
+                    output_lines.append(("class:output.dim", "\n"))
+                    return reply
+            except Exception:
+                pass
+
+        # No API key — show a brief memory summary instead of raw facts
         output_lines.append(("class:output.dim", "\n"))
         if facts:
-            for f in facts:
-                content = (f.get("content") or "").strip()
-                agent = f.get("agent_id") or "agent"
-                output_lines.append(("class:output.ai", f"  {content}\n"))
-                output_lines.append(("class:output.dim", f"  — {agent}\n\n"))
+            output_lines.append(("class:output.dim", "  Relevant memory:\n"))
+            for f in facts[:3]:
+                content = (f.get("content") or "").strip()[:120]
+                output_lines.append(("class:output.dim", f"  · {content}\n"))
         else:
-            output_lines.append(("class:output.dim", "  Nothing in memory on that topic yet.\n\n"))
+            output_lines.append(("class:output.dim", "  Nothing in memory on that topic yet.\n"))
+        output_lines.append(("class:output.dim", "\n"))
         return None
 
     base = _server_url(ws)
