@@ -1150,9 +1150,7 @@ class EngramEngine:
                     )
 
             if conflicts_found:
-                logger.info(
-                    "Codebase verification: %d new conflict(s) detected", conflicts_found
-                )
+                logger.info("Codebase verification: %d new conflict(s) detected", conflicts_found)
         except Exception:
             logger.debug("Codebase scan failed", exc_info=True)
 
@@ -1185,9 +1183,9 @@ class EngramEngine:
         # deduplicate — same entity + same code value = same synthetic fact
         entity_name = mismatch["entity_name"]
         code_value = mismatch["code_value"]
-        synthetic_id = hashlib.sha256(
-            f"codebase:{entity_name}:{code_value}".encode()
-        ).hexdigest()[:32]
+        synthetic_id = hashlib.sha256(f"codebase:{entity_name}:{code_value}".encode()).hexdigest()[
+            :32
+        ]
 
         # Check if we already flagged this exact mismatch
         if await self.storage.conflict_exists(fact_id, synthetic_id):
@@ -1229,18 +1227,20 @@ class EngramEngine:
 
         now = datetime.now(timezone.utc).isoformat()
         conflict_id = uuid.uuid4().hex
-        await self.storage.insert_conflict({
-            "id": conflict_id,
-            "fact_a_id": fact_id,
-            "fact_b_id": synthetic_id,
-            "detected_at": now,
-            "detection_tier": "tier_codebase",
-            "nli_score": None,
-            "explanation": mismatch["explanation"],
-            "severity": "medium",
-            "status": "open",
-            "conflict_type": "genuine",
-        })
+        await self.storage.insert_conflict(
+            {
+                "id": conflict_id,
+                "fact_a_id": fact_id,
+                "fact_b_id": synthetic_id,
+                "detected_at": now,
+                "detection_tier": "tier_codebase",
+                "nli_score": None,
+                "explanation": mismatch["explanation"],
+                "severity": "medium",
+                "status": "open",
+                "conflict_type": "genuine",
+            }
+        )
 
         logger.info(
             "Codebase conflict: fact %s claims %s=%s but code has %s (%s)",

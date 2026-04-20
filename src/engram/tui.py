@@ -550,7 +550,7 @@ def _try_resolve_from_short_input(
 
         output_lines.append(("class:output.dim", "\n"))
         output_lines.append(
-            ("class:output.ai", f"  Got it — keeping {text_upper}: \"{chosen_short}\"\n")
+            ("class:output.ai", f'  Got it — keeping {text_upper}: "{chosen_short}"\n')
         )
         _resolve_conflict(ws, cid, resolution, output_lines)
         output_lines.append(("class:output.dim", "\n"))

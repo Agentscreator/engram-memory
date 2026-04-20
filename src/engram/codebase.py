@@ -74,16 +74,25 @@ def scan_codebase(root: str | Path | None = None) -> dict[str, Any]:
 
     # Collect file listing (top 3 levels, skip hidden/vendor dirs)
     _skip_dirs = {
-        ".git", ".venv", "venv", "node_modules", "__pycache__",
-        ".next", ".nuxt", "dist", "build", ".tox", ".mypy_cache",
-        ".ruff_cache", ".pytest_cache", "target", "vendor",
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".next",
+        ".nuxt",
+        "dist",
+        "build",
+        ".tox",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "target",
+        "vendor",
     }
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune hidden and vendor directories
-        dirnames[:] = [
-            d for d in dirnames
-            if d not in _skip_dirs and not d.startswith(".")
-        ]
+        dirnames[:] = [d for d in dirnames if d not in _skip_dirs and not d.startswith(".")]
         rel_dir = os.path.relpath(dirpath, root)
         depth = rel_dir.count(os.sep) if rel_dir != "." else 0
         if depth > 3:
@@ -184,31 +193,34 @@ def verify_fact_against_codebase(
             fact_content = fact.get("content", "")
             claimed = _extract_claimed_value(ename, fact_content)
             if claimed is not None and str(claimed) != str(code_val):
-                mismatches.append({
-                    "entity_name": ename,
-                    "fact_value": str(claimed),
-                    "code_value": str(code_val),
-                    "evidence": ".env / config files",
-                    "explanation": (
-                        f"Fact claims {ename}={claimed}, "
-                        f"but codebase has {ename}={code_val}"
-                    ),
-                })
+                mismatches.append(
+                    {
+                        "entity_name": ename,
+                        "fact_value": str(claimed),
+                        "code_value": str(code_val),
+                        "evidence": ".env / config files",
+                        "explanation": (
+                            f"Fact claims {ename}={claimed}, but codebase has {ename}={code_val}"
+                        ),
+                    }
+                )
 
         elif etype == "numeric" and ename == "port" and evalue is not None:
             # Fact claims a specific port number
             claimed_port = int(evalue) if evalue != -1 else None
             if claimed_port and ports and claimed_port not in ports:
-                mismatches.append({
-                    "entity_name": "port",
-                    "fact_value": str(claimed_port),
-                    "code_value": ", ".join(str(p) for p in sorted(ports)),
-                    "evidence": "config / Dockerfile",
-                    "explanation": (
-                        f"Fact claims port {claimed_port}, "
-                        f"but codebase uses port(s) {', '.join(str(p) for p in sorted(ports))}"
-                    ),
-                })
+                mismatches.append(
+                    {
+                        "entity_name": "port",
+                        "fact_value": str(claimed_port),
+                        "code_value": ", ".join(str(p) for p in sorted(ports)),
+                        "evidence": "config / Dockerfile",
+                        "explanation": (
+                            f"Fact claims port {claimed_port}, "
+                            f"but codebase uses port(s) {', '.join(str(p) for p in sorted(ports))}"
+                        ),
+                    }
+                )
 
         elif etype == "version":
             # Fact claims a version for a package
@@ -217,16 +229,18 @@ def verify_fact_against_codebase(
                 code_ver = versions[pkg_name]
                 fact_ver = str(evalue) if evalue else ""
                 if fact_ver and code_ver and not _versions_compatible(fact_ver, code_ver):
-                    mismatches.append({
-                        "entity_name": ename,
-                        "fact_value": fact_ver,
-                        "code_value": code_ver,
-                        "evidence": "dependency files",
-                        "explanation": (
-                            f"Fact claims {pkg_name} version {fact_ver}, "
-                            f"but codebase has {code_ver}"
-                        ),
-                    })
+                    mismatches.append(
+                        {
+                            "entity_name": ename,
+                            "fact_value": fact_ver,
+                            "code_value": code_ver,
+                            "evidence": "dependency files",
+                            "explanation": (
+                                f"Fact claims {pkg_name} version {fact_ver}, "
+                                f"but codebase has {code_ver}"
+                            ),
+                        }
+                    )
 
     return mismatches
 
@@ -237,8 +251,15 @@ def verify_fact_against_codebase(
 def _is_safe_to_store(key: str, value: str) -> bool:
     """Return True if a config value is safe to store (not a secret)."""
     secret_patterns = (
-        "SECRET", "PASSWORD", "TOKEN", "KEY", "PRIVATE",
-        "CREDENTIAL", "AUTH", "APIKEY", "API_KEY",
+        "SECRET",
+        "PASSWORD",
+        "TOKEN",
+        "KEY",
+        "PRIVATE",
+        "CREDENTIAL",
+        "AUTH",
+        "APIKEY",
+        "API_KEY",
     )
     key_upper = key.upper()
     for pattern in secret_patterns:
@@ -255,7 +276,10 @@ def _extract_claimed_value(key: str, content: str) -> str | None:
     # Look for patterns like "KEY=value", "KEY is value", "KEY set to value"
     patterns = [
         re.compile(rf"{re.escape(key)}\s*=\s*['\"]?(\S+?)['\"]?(?:\s|$|,|\.)", re.IGNORECASE),
-        re.compile(rf"{re.escape(key)}\s+(?:is|set to|equals?|configured as)\s+['\"]?(\S+?)['\"]?(?:\s|$|,|\.)", re.IGNORECASE),
+        re.compile(
+            rf"{re.escape(key)}\s+(?:is|set to|equals?|configured as)\s+['\"]?(\S+?)['\"]?(?:\s|$|,|\.)",
+            re.IGNORECASE,
+        ),
     ]
     for pattern in patterns:
         m = pattern.search(content)
@@ -302,11 +326,17 @@ def _scan_package_json(root: Path, result: dict[str, Any]) -> None:
                 result["versions"][pkg.lower()] = ver
                 # Detect technologies
                 tech_map = {
-                    "next": "nextjs", "react": "react", "vue": "vue",
-                    "express": "express", "fastify": "fastify",
-                    "prisma": "prisma", "typeorm": "typeorm",
-                    "pg": "postgresql", "mysql2": "mysql",
-                    "redis": "redis", "mongodb": "mongodb",
+                    "next": "nextjs",
+                    "react": "react",
+                    "vue": "vue",
+                    "express": "express",
+                    "fastify": "fastify",
+                    "prisma": "prisma",
+                    "typeorm": "typeorm",
+                    "pg": "postgresql",
+                    "mysql2": "mysql",
+                    "redis": "redis",
+                    "mongodb": "mongodb",
                     "graphql": "graphql",
                 }
                 pkg_lower = pkg.lower()

@@ -129,7 +129,9 @@ class BaseStorage(ABC):
     async def insert_conflict(self, conflict: dict[str, Any]) -> None: ...
 
     @abstractmethod
-    async def conflict_exists(self, fact_a_id: str, fact_b_id: str, include_resolved: bool = False) -> bool: ...
+    async def conflict_exists(
+        self, fact_a_id: str, fact_b_id: str, include_resolved: bool = False
+    ) -> bool: ...
 
     @abstractmethod
     async def get_conflicts(self, scope: str | None = None, status: str = "open") -> list[dict]: ...
@@ -881,7 +883,7 @@ class SQLiteStorage(BaseStorage):
 
     async def get_conflicting_fact_ids(self, fact_id: str, status: str = "open") -> set[str]:
         """Return fact IDs that have OPEN conflicts with fact_id.
-        
+
         Args:
             fact_id: The fact to check
             status: Filter by status - "open", "resolved", "dismissed", or "all" (default: "open")
@@ -1072,9 +1074,11 @@ class SQLiteStorage(BaseStorage):
         )
         await self.db.commit()
 
-    async def conflict_exists(self, fact_a_id: str, fact_b_id: str, include_resolved: bool = False) -> bool:
+    async def conflict_exists(
+        self, fact_a_id: str, fact_b_id: str, include_resolved: bool = False
+    ) -> bool:
         """Check if an OPEN conflict already exists between two facts.
-        
+
         Args:
             fact_a_id: First fact ID
             fact_b_id: Second fact ID
