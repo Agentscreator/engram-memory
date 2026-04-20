@@ -145,6 +145,8 @@ class EngramEngine:
             str, list[tuple[str, float]]
         ] = {}  # agent_id -> [(topic, timestamp)]
         self._nli_model: Any = None
+        self._codebase_task: asyncio.Task[None] | None = None
+        self._codebase_snapshot: dict[str, Any] | None = None
 
     async def start(self) -> None:
         """Start background periodic tasks."""
@@ -154,6 +156,7 @@ class EngramEngine:
         self._suggestion_task = asyncio.create_task(self._suggestion_worker())
         self._escalation_task = asyncio.create_task(self._escalation_loop())
         self._webhook_task = asyncio.create_task(self._webhook_delivery_worker())
+        self._codebase_task = asyncio.create_task(self._codebase_verification_loop())
         logger.info("Engine started")
 
     async def stop(self) -> None:
@@ -165,6 +168,7 @@ class EngramEngine:
             self._suggestion_task,
             self._escalation_task,
             self._webhook_task,
+            self._codebase_task,
         ):
             if task:
                 task.cancel()
@@ -178,6 +182,7 @@ class EngramEngine:
         self._suggestion_task = None
         self._escalation_task = None
         self._webhook_task = None
+        self._codebase_task = None
 
     def _build_commit_suggestions(
         self,
@@ -1075,12 +1080,193 @@ class EngramEngine:
                     # Ingest into the temporal knowledge graph
                     await self._ingest_into_tkg(fact_id)
                     await self._scan_fact_for_conflicts(fact_id)
+                    # Also verify against codebase if snapshot is available
+                    if self._codebase_snapshot:
+                        await self._verify_fact_against_codebase(fact_id)
                 except Exception:
                     logger.exception("Detection error for fact %s", fact_id)
                 finally:
                     self._detection_queue.task_done()
         except asyncio.CancelledError:
             pass
+
+    # ── Tier 0: Codebase ground-truth verification ────────────────────
+
+    async def _codebase_verification_loop(self) -> None:
+        """Background loop: scan codebase on startup, then periodically verify facts.
+
+        Runs immediately when the engine starts, then re-scans every 10 minutes.
+        Creates high-severity conflicts when facts contradict the code.
+        """
+        logger.info("Codebase verification worker starting")
+        try:
+            # Initial scan — run immediately on startup
+            await self._run_codebase_scan()
+
+            # Then re-scan periodically (every 10 minutes)
+            while True:
+                await asyncio.sleep(600)
+                await self._run_codebase_scan()
+        except asyncio.CancelledError:
+            pass
+
+    async def _run_codebase_scan(self) -> None:
+        """Scan the codebase and verify all current facts against it."""
+        try:
+            from engram.codebase import scan_codebase, verify_fact_against_codebase
+
+            # Run the filesystem scan in a thread to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            snapshot = await loop.run_in_executor(None, scan_codebase)
+            if not snapshot:
+                logger.debug("Codebase scan returned empty — skipping verification")
+                return
+
+            self._codebase_snapshot = snapshot
+            logger.info(
+                "Codebase scanned: %d config keys, %d ports, %d technologies, %d versions",
+                len(snapshot.get("config_keys", {})),
+                len(snapshot.get("ports", [])),
+                len(snapshot.get("technologies", {})),
+                len(snapshot.get("versions", {})),
+            )
+
+            # Verify all current durable facts
+            facts = await self.storage.get_current_facts_in_scope(
+                scope=None, limit=500, include_ephemeral=False
+            )
+            conflicts_found = 0
+            for fact in facts:
+                try:
+                    mismatches = verify_fact_against_codebase(fact, snapshot)
+                    for mismatch in mismatches:
+                        created = await self._create_codebase_conflict(fact, mismatch)
+                        if created:
+                            conflicts_found += 1
+                except Exception:
+                    logger.debug(
+                        "Codebase verification failed for fact %s",
+                        fact.get("id", "?")[:12],
+                    )
+
+            if conflicts_found:
+                logger.info(
+                    "Codebase verification: %d new conflict(s) detected", conflicts_found
+                )
+        except Exception:
+            logger.debug("Codebase scan failed", exc_info=True)
+
+    async def _verify_fact_against_codebase(self, fact_id: str) -> None:
+        """Verify a single newly committed fact against the codebase snapshot."""
+        if not self._codebase_snapshot:
+            return
+        fact = await self.storage.get_fact_by_id(fact_id)
+        if not fact:
+            return
+        try:
+            from engram.codebase import verify_fact_against_codebase
+
+            mismatches = verify_fact_against_codebase(fact, self._codebase_snapshot)
+            for mismatch in mismatches:
+                await self._create_codebase_conflict(fact, mismatch)
+        except Exception:
+            logger.debug("Codebase verification failed for fact %s", fact_id[:12])
+
+    async def _create_codebase_conflict(
+        self, fact: dict[str, Any], mismatch: dict[str, str]
+    ) -> bool:
+        """Create a codebase conflict for a fact-vs-code mismatch.
+
+        Uses a synthetic 'codebase' fact_id to represent the ground truth.
+        Returns True if a new conflict was created.
+        """
+        fact_id = fact["id"]
+        # Create a stable synthetic ID for the codebase evidence so we can
+        # deduplicate — same entity + same code value = same synthetic fact
+        entity_name = mismatch["entity_name"]
+        code_value = mismatch["code_value"]
+        synthetic_id = hashlib.sha256(
+            f"codebase:{entity_name}:{code_value}".encode()
+        ).hexdigest()[:32]
+
+        # Check if we already flagged this exact mismatch
+        if await self.storage.conflict_exists(fact_id, synthetic_id):
+            return False
+
+        # Ensure the synthetic codebase fact exists in storage
+        # (so the conflict can reference it and the dashboard can show it)
+        existing = await self.storage.get_fact_by_id(synthetic_id)
+        if not existing:
+            now = datetime.now(timezone.utc).isoformat()
+            codebase_fact = {
+                "id": synthetic_id,
+                "lineage_id": f"codebase-{entity_name}",
+                "content": f"[Codebase ground truth] {entity_name}={code_value} (from {mismatch['evidence']})",
+                "content_hash": hashlib.sha256(
+                    f"codebase:{entity_name}:{code_value}".encode()
+                ).hexdigest(),
+                "scope": fact.get("scope", "general"),
+                "confidence": 1.0,
+                "fact_type": "observation",
+                "agent_id": "codebase-scanner",
+                "engineer": None,
+                "provenance": mismatch["evidence"],
+                "keywords": json.dumps([entity_name.lower(), "codebase", "ground-truth"]),
+                "entities": json.dumps([]),
+                "artifact_hash": None,
+                "embedding": None,
+                "embedding_model": "",
+                "embedding_ver": "",
+                "committed_at": now,
+                "valid_from": now,
+                "valid_until": None,
+                "ttl_days": None,
+                "memory_op": "add",
+                "supersedes_fact_id": None,
+                "durability": "durable",
+            }
+            await self.storage.insert_fact(codebase_fact)
+
+        now = datetime.now(timezone.utc).isoformat()
+        conflict_id = uuid.uuid4().hex
+        await self.storage.insert_conflict({
+            "id": conflict_id,
+            "fact_a_id": fact_id,
+            "fact_b_id": synthetic_id,
+            "detected_at": now,
+            "detection_tier": "tier0_codebase",
+            "nli_score": None,
+            "explanation": mismatch["explanation"],
+            "severity": "high",
+            "status": "open",
+            "conflict_type": "genuine",
+        })
+
+        logger.info(
+            "Codebase conflict: fact %s claims %s=%s but code has %s (%s)",
+            fact_id[:8],
+            mismatch["entity_name"],
+            mismatch["fact_value"],
+            mismatch["code_value"],
+            mismatch["evidence"],
+        )
+
+        try:
+            await self._fire_event(
+                "conflict.detected",
+                {
+                    "conflict_id": conflict_id,
+                    "fact_a_id": fact_id,
+                    "fact_b_id": synthetic_id,
+                    "detection_tier": "tier0_codebase",
+                    "conflict_type": "genuine",
+                    "severity": "high",
+                },
+            )
+        except Exception:
+            pass
+
+        return True
 
     async def _ensure_embedding(self, fact_id: str) -> None:
         """Generate and store an embedding for a fact that doesn't have one yet."""

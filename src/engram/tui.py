@@ -72,6 +72,10 @@ _HELP_LINES: list[tuple[str, str]] = [
     ("class:output", "    conflicts                           — refresh conflict list\n"),
     (
         "class:output",
+        "    resolve <id> keep_a|keep_b|dismiss  — resolve a conflict\n",
+    ),
+    (
+        "class:output",
         "    merge                               — merge with another person's memory\n",
     ),
     ("class:output", "    clear                               — clear output  (Ctrl+L)\n"),
@@ -79,9 +83,8 @@ _HELP_LINES: list[tuple[str, str]] = [
     ("class:output.dim", "\n"),
     (
         "class:output.dim",
-        "  Any other text is sent to the AI with your full fact corpus as context.\n",
+        "  Type A or B to resolve the current conflict. Any other text is sent to the AI.\n",
     ),
-    ("class:output.dim", "  Every message you send is also saved as an Engram memory.\n"),
     ("class:output.dim", "\n"),
 ]
 
@@ -306,15 +309,20 @@ def _openai_chat(
             except Exception:
                 pass
 
-        # No API key — show a brief memory summary instead of raw facts
+        # No API key — show a clear message and any relevant memory as context
         output_lines.append(("class:output.dim", "\n"))
+        output_lines.append(
+            (
+                "class:output.warn",
+                "  ⚠ No AI API key configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY "
+                "for conversational responses.\n",
+            )
+        )
         if facts:
-            output_lines.append(("class:output.dim", "  Relevant memory:\n"))
+            output_lines.append(("class:output.dim", "\n  Related memory:\n"))
             for f in facts[:3]:
                 content = (f.get("content") or "").strip()[:120]
                 output_lines.append(("class:output.dim", f"  · {content}\n"))
-        else:
-            output_lines.append(("class:output.dim", "  Nothing in memory on that topic yet.\n"))
         output_lines.append(("class:output.dim", "\n"))
         return None
 
@@ -493,6 +501,64 @@ def _resolve_conflict(
         ("class:output.label", f"  ✓ Conflict {conflict_id[:8]} resolved ({resolution_type}).\n")
     )
     output_lines.append(("class:output.dim", "  Dashboard will reflect this immediately.\n"))
+
+
+def _try_resolve_from_short_input(
+    ws: Any,
+    text: str,
+    output_lines: list[tuple[str, str]],
+) -> bool:
+    """Check if short input (e.g. "A", "B") matches an open conflict.
+
+    If there's exactly one open conflict and the user types "A" or "B",
+    resolve it directly. Returns True if the input was handled.
+    """
+    text_upper = text.strip().upper()
+    if text_upper not in ("A", "B"):
+        return False
+
+    # Fetch open conflicts
+    base = _server_url(ws)
+    if _is_hosted(ws):
+        result = _mcp_call(ws, "engram_conflicts", {"status": "open"})
+        conflicts = []
+        if isinstance(result, dict):
+            conflicts = result.get("conflicts", result)
+            if isinstance(conflicts, dict):
+                conflicts = []
+        elif isinstance(result, list):
+            conflicts = result
+    else:
+        auth_headers: dict[str, str] = {}
+        if ws and getattr(ws, "invite_key", ""):
+            auth_headers["Authorization"] = f"Bearer {ws.invite_key}"
+        data = _http_get(f"{base}/api/conflicts?status=open", timeout=5, headers=auth_headers)
+        conflicts = data if isinstance(data, list) else []
+
+    if not conflicts:
+        return False
+
+    # If there's exactly one open conflict, resolve it directly
+    if len(conflicts) == 1:
+        c = conflicts[0]
+        cid = c.get("conflict_id") or c.get("id") or ""
+        resolution = "keep_a" if text_upper == "A" else "keep_b"
+        chosen = c.get("fact_a", {}).get("content") or c.get("fact_a_content") or ""
+        if text_upper == "B":
+            chosen = c.get("fact_b", {}).get("content") or c.get("fact_b_content") or ""
+        chosen_short = chosen.strip()[:80]
+
+        output_lines.append(("class:output.dim", "\n"))
+        output_lines.append(
+            ("class:output.ai", f"  Got it — keeping {text_upper}: \"{chosen_short}\"\n")
+        )
+        _resolve_conflict(ws, cid, resolution, output_lines)
+        output_lines.append(("class:output.dim", "\n"))
+        _load_conflicts(ws, output_lines)
+        return True
+
+    # Multiple conflicts — can't tell which one the user means
+    return False
 
 
 # ── merge (join another workspace) ────────────────────────────────────
@@ -831,6 +897,9 @@ def run_tui(ws: Any, ctx: Any) -> None:
             output_lines.append(("class:output.error", "  Usage: search <query>\n"))
         elif cmd in _VALID_COMMANDS:
             _run_engram_command(cmd, arg + (" " + extra if extra else ""), output_lines)
+        elif _try_resolve_from_short_input(ws, text, output_lines):
+            # Short input (A/B) matched an open conflict — already handled
+            pass
         else:
             # Unknown command → conversational chat with memory context
             reply = _openai_chat(ws, text, output_lines, history=conversation_history)
