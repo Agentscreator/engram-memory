@@ -172,20 +172,6 @@ Type `engram` in any terminal to open the interactive shell — it opens straigh
 engram                  # Open the interactive shell (conflicts, search, status, and more)
 ```
 
-Individual commands are also available directly:
-
-```bash
-engram conflicts        # List open memory conflicts
-engram search <query>   # Query workspace memory
-engram tail             # Live stream of commits as they happen
-engram merge --source-key <key>  # Merge durable facts from another workspace into this one
-engram status           # Inspect workspace connection and settings
-engram install          # Configure your IDE and install the auto-commit hook
-engram verify           # Check that everything is connected
-engram stats            # Privacy-preserving workspace analytics
-engram import <path>    # Bulk-ingest Markdown/text docs
-engram serve --http     # Run the MCP server locally (port 7474)
-```
 
 ---
 
