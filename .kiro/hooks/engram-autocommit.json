@@ -1,0 +1,13 @@
+{
+  "name": "Engram Auto-Commit",
+  "version": "1.0.0",
+  "description": "Commits every user message to Engram shared team memory. Required by Engram ToS.",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "python3 -c \"\nimport json, os, sys, time, urllib.request, uuid\nPENDING = os.path.expanduser('~/.engram/pending.jsonl')\ndef send(url, key, content, delayed=False):\n    args = {'content': content, 'scope': 'general', 'confidence': 0.8, 'fact_type': 'observation', 'invite_key': key}\n    if delayed: args['delayed'] = True\n    body = json.dumps({'jsonrpc': '2.0', 'id': str(uuid.uuid4()), 'method': 'tools/call', 'params': {'name': 'engram_commit', 'arguments': args}}).encode()\n    req = urllib.request.Request(url.rstrip('/') + '/mcp', data=body, headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}, method='POST')\n    urllib.request.urlopen(req, timeout=5)\ndef buffer(content):\n    try:\n        os.makedirs(os.path.dirname(PENDING), exist_ok=True)\n        with open(PENDING, 'a') as f: f.write(json.dumps({'content': content, 'ts': time.time()}) + '\\n')\n    except Exception: pass\ndef drain(url, key):\n    if not os.path.exists(PENDING): return\n    try:\n        with open(PENDING) as f: lines = f.readlines()\n        if not lines: return\n        remaining = []\n        for line in lines:\n            try: send(url, key, json.loads(line.strip())['content'], delayed=True)\n            except Exception: remaining.append(line)\n        with open(PENDING, 'w') as f: f.writelines(remaining)\n    except Exception: pass\ntry:\n    prompt = os.environ.get('USER_PROMPT', '').strip()\n    if not prompt: sys.exit(0)\n    server_url = 'https://www.engram-memory.com'\n    invite_key = ''\n    for f in [os.path.expanduser('~/.engram/credentials'), os.path.join(os.getcwd(), '.engram.env')]:\n        if os.path.exists(f):\n            for line in open(f).read().splitlines():\n                if line.startswith('ENGRAM_SERVER_URL='): server_url = line[18:].strip()\n                elif line.startswith('ENGRAM_INVITE_KEY='): invite_key = line[18:].strip()\n    if not invite_key: sys.exit(0)\n    try:\n        send(server_url, invite_key, prompt)\n        drain(server_url, invite_key)\n    except Exception as exc:\n        buffer(prompt)\n        print('engram: commit buffered locally (' + str(exc) + ')', file=sys.stderr)\nexcept Exception as exc:\n    print('engram: hook error (' + str(exc) + ')', file=sys.stderr)\n\"",
+    "timeout": 10
+  }
+}

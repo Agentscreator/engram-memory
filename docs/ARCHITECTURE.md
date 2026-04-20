@@ -45,6 +45,23 @@ Each section states what the module does, its key public interface, and what it
 
 ---
 
+### Conflict Detection — Two Implementations
+
+Engram has two conflict detection mechanisms depending on deployment mode:
+
+- **Local server** (`src/engram/engine.py`): A four-tier deterministic + ML pipeline
+  (entity exact-match → NLI cross-encoder → numeric rules → LLM escalation). Runs
+  entirely on-device with no external API dependencies. See `docs/IMPLEMENTATION.md`
+  § Phase 3 for the full design.
+
+- **Hosted service** (`api/mcp.py`): A narrative coherence detective that reads the
+  workspace's entire commit history as a chronological story and identifies where a
+  new agent would get confused. Uses `gpt-4o-mini` with a probabilistic forgetting
+  curve to focus on signal over noise. See **`docs/CONFLICT_DETECTIVE.md`** for the
+  full design.
+
+---
+
 ### engine.py — Core Orchestrator
 
 `EngramEngine` owns the entire commit/query/conflict-detection pipeline. On
@@ -61,7 +78,7 @@ queuing, and 72-hour auto-escalation).
 `resolve()`, `batch_commit()`, `get_stats()`, `record_feedback()`,
 `get_timeline()`, `get_agents()`, `get_fact()`, `list_facts()`,
 `export_workspace()`, `get_lineage()`, `get_expiring_facts()`,
-`bulk_dismiss()`.
+`bulk_dismiss()`, `gdpr_erase_agent()`.
 
 **Must not:** access the database directly — all persistence goes through a
 `BaseStorage` implementation. Must not import or depend on any transport layer
@@ -77,7 +94,8 @@ guidance (tool descriptions that steer agent behavior) lives here.
 
 **Public interface:** The MCP tool set — `engram_status`, `engram_init`,
 `engram_join`, `engram_reset_invite_key`, `engram_commit`, `engram_query`,
-`engram_conflicts`, `engram_resolve`, `engram_promote`, and others.
+`engram_conflicts`, `engram_resolve`, `engram_promote`, `engram_gdpr_erase`,
+and others.
 
 **Must not:** contain business logic. No conflict detection, no query scoring,
 no direct database calls. If a tool needs new behavior, add it to `engine.py`
@@ -94,7 +112,8 @@ embedding storage.
 
 **Public interface:** `BaseStorage` (ABC), `SQLiteStorage`. Key methods:
 `insert_fact()`, `query_facts()`, `get_conflicts()`, `resolve_conflict()`,
-`upsert_agent()`, `get_workspace_stats()`, plus ~40 more CRUD operations.
+`upsert_agent()`, `get_workspace_stats()`, `gdpr_soft_erase_agent()`,
+`gdpr_hard_erase_agent()`, plus ~40 more CRUD operations.
 
 **Must not:** contain business logic or orchestration. Storage executes queries
 and returns rows — it does not decide *what* to store or *when* to detect
@@ -119,9 +138,10 @@ must be added to `BaseStorage` first, then implemented in both backends.
 ### schema.py — DDL and Migrations
 
 Contains all database DDL (`SCHEMA_SQL` for SQLite, `POSTGRES_SCHEMA_SQL` for
-PostgreSQL) and incremental migration definitions (v2 through v7). Tables:
-`workspaces`, `facts`, `facts_ephemeral`, `conflicts`, `claims`,
-`invite_keys`, `agents`, `query_log`, plus FTS5 virtual tables and triggers.
+PostgreSQL) and incremental migration definitions (v2 through v10). Tables:
+`workspaces`, `facts`, `conflicts`, `invite_keys`, `agents`, `audit_log`,
+`scopes`, `webhooks`, plus FTS5 virtual tables and triggers (including the
+`facts_au` update trigger added in v10 for GDPR hard-erase FTS consistency).
 
 **Public interface:** `SCHEMA_SQL`, `POSTGRES_SCHEMA_SQL`, `MIGRATIONS`,
 `SCHEMA_VERSION`.
@@ -285,6 +305,50 @@ Queued asynchronously by the engine's suggestion background worker. Requires
 **Must not:** resolve conflicts — it only *suggests*. Resolution authority
 remains with `engine.py` (via `resolve()`). Must not be called synchronously in
 the commit or query hot path.
+
+---
+
+### GDPR Subject-Erasure Path
+
+When a workspace creator calls `engram_gdpr_erase` (MCP), `engram gdpr erase`
+(CLI), or `POST /api/gdpr/erase` (REST), the following happens:
+
+```
+Caller (MCP / REST / CLI)
+    │
+    │  creator-only gate (read_workspace().is_creator)
+    ▼
+EngramEngine.gdpr_erase_agent(agent_id, mode="soft"|"hard")
+    │
+    ├── mode="soft"
+    │       └── storage.gdpr_soft_erase_agent(agent_id)
+    │               UPDATE facts  SET engineer='[redacted]', provenance=NULL
+    │               UPDATE conflicts  (scrub explanation / suggestion fields)
+    │               UPDATE agents     SET engineer='[redacted]'
+    │               UPDATE audit_log  (clear agent_id)
+    │               COMMIT (atomic)
+    │
+    └── mode="hard"
+            └── storage.gdpr_hard_erase_agent(agent_id)
+                    UPDATE facts  (replace content, null embedding/keywords,
+                                   close valid_until)          ← facts_au trigger
+                                                                  keeps FTS in sync
+                    UPDATE conflicts  (dismiss open, scrub resolved)
+                    UPDATE agents / DELETE scope_permissions / UPDATE scopes
+                    UPDATE audit_log  (clear agent_id + fact_id)
+                    COMMIT (atomic)
+    │
+    └── _audit("gdpr_erase", ...)  — records counts, mode; no agent PII
+```
+
+**Conflict cascade rules:**
+- Open conflicts referencing an erased fact: status → `dismissed`,
+  `resolution_type → 'gdpr_erasure'`, all free-text fields scrubbed.
+- Already-resolved conflicts: only free-text fields scrubbed
+  (`explanation`, `resolution`, suggestions).
+- `suggested_winning_fact_id` is nulled if it pointed at an erased fact.
+
+For full operational guidance see `docs/PRIVACY_ARCHITECTURE.md` §"GDPR Subject Erasure".
 
 ---
 

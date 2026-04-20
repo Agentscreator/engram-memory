@@ -18,13 +18,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
-import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
 
 from engram.storage import SQLiteStorage
 from engram.engine import EngramEngine
@@ -71,7 +68,7 @@ class BenchmarkSuite:
             "name": self.name,
             "version": self.version,
             "description": self.description,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "results": [r.to_dict() for r in self.results],
             "summary": self.compute_summary(),
             "metadata": self.metadata,
@@ -86,7 +83,9 @@ class BenchmarkSuite:
         precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
         recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        avg_latency = sum(r.latency_ms for r in self.results) / len(self.results) if self.results else 0.0
+        avg_latency = (
+            sum(r.latency_ms for r in self.results) / len(self.results) if self.results else 0.0
+        )
         return {
             "total_tests": len(self.results),
             "total_true_positives": total_tp,
@@ -119,7 +118,9 @@ class BenchmarkSuite:
         print(f"{'Scenario':<30} {'TP':>4} {'FP':>4} {'FN':>4} {'F1':>6}")
         print("-" * 52)
         for r in self.results:
-            print(f"{r.scenario:<30} {r.true_positives:>4} {r.false_positives:>4} {r.false_negatives:>4} {r.f1:>6.1%}")
+            print(
+                f"{r.scenario:<30} {r.true_positives:>4} {r.false_positives:>4} {r.false_negatives:>4} {r.f1:>6.1%}"
+            )
         print("=" * 60)
 
 
@@ -470,14 +471,18 @@ class ConflictBenchmark:
                 result = await test_fn()
                 results.append(result)
                 status = "✓" if result.f1 >= 1.0 else "✗"
-                print(f"{status} TP={result.true_positives}, FP={result.false_positives}, F1={result.f1:.0%}")
+                print(
+                    f"{status} TP={result.true_positives}, FP={result.false_positives}, F1={result.f1:.0%}"
+                )
             except Exception as e:
                 print(f"ERROR - {e}")
-                results.append(BenchmarkResult(
-                    scenario=name.lower().replace(" ", "_"),
-                    description=name,
-                    metadata={"error": str(e)},
-                ))
+                results.append(
+                    BenchmarkResult(
+                        scenario=name.lower().replace(" ", "_"),
+                        description=name,
+                        metadata={"error": str(e)},
+                    )
+                )
 
         return results
 
@@ -547,16 +552,19 @@ Run with --compare-baseline to compare against known good systems.
         """,
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Print verbose output",
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         help="Output results to JSON file",
     )
     parser.add_argument(
-        "--scenario", "-s",
+        "--scenario",
+        "-s",
         help="Run a specific test scenario (numeric, entity, boolean, semantic, temporal, falsepos, evolution)",
     )
     parser.add_argument(

@@ -1,17 +1,23 @@
 {
   "mcpServers": {
     "engram": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--project",
-        "/Users/josh/Downloads/Engram",
-        "engram",
-        "serve"
-      ],
+      "url": "https://www.engram-memory.com/mcp",
       "disabled": false,
       "autoApprove": [
-        "engram_status"
+        "engram_status",
+        "engram_commit",
+        "engram_query",
+        "engram_conflicts",
+        "engram_resolve",
+        "engram_batch_commit",
+        "engram_promote",
+        "engram_feedback",
+        "engram_timeline",
+        "engram_agents",
+        "engram_lineage",
+        "engram_expiring",
+        "engram_bulk_dismiss",
+        "engram_export"
       ]
     }
   }

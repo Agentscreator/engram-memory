@@ -24,16 +24,121 @@ DB_URL = os.environ.get("ENGRAM_DB_URL", "")
 SCHEMA = "engram"
 
 _pool: Any = None
-_schema_ready = False
+
+_WORKSPACE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS workspaces (
+    engram_id TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    anonymous_mode BOOLEAN NOT NULL DEFAULT false,
+    anon_agents BOOLEAN NOT NULL DEFAULT false,
+    key_generation INTEGER NOT NULL DEFAULT 0
+);
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS paused BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS storage_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free';
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS display_name TEXT;
+
+CREATE TABLE IF NOT EXISTS invite_keys (
+    key_hash TEXT PRIMARY KEY,
+    engram_id TEXT NOT NULL REFERENCES workspaces(engram_id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+    uses_remaining INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    stripe_customer_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_workspaces (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    engram_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'owner',
+    PRIMARY KEY (user_id, engram_id)
+);
+
+CREATE TABLE IF NOT EXISTS facts (
+    id TEXT PRIMARY KEY,
+    lineage_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'general',
+    confidence REAL NOT NULL DEFAULT 0.9,
+    fact_type TEXT NOT NULL DEFAULT 'observation',
+    agent_id TEXT NOT NULL DEFAULT 'agent',
+    engineer TEXT,
+    committed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    valid_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    valid_until TIMESTAMPTZ,
+    memory_op TEXT NOT NULL DEFAULT 'add',
+    supersedes_fact_id TEXT,
+    workspace_id TEXT NOT NULL,
+    durability TEXT NOT NULL DEFAULT 'durable'
+);
+
+CREATE TABLE IF NOT EXISTS conflicts (
+    id TEXT PRIMARY KEY,
+    fact_a_id TEXT NOT NULL,
+    fact_b_id TEXT NOT NULL,
+    detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    explanation TEXT,
+    severity TEXT NOT NULL DEFAULT 'medium',
+    status TEXT NOT NULL DEFAULT 'open',
+    resolved_at TIMESTAMPTZ,
+    resolution TEXT,
+    resolution_type TEXT,
+    workspace_id TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conflicts_pair_unique ON conflicts(
+    workspace_id, LEAST(fact_a_id, fact_b_id), GREATEST(fact_a_id, fact_b_id)
+);
+
+CREATE TABLE IF NOT EXISTS dismissed_conflicts (
+    conflict_id TEXT PRIMARY KEY REFERENCES conflicts(id),
+    workspace_id TEXT NOT NULL,
+    dismissed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dismissed_conflicts_workspace
+    ON dismissed_conflicts(workspace_id);
+
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    engineer TEXT,
+    label TEXT,
+    registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen TIMESTAMPTZ,
+    total_commits INTEGER DEFAULT 0,
+    PRIMARY KEY (agent_id, workspace_id)
+);
+"""
+
+_WORKSPACE_SCHEMA_STMTS = [s.strip() for s in _WORKSPACE_SCHEMA.split(";") if s.strip()]
 
 
 async def _get_pool() -> Any:
-    global _pool, _schema_ready
+    global _pool
+    if not DB_URL:
+        raise RuntimeError("ENGRAM_DB_URL environment variable is not set")
     if _pool is None:
         import asyncpg
 
         async def _set_path(c: Any) -> None:
             await c.execute(f"SET search_path TO {SCHEMA}, public")
+
+        conn = await asyncpg.connect(DB_URL)
+        try:
+            await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
+            await conn.execute(f"SET search_path TO {SCHEMA}, public")
+            for stmt in _WORKSPACE_SCHEMA_STMTS:
+                await conn.execute(stmt)
+        finally:
+            await conn.close()
 
         _pool = await asyncpg.create_pool(
             DB_URL, min_size=1, max_size=3, command_timeout=30, init=_set_path
@@ -95,7 +200,7 @@ async def _validate_key(invite_key: str, engram_id: str, pool: Any) -> bool:
         key_hash = _invite_key_hash(invite_key)
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT uses_remaining FROM invite_keys WHERE key_hash = $1 AND engram_id = $2",
+                f"SELECT uses_remaining FROM {SCHEMA}.invite_keys WHERE key_hash = $1 AND engram_id = $2",
                 key_hash,
                 engram_id,
             )
@@ -131,32 +236,48 @@ async def handle_search(request: Request) -> JSONResponse:
     if not await _validate_key(invite_key, engram_id, pool):
         return JSONResponse({"error": "Invalid invite key or workspace ID"}, status_code=401)
 
+    fact_rows: list = []
+    conflict_rows: list = []
+    agent_rows: list = []
+    storage_bytes: int = 0
     try:
         async with pool.acquire() as conn:
+            ws_row = await conn.fetchrow(
+                f"SELECT storage_bytes FROM {SCHEMA}.workspaces WHERE engram_id = $1",
+                engram_id,
+            )
+            if ws_row:
+                storage_bytes = ws_row["storage_bytes"] or 0
             fact_rows = await conn.fetch(
-                """SELECT id, lineage_id, content, scope, confidence, fact_type,
+                f"""SELECT id, lineage_id, content, scope, confidence, fact_type,
                           committed_at, valid_until, memory_op, supersedes_fact_id, durability
-                   FROM facts
+                   FROM {SCHEMA}.facts
                    WHERE workspace_id = $1
                    ORDER BY committed_at DESC
                    LIMIT 500""",
                 engram_id,
             )
             conflict_rows = await conn.fetch(
-                """SELECT id, fact_a_id, fact_b_id, explanation, severity, status, detected_at
-                   FROM conflicts
+                f"""SELECT id, fact_a_id, fact_b_id, explanation, severity, status, detected_at
+                   FROM {SCHEMA}.conflicts
                    WHERE workspace_id = $1
+                     AND NOT EXISTS (
+                         SELECT 1 FROM {SCHEMA}.dismissed_conflicts dc
+                         WHERE dc.conflict_id = {SCHEMA}.conflicts.id
+                           AND dc.workspace_id = {SCHEMA}.conflicts.workspace_id
+                     )
                    ORDER BY detected_at DESC
                    LIMIT 200""",
                 engram_id,
             )
             agent_rows = await conn.fetch(
-                """SELECT agent_id, engineer, label, last_seen, total_commits
-                   FROM agents WHERE workspace_id = $1""",
+                f"""SELECT agent_id, engineer, label, last_seen, total_commits
+                   FROM {SCHEMA}.agents WHERE workspace_id = $1""",
                 engram_id,
             )
-    except Exception as exc:
-        return JSONResponse({"error": f"Query failed: {exc}"}, status_code=500)
+    except Exception:
+        # Tables may not exist yet if no MCP commits have been made — return empty workspace
+        pass
 
     def _ser(v: Any) -> Any:
         if hasattr(v, "isoformat"):
@@ -168,7 +289,13 @@ async def handle_search(request: Request) -> JSONResponse:
     agents = [{k: _ser(v) for k, v in dict(r).items()} for r in agent_rows]
 
     return JSONResponse(
-        {"facts": facts, "conflicts": conflicts, "agents": agents, "workspace_id": engram_id},
+        {
+            "facts": facts,
+            "conflicts": conflicts,
+            "agents": agents,
+            "workspace_id": engram_id,
+            "storage_bytes": storage_bytes,
+        },
         headers={"Access-Control-Allow-Origin": "*"},
     )
 
@@ -223,7 +350,7 @@ async def handle_session_search(request: Request) -> JSONResponse:
     try:
         async with pool.acquire() as conn:
             owns = await conn.fetchrow(
-                "SELECT 1 FROM user_workspaces WHERE user_id = $1 AND engram_id = $2",
+                f"SELECT 1 FROM {SCHEMA}.user_workspaces WHERE user_id = $1 AND engram_id = $2",
                 session["sub"],
                 engram_id,
             )
@@ -233,32 +360,62 @@ async def handle_session_search(request: Request) -> JSONResponse:
     if not owns:
         return JSONResponse({"error": "Workspace not found or access denied"}, status_code=403)
 
+    fact_rows: list = []
+    conflict_rows: list = []
+    agent_rows: list = []
+    storage_bytes: int = 0
     try:
         async with pool.acquire() as conn:
+            ws_row = await conn.fetchrow(
+                f"SELECT storage_bytes FROM {SCHEMA}.workspaces WHERE engram_id = $1",
+                engram_id,
+            )
+            if ws_row:
+                storage_bytes = ws_row["storage_bytes"] or 0
             fact_rows = await conn.fetch(
-                """SELECT id, lineage_id, content, scope, confidence, fact_type,
+                f"""SELECT id, lineage_id, content, scope, confidence, fact_type,
                           committed_at, valid_until, memory_op, supersedes_fact_id, durability
-                   FROM facts
+                   FROM {SCHEMA}.facts
                    WHERE workspace_id = $1
                    ORDER BY committed_at DESC
                    LIMIT 500""",
                 engram_id,
             )
+            agent_rows = await conn.fetch(
+                f"""SELECT agent_id, engineer, label, last_seen, total_commits
+                   FROM {SCHEMA}.agents WHERE workspace_id = $1""",
+                engram_id,
+            )
+    except Exception:
+        # Tables may not exist yet if no MCP commits have been made — return empty workspace
+        pass
+
+    # Run heuristic conflict detection before returning so the dashboard always
+    # shows fresh conflicts without waiting for the next commit.
+    try:
+        from api.mcp import _detect_conflicts_heuristic
+
+        await _detect_conflicts_heuristic(engram_id, pool)
+    except Exception:
+        pass
+
+    try:
+        async with pool.acquire() as conn:
             conflict_rows = await conn.fetch(
-                """SELECT id, fact_a_id, fact_b_id, explanation, severity, status, detected_at
-                   FROM conflicts
+                f"""SELECT id, fact_a_id, fact_b_id, explanation, severity, status, detected_at
+                   FROM {SCHEMA}.conflicts
                    WHERE workspace_id = $1
+                     AND NOT EXISTS (
+                         SELECT 1 FROM {SCHEMA}.dismissed_conflicts dc
+                         WHERE dc.conflict_id = {SCHEMA}.conflicts.id
+                           AND dc.workspace_id = {SCHEMA}.conflicts.workspace_id
+                     )
                    ORDER BY detected_at DESC
                    LIMIT 200""",
                 engram_id,
             )
-            agent_rows = await conn.fetch(
-                """SELECT agent_id, engineer, label, last_seen, total_commits
-                   FROM agents WHERE workspace_id = $1""",
-                engram_id,
-            )
-    except Exception as exc:
-        return JSONResponse({"error": f"Query failed: {exc}"}, status_code=500)
+    except Exception:
+        pass
 
     def _ser(v: Any) -> Any:
         if hasattr(v, "isoformat"):
@@ -270,7 +427,13 @@ async def handle_session_search(request: Request) -> JSONResponse:
     agents = [{k: _ser(v) for k, v in dict(r).items()} for r in agent_rows]
 
     return JSONResponse(
-        {"facts": facts, "conflicts": conflicts, "agents": agents, "workspace_id": engram_id},
+        {
+            "facts": facts,
+            "conflicts": conflicts,
+            "agents": agents,
+            "workspace_id": engram_id,
+            "storage_bytes": storage_bytes,
+        },
         headers={"Access-Control-Allow-Origin": "*"},
     )
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "engram-team"
-version = "0.1.0"
+version = "0.1.1"
 description = "Multi-agent memory consistency for engineering teams."
 readme = "README.md"
 license = "Apache-2.0"
@@ -30,6 +30,8 @@ dependencies = [
     "uvicorn>=0.30.0",
     "starlette>=0.40.0",
     "aiohttp>=3.9.0",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
 ]
 
 [project.optional-dependencies]

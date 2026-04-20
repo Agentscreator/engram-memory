@@ -133,6 +133,65 @@ class RateLimiter:
         self._windows[agent_id].append(time.time())
 
 
+class CommitVelocityAnomalyDetector:
+    """Detect abnormal commit patterns per agent.
+
+    Flags agents that exceed a commit velocity threshold within
+    a short time window, indicating potential MINJA attacks.
+    """
+
+    def __init__(
+        self,
+        threshold: int = 10,
+        window_seconds: float = 60.0,
+    ) -> None:
+        self.threshold = threshold
+        self.window_seconds = window_seconds
+        self._recent_commits: dict[str, list[float]] = defaultdict(list)
+
+    def record(self, agent_id: str) -> bool:
+        """Record a commit and check for anomalies.
+
+        Returns True if recording succeeded (no anomaly detected).
+        Returns False if anomaly detected (at or above threshold).
+        """
+        now = time.time()
+        cutoff = now - self.window_seconds
+        self._recent_commits[agent_id] = [t for t in self._recent_commits[agent_id] if t > cutoff]
+        # Block if already at or above threshold before adding
+        if len(self._recent_commits[agent_id]) >= self.threshold:
+            logger.warning(
+                "Anomalous commit velocity detected for agent %s: %d commits in last %.0f seconds",
+                agent_id,
+                len(self._recent_commits[agent_id]),
+                self.window_seconds,
+            )
+            return False
+        self._recent_commits[agent_id].append(now)
+        return True
+
+    def is_anomalous(self, agent_id: str) -> bool:
+        """Return True if agent has anomalous commit velocity."""
+        if agent_id not in self._recent_commits:
+            return False
+        now = time.time()
+        cutoff = now - self.window_seconds
+        active_commits = [t for t in self._recent_commits[agent_id] if t > cutoff]
+        return len(active_commits) >= self.threshold
+
+    def reset(self, agent_id: str) -> None:
+        """Reset the commit history for an agent."""
+        self._recent_commits[agent_id].clear()
+
+    def get_velocity(self, agent_id: str) -> int:
+        """Get the current commit velocity (commits in window)."""
+        if agent_id not in self._recent_commits:
+            return 0
+        now = time.time()
+        cutoff = now - self.window_seconds
+        return len([t for t in self._recent_commits[agent_id] if t > cutoff])
+
+
 # ── Scope Permission Checker ─────────────────────────────────────────
 
 

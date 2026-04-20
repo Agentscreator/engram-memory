@@ -29,10 +29,7 @@ python -m benchmark.conflict_benchmark
 | `entity_conflict` | Same entity, different values (e.g., max_connections=50 vs 200) |
 | `boolean_conflict` | Boolean contradictions (enabled vs disabled) |
 | `semantic_conflict` | Natural language inference contradictions |
-| `tier0_entity` | Same entity identified by name/entity extraction |
-| `tier1_nli` | Semantic contradiction via NLI |
-| `tier2_numeric` | Numeric value contradiction |
-| `tier3_tkg` | Temporal/knowledge graph contradictions |
+| `temporal_conflict` | Temporal contradictions (facts that changed over time) |
 | `evolution` | Same agent fact evolution (auto-resolved) |
 | `false_positive` | Similar but non-conflicting facts |
 

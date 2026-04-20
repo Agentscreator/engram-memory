@@ -5,12 +5,22 @@ Schema version 4 adds:
 - invite_keys table (for join flow)
 - workspace_id column on facts, conflicts, agents (multi-tenancy)
 
+Schema version 10 adds:
+- facts_au trigger for SQLite FTS5 consistency on content/keywords updates
+  (required by the GDPR subject-erasure hard-erase path)
+
+Schema version 13 adds:
+- conflicts.conflict_type: classification of detected conflicts as
+  'genuine' (cross-agent factual contradiction), 'evolution' (same-agent
+  self-correction), or 'ambiguous' (low-confidence or borderline case).
+  Enables downstream consumers to triage conflicts by signal quality.
+
 Two schemas are maintained:
 - SCHEMA_SQL: SQLite (local mode, aiosqlite)
 - POSTGRES_SCHEMA_SQL: PostgreSQL (team mode, asyncpg)
 """
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 17
 
 # Incremental ALTER TABLE migrations keyed by target version.
 MIGRATIONS: dict[int, list[str]] = {
@@ -119,6 +129,102 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE workspaces ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE workspaces ADD COLUMN description TEXT NOT NULL DEFAULT ''",
     ],
+    10: [
+        # Usage metering for Stripe integration (issue #87)
+        """CREATE TABLE IF NOT EXISTS usage_events (
+            id              TEXT PRIMARY KEY,
+            workspace_id    TEXT NOT NULL,
+            event_type      TEXT NOT NULL,
+            quantity        INTEGER NOT NULL DEFAULT 1,
+            billing_period  TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            synced_to_stripe INTEGER NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_usage_events_workspace_period ON usage_events(workspace_id, billing_period)",
+    ],
+    11: [
+        # Temporal Knowledge Graph: entity nodes
+        """CREATE TABLE IF NOT EXISTS tkg_nodes (
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            entity_type     TEXT NOT NULL,
+            summary         TEXT NOT NULL DEFAULT '',
+            first_seen      TEXT NOT NULL,
+            last_seen       TEXT NOT NULL,
+            fact_count      INTEGER NOT NULL DEFAULT 1,
+            workspace_id    TEXT NOT NULL DEFAULT 'local'
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tkg_nodes_name ON tkg_nodes(name, workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_nodes_type ON tkg_nodes(entity_type)",
+    ],
+    12: [
+        # Temporal Knowledge Graph: bi-temporal edges
+        """CREATE TABLE IF NOT EXISTS tkg_edges (
+            id              TEXT PRIMARY KEY,
+            source_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+            target_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+            relation_type   TEXT NOT NULL,
+            fact_label      TEXT NOT NULL,
+            fact_id         TEXT NOT NULL,
+            agent_id        TEXT NOT NULL,
+            scope           TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            expired_at      TEXT,
+            valid_at        TEXT,
+            invalid_at      TEXT,
+            confidence      REAL NOT NULL DEFAULT 0.8,
+            workspace_id    TEXT NOT NULL DEFAULT 'local'
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_edges_source ON tkg_edges(source_node_id, relation_type)",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_edges_target ON tkg_edges(target_node_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_edges_fact ON tkg_edges(fact_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_edges_active ON tkg_edges(expired_at)",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_edges_scope ON tkg_edges(scope)",
+    ],
+    13: [
+        # Conflict type classification: genuine | evolution | ambiguous
+        "ALTER TABLE conflicts ADD COLUMN conflict_type TEXT NOT NULL DEFAULT 'genuine'",
+    ],
+    14: [
+        # Fact pinning, endorsements, and downvotes
+        "ALTER TABLE facts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE facts ADD COLUMN pinned_at TEXT",
+        "ALTER TABLE facts ADD COLUMN endorsements INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE facts ADD COLUMN downvotes INTEGER NOT NULL DEFAULT 0",
+    ],
+    15: [
+        # Unique constraint on conflict pairs (normalized order) to prevent race-condition duplicates.
+        # Uses CASE WHEN to normalize (fact_a_id, fact_b_id) so (A,B) == (B,A).
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_conflicts_pair_unique ON conflicts(
+            workspace_id,
+            CASE WHEN fact_a_id < fact_b_id THEN fact_a_id ELSE fact_b_id END,
+            CASE WHEN fact_a_id < fact_b_id THEN fact_b_id ELSE fact_a_id END
+        )""",
+    ],
+    16: [
+        """CREATE TABLE IF NOT EXISTS dismissed_conflicts (
+            conflict_id    TEXT PRIMARY KEY,
+            workspace_id   TEXT NOT NULL DEFAULT 'local',
+            dismissed_at   TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_dismissed_conflicts_workspace ON dismissed_conflicts(workspace_id)",
+    ],
+    17: [
+        # Overnight deferred thinking: scans queued when active hours are exhausted,
+        # processed at midnight by `engram overnight`.
+        """CREATE TABLE IF NOT EXISTS deferred_scans (
+            id               TEXT PRIMARY KEY,
+            workspace_id     TEXT NOT NULL DEFAULT 'local',
+            queued_at        TEXT NOT NULL,
+            scheduled_for    TEXT NOT NULL,
+            status           TEXT NOT NULL DEFAULT 'pending',
+            payload          TEXT NOT NULL DEFAULT '{}',
+            result_fact_count INTEGER NOT NULL DEFAULT 0,
+            completed_at     TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_deferred_scans_workspace_status ON deferred_scans(workspace_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_deferred_scans_scheduled ON deferred_scans(scheduled_for, status)",
+    ],
 }
 
 # ── SQLite schema (local mode) ───────────────────────────────────────
@@ -155,7 +261,11 @@ CREATE TABLE IF NOT EXISTS facts (
     workspace_id     TEXT NOT NULL DEFAULT 'local',
     corroborating_agents INTEGER NOT NULL DEFAULT 0,
     durability       TEXT NOT NULL DEFAULT 'durable',
-    query_hits       INTEGER NOT NULL DEFAULT 0
+    query_hits       INTEGER NOT NULL DEFAULT 0,
+    pinned           INTEGER NOT NULL DEFAULT 0,
+    pinned_at        TEXT,
+    endorsements     INTEGER NOT NULL DEFAULT 0,
+    downvotes        INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_validity     ON facts(scope, valid_until);
@@ -163,6 +273,20 @@ CREATE INDEX IF NOT EXISTS idx_facts_content_hash ON facts(content_hash);
 CREATE INDEX IF NOT EXISTS idx_facts_lineage      ON facts(lineage_id);
 CREATE INDEX IF NOT EXISTS idx_facts_agent        ON facts(agent_id);
 CREATE INDEX IF NOT EXISTS idx_facts_type         ON facts(fact_type);
+
+-- Archive table for compressed lineages (#58)
+CREATE TABLE IF NOT EXISTS fact_archives (
+    id              TEXT PRIMARY KEY,
+    lineage_id      TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    first_commit    TEXT NOT NULL,
+    last_commit     TEXT NOT NULL,
+    version_count   INTEGER NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_archives_lineage ON fact_archives(lineage_id, workspace_id);
 
 -- FTS5 for lexical retrieval
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
@@ -179,6 +303,15 @@ CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
     INSERT INTO facts_fts(facts_fts, rowid, content, scope, keywords)
     VALUES ('delete', old.rowid, old.content, old.scope, old.keywords);
 END;
+
+-- Keep FTS5 shadow table in sync when content/keywords are updated (e.g. GDPR erasure).
+CREATE TRIGGER IF NOT EXISTS facts_au
+    AFTER UPDATE OF content, scope, keywords ON facts BEGIN
+        INSERT INTO facts_fts(facts_fts, rowid, content, scope, keywords)
+        VALUES ('delete', old.rowid, old.content, old.scope, old.keywords);
+        INSERT INTO facts_fts(rowid, content, scope, keywords)
+        VALUES (new.rowid, new.content, new.scope, new.keywords);
+    END;
 
 -- Conflict tracking
 CREATE TABLE IF NOT EXISTS conflicts (
@@ -202,12 +335,24 @@ CREATE TABLE IF NOT EXISTS conflicts (
     suggestion_generated_at     TEXT,
     auto_resolved               INTEGER NOT NULL DEFAULT 0,
     escalated_at                TEXT,
-    workspace_id                TEXT NOT NULL DEFAULT 'local'
+    workspace_id                TEXT NOT NULL DEFAULT 'local',
+    conflict_type               TEXT NOT NULL DEFAULT 'genuine'
 );
 
 CREATE INDEX IF NOT EXISTS idx_conflicts_status    ON conflicts(status);
 CREATE INDEX IF NOT EXISTS idx_conflicts_fact_a    ON conflicts(fact_a_id);
 CREATE INDEX IF NOT EXISTS idx_conflicts_fact_b    ON conflicts(fact_b_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conflicts_pair_unique ON conflicts(
+    workspace_id,
+    CASE WHEN fact_a_id < fact_b_id THEN fact_a_id ELSE fact_b_id END,
+    CASE WHEN fact_a_id < fact_b_id THEN fact_b_id ELSE fact_a_id END
+);
+
+CREATE TABLE IF NOT EXISTS dismissed_conflicts (
+    conflict_id                  TEXT PRIMARY KEY REFERENCES conflicts(id),
+    workspace_id                 TEXT NOT NULL DEFAULT 'local',
+    dismissed_at                 TEXT NOT NULL
+);
 
 -- Agent registry
 CREATE TABLE IF NOT EXISTS agents (
@@ -251,13 +396,19 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 
 -- Invite keys (db_url is encrypted into the key token, NOT stored here)
+-- revoked_at/grace_until support the key rotation lifecycle (schema v11).
 CREATE TABLE IF NOT EXISTS invite_keys (
     key_hash         TEXT PRIMARY KEY,
     engram_id        TEXT NOT NULL REFERENCES workspaces(engram_id),
     created_at       TEXT NOT NULL,
     expires_at       TEXT,
-    uses_remaining   INTEGER
+    uses_remaining   INTEGER,
+    revoked_at       TEXT,
+    grace_until      TEXT,
+    rotation_reason  TEXT
 );
+
+CREATE INDEX IF NOT EXISTS invite_keys_grace ON invite_keys(engram_id, grace_until);
 
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -322,6 +473,74 @@ CREATE TABLE IF NOT EXISTS audit_log (
     timestamp    TEXT NOT NULL,
     workspace_id TEXT NOT NULL DEFAULT 'local'
 );
+
+-- Memory compression archives
+CREATE TABLE IF NOT EXISTS fact_archives (
+    id              TEXT PRIMARY KEY,
+    lineage_id      TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL DEFAULT 'local',
+    content         TEXT NOT NULL,
+    first_commit    TEXT NOT NULL,
+    last_commit     TEXT NOT NULL,
+    version_count   INTEGER NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_archives_lineage ON fact_archives(lineage_id, workspace_id);
+
+-- Temporal Knowledge Graph: entity nodes
+CREATE TABLE IF NOT EXISTS tkg_nodes (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    entity_type     TEXT NOT NULL,
+    summary         TEXT NOT NULL DEFAULT '',
+    first_seen      TEXT NOT NULL,
+    last_seen       TEXT NOT NULL,
+    fact_count      INTEGER NOT NULL DEFAULT 1,
+    workspace_id    TEXT NOT NULL DEFAULT 'local'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tkg_nodes_name ON tkg_nodes(name, workspace_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_nodes_type ON tkg_nodes(entity_type);
+
+-- Temporal Knowledge Graph: bi-temporal edges
+CREATE TABLE IF NOT EXISTS tkg_edges (
+    id              TEXT PRIMARY KEY,
+    source_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+    target_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+    relation_type   TEXT NOT NULL,
+    fact_label      TEXT NOT NULL,
+    fact_id         TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    expired_at      TEXT,
+    valid_at        TEXT,
+    invalid_at      TEXT,
+    confidence      REAL NOT NULL DEFAULT 0.8,
+    workspace_id    TEXT NOT NULL DEFAULT 'local'
+);
+
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_source ON tkg_edges(source_node_id, relation_type);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_target ON tkg_edges(target_node_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_fact ON tkg_edges(fact_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_active ON tkg_edges(expired_at);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_scope ON tkg_edges(scope);
+
+-- Overnight deferred thinking queue
+CREATE TABLE IF NOT EXISTS deferred_scans (
+    id               TEXT PRIMARY KEY,
+    workspace_id     TEXT NOT NULL DEFAULT 'local',
+    queued_at        TEXT NOT NULL,
+    scheduled_for    TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    payload          TEXT NOT NULL DEFAULT '{}',
+    result_fact_count INTEGER NOT NULL DEFAULT 0,
+    completed_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_deferred_scans_workspace_status ON deferred_scans(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_deferred_scans_scheduled ON deferred_scans(scheduled_for, status);
 """
 
 # ── Post-migration indexes (SQLite) ─────────────────────────────────
@@ -332,6 +551,8 @@ POST_MIGRATION_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_facts_workspace    ON facts(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_facts_durability   ON facts(durability, valid_until);
 CREATE INDEX IF NOT EXISTS idx_conflicts_workspace ON conflicts(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_dismissed_conflicts_workspace
+ON dismissed_conflicts(workspace_id);
 """
 
 # ── PostgreSQL schema (team mode) ────────────────────────────────────
@@ -368,6 +589,8 @@ CREATE TABLE IF NOT EXISTS facts (
     corroborating_agents INTEGER NOT NULL DEFAULT 0,
     durability       TEXT NOT NULL DEFAULT 'durable',
     query_hits       INTEGER NOT NULL DEFAULT 0,
+    archived         INTEGER NOT NULL DEFAULT 0,
+    archive_ref      TEXT,
     search_vector    tsvector GENERATED ALWAYS AS (
         to_tsvector('english', coalesce(content, '') || ' ' || coalesce(scope, '') || ' ' || coalesce(keywords, ''))
     ) STORED
@@ -382,6 +605,20 @@ CREATE INDEX IF NOT EXISTS idx_facts_workspace    ON facts(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_facts_durability   ON facts(durability, valid_until);
 CREATE INDEX IF NOT EXISTS idx_facts_fts          ON facts USING GIN(search_vector);
 CREATE INDEX IF NOT EXISTS idx_facts_embedding    ON facts USING ivfflat(embedding vector_cosine_ops) WITH (lists = 100);
+
+-- Archive table for compressed lineages (#58)
+CREATE TABLE IF NOT EXISTS fact_archives (
+    id              TEXT PRIMARY KEY,
+    lineage_id      TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    first_commit    TIMESTAMPTZ NOT NULL,
+    last_commit     TIMESTAMPTZ NOT NULL,
+    version_count   INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_archives_lineage ON fact_archives(lineage_id, workspace_id);
 
 -- Conflict tracking
 CREATE TABLE IF NOT EXISTS conflicts (
@@ -405,13 +642,26 @@ CREATE TABLE IF NOT EXISTS conflicts (
     suggestion_generated_at     TIMESTAMPTZ,
     auto_resolved               INTEGER NOT NULL DEFAULT 0,
     escalated_at                TIMESTAMPTZ,
-    workspace_id                TEXT NOT NULL DEFAULT 'local'
+    workspace_id                TEXT NOT NULL DEFAULT 'local',
+    conflict_type               TEXT NOT NULL DEFAULT 'genuine'
 );
 
 CREATE INDEX IF NOT EXISTS idx_conflicts_status    ON conflicts(status);
 CREATE INDEX IF NOT EXISTS idx_conflicts_fact_a    ON conflicts(fact_a_id);
 CREATE INDEX IF NOT EXISTS idx_conflicts_fact_b    ON conflicts(fact_b_id);
 CREATE INDEX IF NOT EXISTS idx_conflicts_workspace ON conflicts(workspace_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conflicts_pair_unique ON conflicts(
+    workspace_id,
+    LEAST(fact_a_id, fact_b_id),
+    GREATEST(fact_a_id, fact_b_id)
+);
+
+CREATE TABLE IF NOT EXISTS dismissed_conflicts (
+    conflict_id                  TEXT PRIMARY KEY REFERENCES conflicts(id),
+    workspace_id                 TEXT NOT NULL DEFAULT 'local',
+    dismissed_at                 TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dismissed_conflicts_workspace ON dismissed_conflicts(workspace_id);
 
 -- Agent registry
 CREATE TABLE IF NOT EXISTS agents (
@@ -455,13 +705,19 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 
 -- Invite keys (db_url encrypted into token, NOT stored here)
+-- revoked_at/grace_until support the key rotation lifecycle (schema v11).
 CREATE TABLE IF NOT EXISTS invite_keys (
     key_hash         TEXT PRIMARY KEY,
     engram_id        TEXT NOT NULL REFERENCES workspaces(engram_id),
     created_at       TIMESTAMPTZ NOT NULL,
     expires_at       TIMESTAMPTZ,
-    uses_remaining   INTEGER
+    uses_remaining   INTEGER,
+    revoked_at       TIMESTAMPTZ,
+    grace_until      TIMESTAMPTZ,
+    rotation_reason  TEXT
 );
+
+CREATE INDEX IF NOT EXISTS invite_keys_grace ON invite_keys(engram_id, grace_until);
 
 -- Webhooks (event subscriptions)
 CREATE TABLE IF NOT EXISTS webhooks (
@@ -520,4 +776,72 @@ CREATE TABLE IF NOT EXISTS audit_log (
     timestamp    TIMESTAMPTZ NOT NULL,
     workspace_id TEXT NOT NULL DEFAULT 'local'
 );
+
+-- Memory compression archives
+CREATE TABLE IF NOT EXISTS fact_archives (
+    id              TEXT PRIMARY KEY,
+    lineage_id      TEXT NOT NULL,
+    workspace_id    TEXT NOT NULL DEFAULT 'local',
+    content         TEXT NOT NULL,
+    first_commit    TEXT NOT NULL,
+    last_commit     TEXT NOT NULL,
+    version_count   INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_archives_lineage ON fact_archives(lineage_id, workspace_id);
+
+-- Temporal Knowledge Graph: entity nodes
+CREATE TABLE IF NOT EXISTS tkg_nodes (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    entity_type     TEXT NOT NULL,
+    summary         TEXT NOT NULL DEFAULT '',
+    first_seen      TIMESTAMPTZ NOT NULL,
+    last_seen       TIMESTAMPTZ NOT NULL,
+    fact_count      INTEGER NOT NULL DEFAULT 1,
+    workspace_id    TEXT NOT NULL DEFAULT 'local'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tkg_nodes_name ON tkg_nodes(name, workspace_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_nodes_type ON tkg_nodes(entity_type);
+
+-- Temporal Knowledge Graph: bi-temporal edges
+CREATE TABLE IF NOT EXISTS tkg_edges (
+    id              TEXT PRIMARY KEY,
+    source_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+    target_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+    relation_type   TEXT NOT NULL,
+    fact_label      TEXT NOT NULL,
+    fact_id         TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL,
+    expired_at      TIMESTAMPTZ,
+    valid_at        TIMESTAMPTZ,
+    invalid_at      TIMESTAMPTZ,
+    confidence      REAL NOT NULL DEFAULT 0.8,
+    workspace_id    TEXT NOT NULL DEFAULT 'local'
+);
+
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_source ON tkg_edges(source_node_id, relation_type);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_target ON tkg_edges(target_node_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_fact ON tkg_edges(fact_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_active ON tkg_edges(expired_at);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_scope ON tkg_edges(scope);
+
+-- Overnight deferred thinking queue
+CREATE TABLE IF NOT EXISTS deferred_scans (
+    id               TEXT PRIMARY KEY,
+    workspace_id     TEXT NOT NULL DEFAULT 'local',
+    queued_at        TIMESTAMPTZ NOT NULL,
+    scheduled_for    TIMESTAMPTZ NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    payload          JSONB NOT NULL DEFAULT '{}',
+    result_fact_count INTEGER NOT NULL DEFAULT 0,
+    completed_at     TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_deferred_scans_workspace_status ON deferred_scans(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_deferred_scans_scheduled ON deferred_scans(scheduled_for, status);
 """

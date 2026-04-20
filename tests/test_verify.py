@@ -1,7 +1,9 @@
-"""Tests for the engram verify command."""
+"""Tests for the engram diagnostics commands."""
 
 import json
 import pytest
+import sys
+import types
 from pathlib import Path
 from unittest.mock import patch
 from click.testing import CliRunner
@@ -13,7 +15,12 @@ _REAL_HOME = Path.home()
 
 
 def _rebased_agent_clients(home: Path) -> dict:
-    """Rebuild _AGENT_CLIENTS with paths rooted under *home*."""
+    """Rebuild _MCP_CLIENTS with paths rooted under *home*.
+
+    Any path that can't be made relative to _REAL_HOME (e.g. the ValidPathNotFound
+    sentinel or a Windows APPDATA path on Linux) is mapped to a guaranteed
+    non-existent path under home so tests stay fully isolated.
+    """
     rebuilt = {}
     for name, cfg in _MCP_CLIENTS.items():
         new_cfg = dict(cfg)
@@ -21,7 +28,7 @@ def _rebased_agent_clients(home: Path) -> dict:
             relative = cfg["path"].relative_to(_REAL_HOME)
             new_cfg["path"] = home / relative
         except ValueError:
-            pass  # non-home paths (XDG etc.) — leave as-is
+            new_cfg["path"] = home / "_unreachable" / name
         rebuilt[name] = new_cfg
     return rebuilt
 
@@ -41,6 +48,7 @@ class TestVerifyCommand:
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
             patch("engram.workspace.WORKSPACE_PATH", workspace_path),
+            patch("engram.cli.DEFAULT_DB_PATH", tmp_path / ".engram" / "knowledge.db"),
             patch("engram.cli._MCP_CLIENTS", _rebased_agent_clients(tmp_path)),
         ):
             yield tmp_path
@@ -81,6 +89,7 @@ class TestVerifyCommand:
         assert "✓" in result.output
         assert "workspace.json exists" in result.output
         assert "local" in result.output
+        assert "SQLite storage connected" in result.output
 
     def test_verify_workspace_invalid_json(self, cli_runner, temp_home):
         """Test verify with invalid JSON in workspace.json."""
@@ -135,7 +144,7 @@ class TestVerifyCommand:
             )
         )
 
-        # Create Cursor MCP config with engram
+        # Create Cursor MCP config with Engram's hosted remote MCP URL.
         cursor_dir = temp_home / ".cursor"
         cursor_dir.mkdir(parents=True)
         mcp_config = cursor_dir / "mcp.json"
@@ -144,8 +153,7 @@ class TestVerifyCommand:
                 {
                     "mcpServers": {
                         "engram": {
-                            "command": "uvx",
-                            "args": ["--from", "engram-team@latest", "engram", "serve"],
+                            "url": "https://www.engram-memory.com/mcp",
                         }
                     }
                 }
@@ -182,7 +190,7 @@ class TestVerifyCommand:
                 {
                     "mcpServers": {
                         "engram": {
-                            "serverUrl": "https://mcp.engram.app/mcp",
+                            "serverUrl": "https://www.engram-memory.com/mcp",
                         }
                     }
                 }
@@ -219,7 +227,7 @@ class TestVerifyCommand:
                 {
                     "context_servers": {
                         "engram": {
-                            "url": "https://mcp.engram.app/mcp",
+                            "url": "https://www.engram-memory.com/mcp",
                         }
                     }
                 }
@@ -232,6 +240,43 @@ class TestVerifyCommand:
         assert result.exit_code == 0
         assert "✓" in result.output
         assert "Zed" in result.output
+
+    def test_verify_detects_vscode_copilot_servers_config(self, cli_runner, temp_home):
+        """Test verify detects VS Code Agent Mode's servers.engram config shape."""
+        workspace_dir = temp_home / ".engram"
+        workspace_dir.mkdir(parents=True)
+        workspace_file = workspace_dir / "workspace.json"
+        workspace_file.write_text(
+            json.dumps(
+                {
+                    "engram_id": "ENG-TEST-1234",
+                    "db_url": "",
+                    "schema": "engram",
+                }
+            )
+        )
+
+        vscode_config = _rebased_agent_clients(temp_home)["VS Code (Copilot)"]["path"]
+        vscode_config.parent.mkdir(parents=True, exist_ok=True)
+        vscode_config.write_text(
+            json.dumps(
+                {
+                    "servers": {
+                        "engram": {
+                            "type": "http",
+                            "url": "https://www.engram-memory.com/mcp",
+                        }
+                    }
+                }
+            )
+        )
+
+        with patch("pathlib.Path.home", return_value=temp_home):
+            result = cli_runner.invoke(main, ["verify"])
+
+        assert result.exit_code == 0
+        assert "✓" in result.output
+        assert "VS Code (Copilot)" in result.output
 
     def test_verify_verbose_flag(self, cli_runner, temp_home):
         """Test verify with --verbose flag shows additional details."""
@@ -257,6 +302,101 @@ class TestVerifyCommand:
         # Verbose should show engram_id and schema details
         assert "engram_id:" in result.output
         assert "anonymous_mode:" in result.output
+
+    def test_doctor_runs_shared_diagnostics(self, cli_runner, temp_home):
+        """Test doctor uses the same diagnostics surface as verify."""
+        workspace_dir = temp_home / ".engram"
+        workspace_dir.mkdir(parents=True)
+        workspace_file = workspace_dir / "workspace.json"
+        workspace_file.write_text(
+            json.dumps(
+                {
+                    "engram_id": "ENG-TEST-1234",
+                    "db_url": "",
+                    "schema": "engram",
+                }
+            )
+        )
+
+        cursor_dir = temp_home / ".cursor"
+        cursor_dir.mkdir(parents=True)
+        mcp_config = cursor_dir / "mcp.json"
+        mcp_config.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "engram": {
+                            "command": "uvx",
+                            "args": ["--from", "engram-team@latest", "engram", "serve"],
+                        }
+                    }
+                }
+            )
+        )
+
+        result = cli_runner.invoke(main, ["doctor"])
+
+        assert result.exit_code == 0
+        assert "Engram doctor" in result.output
+        assert "SQLite storage connected" in result.output
+        assert "MCP server module loads" in result.output
+        assert "All required checks passed" in result.output
+
+    def test_doctor_reports_storage_failure(self, cli_runner, temp_home, monkeypatch):
+        """Test doctor surfaces actionable storage failures."""
+        workspace_dir = temp_home / ".engram"
+        workspace_dir.mkdir(parents=True)
+        workspace_file = workspace_dir / "workspace.json"
+        workspace_file.write_text(
+            json.dumps(
+                {
+                    "engram_id": "ENG-TEST-1234",
+                    "db_url": "",
+                    "schema": "engram",
+                }
+            )
+        )
+
+        async def fake_storage_check(_ws):
+            return False, "PermissionError: denied"
+
+        monkeypatch.setattr("engram.cli._check_storage_connectivity", fake_storage_check)
+
+        result = cli_runner.invoke(main, ["doctor"])
+
+        assert result.exit_code == 0
+        assert "Storage connection failed" in result.output
+        assert "PermissionError: denied" in result.output
+        assert "TROUBLESHOOTING.md" in result.output
+
+    def test_doctor_load_nli_success(self, cli_runner, temp_home, monkeypatch):
+        """Test --load-nli verifies the model can be constructed."""
+        workspace_dir = temp_home / ".engram"
+        workspace_dir.mkdir(parents=True)
+        workspace_file = workspace_dir / "workspace.json"
+        workspace_file.write_text(
+            json.dumps(
+                {
+                    "engram_id": "ENG-TEST-1234",
+                    "db_url": "",
+                    "schema": "engram",
+                }
+            )
+        )
+
+        fake_module = types.ModuleType("sentence_transformers")
+
+        class FakeCrossEncoder:
+            def __init__(self, model_name):
+                self.model_name = model_name
+
+        fake_module.CrossEncoder = FakeCrossEncoder
+        monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
+
+        result = cli_runner.invoke(main, ["doctor", "--load-nli"])
+
+        assert result.exit_code == 0
+        assert "NLI model loaded" in result.output
 
     def test_verify_summary_success(self, cli_runner, temp_home):
         """Test that success summary is shown when all checks pass."""
@@ -340,10 +480,19 @@ class TestVerifyMCPClientDetection:
         )
 
         # VS Code
-        vscode_dir = temp_home / ".vscode"
-        vscode_dir.mkdir(parents=True)
-        (vscode_dir / "mcp.json").write_text(
-            json.dumps({"mcpServers": {"engram": {"command": "uvx"}}})
+        vscode_config = _rebased_agent_clients(temp_home)["VS Code (Copilot)"]["path"]
+        vscode_config.parent.mkdir(parents=True, exist_ok=True)
+        vscode_config.write_text(
+            json.dumps(
+                {
+                    "servers": {
+                        "engram": {
+                            "type": "http",
+                            "url": "https://www.engram-memory.com/mcp",
+                        }
+                    }
+                }
+            )
         )
 
         with patch("pathlib.Path.home", return_value=temp_home):

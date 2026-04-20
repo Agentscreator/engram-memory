@@ -16,8 +16,13 @@ import logging
 import sys
 from pathlib import Path
 import os
+import platform
 
 import click
+import questionary
+from rich.console import Console as _Console
+from rich.panel import Panel as _Panel
+from rich.text import Text as _Text
 
 from engram import embeddings
 from engram.storage import DEFAULT_DB_PATH
@@ -25,7 +30,9 @@ from engram.storage import DEFAULT_DB_PATH
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 _PATH_SYSTEM_HOME = Path.home()
 _PATH_APPDATA_DIR = Path(os.environ["APPDATA"]) if "APPDATA" in os.environ else None
-_PATH_APPSUPPORT_DIR = _PATH_SYSTEM_HOME / "Library" / "Application Support"  # Mac only
+_PATH_APPSUPPORT_DIR = (
+    _PATH_SYSTEM_HOME / "Library" / "Application Support" if platform.system() == "Darwin" else None
+)
 _PATH_XDG_DIR = (
     Path(os.environ["XDG_CONFIG_HOME"])
     if "XDG_CONFIG_HOME" in os.environ
@@ -33,10 +40,79 @@ _PATH_XDG_DIR = (
 )
 
 
-@click.group()
-def main() -> None:
+@click.group(invoke_without_command=True)
+@click.pass_context
+def main(ctx: click.Context) -> None:
     """Engram - Multi-agent memory consistency for engineering teams."""
-    pass
+    if ctx.invoked_subcommand is not None:
+        return
+
+    import os
+    import sys
+    from engram.workspace import read_workspace
+
+    console = _Console()
+    ws = read_workspace()
+    configured = ws is not None or bool(os.environ.get("ENGRAM_DB_URL"))
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+
+    if not configured:
+        console.print()
+        console.print(
+            _Panel(
+                _Text.assemble(
+                    ("Engram", "bold white"),
+                    ("  ·  ", "dim"),
+                    ("not connected to a workspace", "yellow"),
+                ),
+                border_style="dim",
+                padding=(0, 2),
+            )
+        )
+        if not interactive:
+            click.echo("  engram setup    — configure a new workspace")
+            click.echo("  engram install  — add Engram to your MCP clients")
+            click.echo("  engram --help   — all commands")
+            return
+        action = questionary.select(
+            "Get started:",
+            choices=[
+                questionary.Choice("setup         — configure a new workspace", "setup"),
+                questionary.Choice("install       — add Engram to your MCP clients", "install"),
+                questionary.Choice("quit", "quit"),
+            ],
+            use_shortcuts=False,
+            style=questionary.Style(
+                [
+                    ("selected", "fg:#00aaff bold"),
+                    ("pointer", "fg:#00aaff bold"),
+                    ("highlighted", "fg:#00aaff"),
+                ]
+            ),
+        ).ask()
+        if action and action != "quit":
+            ctx.invoke(main.commands[action])  # type: ignore[attr-defined]
+        return
+
+    if not interactive:
+        workspace_id = (ws.engram_id if ws else os.environ.get("ENGRAM_DB_URL", "")[:24]) or "-"
+        if ws and ws.server_url and not ws.db_url:
+            mode_label = "hosted"
+        elif ws and ws.db_url:
+            mode_label = "team · PostgreSQL"
+        else:
+            mode_label = "local · SQLite"
+        click.echo(f"Engram  connected  [{mode_label}]  {workspace_id}")
+        click.echo()
+        click.echo("  engram conflicts  — review open memory conflicts")
+        click.echo("  engram search <q> — query workspace memory")
+        click.echo("  engram status     — full workspace info")
+        click.echo("  engram --help     — all commands")
+        return
+
+    from engram.tui import run_tui
+
+    run_tui(ws, ctx)
 
 
 # ── engram install ───────────────────────────────────────────────────
@@ -68,18 +144,56 @@ _ENGRAM_MCP_ENTRY = {
 }
 
 
+def _load_install_credentials() -> tuple[str, str]:
+    """Return (mcp_url, invite_key) for MCP config.
+
+    Project .engram.env takes priority over ~/.engram/credentials so that
+    running `engram install` inside a project directory always wires up the
+    correct workspace.
+    """
+    server_url = "https://mcp.engram-memory.com/mcp"
+    invite_key = ""
+    for path in [
+        Path.home() / ".engram" / "credentials",
+        Path.cwd() / ".engram.env",
+    ]:
+        if path.exists():
+            for line in path.read_text().splitlines():
+                line = line.strip()
+                if line.startswith("ENGRAM_SERVER_URL="):
+                    url = line[len("ENGRAM_SERVER_URL=") :].strip().rstrip("/")
+                    server_url = url if url.endswith("/mcp") else url + "/mcp"
+                elif line.startswith("ENGRAM_INVITE_KEY="):
+                    invite_key = line[len("ENGRAM_INVITE_KEY=") :].strip()
+    return server_url, invite_key
+
+
 def _engram_mcp_entry_for_client(client_name: str) -> dict[str, object]:
     import os
 
-    mcp_url = os.environ.get("ENGRAM_MCP_URL", "https://mcp.engram.app/mcp")
+    mcp_url = os.environ.get("ENGRAM_MCP_URL", "https://www.engram-memory.com/mcp")
 
     if client_name == "Windsurf":
         return {"serverUrl": mcp_url}
 
-    if client_name == "Zed":
+    if client_name == "Kiro (Amazon)":
         return {"url": mcp_url}
 
+    if client_name in {"Cursor", "Zed"}:
+        return {"url": mcp_url}
+
+    if client_name.startswith("VS Code"):
+        return {"type": "http", "url": mcp_url}
+
     return {
+        "command": "uvx",
+        "args": ["--from", "engram-team@latest", "engram", "serve"],
+    }
+
+
+def _is_legacy_cursor_stdio_entry(entry: object) -> bool:
+    """Return True for the old Engram Cursor stdio config we can safely migrate."""
+    return entry == {
         "command": "uvx",
         "args": ["--from", "engram-team@latest", "engram", "serve"],
     }
@@ -93,33 +207,494 @@ def _engram_mcp_entry_for_client(client_name: str) -> dict[str, object]:
 _ENGRAM_AGENT_INSTRUCTIONS = """\
 # Engram — Shared Team Memory
 
-You have access to an MCP tool called **Engram**. It gives you a shared
-memory layer so every agent on the team sees the same verified facts.
+Engram is the shared memory layer for this team's AI agents. User messages
+are automatically captured by IDE-level hooks — you do not need to commit
+them yourself.
 
-## On every new session
-1. Call `engram_status()` first. Read the `next_prompt` field and follow it.
-2. If status is `ready`, call `engram_query("<topic>")` before starting
-   any task to see what the team already knows.
+## Session start — do this once when the session opens
 
-## While working
-- After verifying a non-obvious discovery (hidden side-effect, config
-  detail, failed approach, architectural decision), call `engram_commit`.
-- Before architectural decisions, call `engram_conflicts()` to check for
-  disputed facts.
+Check for `.engram.env` in the workspace root. It contains:
+```
+ENGRAM_SERVER_URL=https://www.engram-memory.com
+ENGRAM_INVITE_KEY=ek_live_...
+```
+
+**If you have Engram MCP tools** (`engram_status` is available):
+1. Call `engram_status()` and follow the `next_prompt` field.
+2. Call `engram_query("<topic>")` before starting any substantive task.
+
+**If you do NOT have Engram MCP tools** (use the terminal):
+
+Query before starting any task:
+```bash
+source .engram.env && curl -s "$ENGRAM_SERVER_URL/api/query?topic=<task>" \\
+  -H "Authorization: Bearer $ENGRAM_INVITE_KEY"
+```
+
+## When to commit
+
+Use `engram_commit` to record **verified discoveries** — things you learned
+during this task that the next agent should know:
+- Architectural decisions and their rationale
+- Failed approaches and why they failed
+- Undocumented constraints, config details, side effects
+- Corrections to outdated facts (use `operation="update"`)
+
+Do NOT call `engram_commit` for raw user messages — the IDE hooks handle that.
 
 ## Rules
-- Only commit facts you have verified — never speculative claims.
-- Do not include secrets, API keys, or passwords in commits.
-- Batch related discoveries into one commit (max 5 commits per task).
-- Do not call `engram_query` more than 3 times per task.
+- Only commit verified facts — never speculation.
+- Never commit secrets, API keys, or passwords.
+- Check for conflicts before architectural decisions.
+- Max 5 commits per task. Batch related discoveries into one commit.
 """
+
+# Kiro-specific version with `inclusion: always` frontmatter so Kiro loads it
+# in every session without the user having to include it per-project.
+_KIRO_STEERING_INSTRUCTIONS = "---\ninclusion: always\n---\n\n" + _ENGRAM_AGENT_INSTRUCTIONS
+
+# ── Universal auto-commit hook script ────────────────────────────────
+# One Python script handles all IDEs. Each IDE passes the user prompt
+# differently via JSON on stdin — we try all known field paths:
+#
+#   Claude Code  → {"prompt": "..."}
+#   Cursor       → {"prompt": "..."}
+#   Windsurf     → {"tool_info": {"user_prompt": "..."}}
+#
+# Credentials are read from ~/.engram/credentials (written by engram join/init)
+# and from the project's .engram.env (for project-specific overrides).
+
+_HOOK_SCRIPT = '''\
+#!/usr/bin/env python3
+"""Engram auto-commit hook — fires on every user message across all IDEs.
+
+Handles Claude Code, Cursor, and Windsurf JSON formats.
+Reads credentials from ~/.engram/credentials and the project .engram.env,
+then calls engram_commit via the REST API.
+
+On failure, buffers the commit to ~/.engram/pending.jsonl and drains
+buffered commits on the next successful call. Never blocks the user.
+"""
+import json
+import os
+import sys
+import time
+import urllib.request
+import uuid
+
+PENDING_PATH = os.path.expanduser("~/.engram/pending.jsonl")
+MAX_PENDING = 1000
+
+
+def _load_credentials():
+    server_url = "https://www.engram-memory.com"
+    invite_key = ""
+    for path in [
+        os.path.expanduser("~/.engram/credentials"),
+        os.path.join(os.getcwd(), ".engram.env"),
+    ]:
+        if os.path.exists(path):
+            for line in open(path).read().splitlines():
+                line = line.strip()
+                if line.startswith("ENGRAM_SERVER_URL="):
+                    server_url = line[len("ENGRAM_SERVER_URL="):].strip()
+                elif line.startswith("ENGRAM_INVITE_KEY="):
+                    invite_key = line[len("ENGRAM_INVITE_KEY="):].strip()
+    return server_url, invite_key
+
+
+def _send_commit(server_url, invite_key, content, delayed=False):
+    """POST a commit to the Engram REST API. Raises on failure."""
+    args = {
+        "content": content,
+        "scope": "general",
+        "confidence": 0.8,
+        "fact_type": "observation",
+        "invite_key": invite_key,
+    }
+    if delayed:
+        args["delayed"] = True
+    body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": str(uuid.uuid4()),
+        "method": "tools/call",
+        "params": {"name": "engram_commit", "arguments": args},
+    }).encode()
+    req = urllib.request.Request(
+        server_url.rstrip("/") + "/mcp",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {invite_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=5)
+
+
+def _buffer_commit(content):
+    """Append a failed commit to the local pending buffer."""
+    try:
+        os.makedirs(os.path.dirname(PENDING_PATH), exist_ok=True)
+        entry = json.dumps({"content": content, "ts": time.time()})
+        with open(PENDING_PATH, "a") as f:
+            f.write(entry + "\\n")
+        # Cap file size — keep only the most recent MAX_PENDING lines
+        try:
+            with open(PENDING_PATH) as f:
+                lines = f.readlines()
+            if len(lines) > MAX_PENDING:
+                with open(PENDING_PATH, "w") as f:
+                    f.writelines(lines[-MAX_PENDING:])
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _drain_pending(server_url, invite_key):
+    """Try to send buffered commits. Remove successfully sent ones."""
+    if not os.path.exists(PENDING_PATH):
+        return
+    try:
+        with open(PENDING_PATH) as f:
+            lines = f.readlines()
+        if not lines:
+            return
+        remaining = []
+        for line in lines:
+            try:
+                entry = json.loads(line.strip())
+                _send_commit(server_url, invite_key, entry["content"], delayed=True)
+            except Exception:
+                remaining.append(line)
+        with open(PENDING_PATH, "w") as f:
+            f.writelines(remaining)
+    except Exception:
+        pass
+
+
+try:
+    data = json.load(sys.stdin)
+
+    # Extract prompt from whichever IDE format is present
+    prompt = (
+        data.get("prompt")                                    # Claude Code, Cursor
+        or data.get("tool_info", {}).get("user_prompt")      # Windsurf
+        or ""
+    ).strip()
+
+    if not prompt:
+        sys.exit(0)
+
+    server_url, invite_key = _load_credentials()
+    if not invite_key:
+        sys.exit(0)
+
+    try:
+        _send_commit(server_url, invite_key, prompt)
+        # Success — drain any buffered commits in the background
+        _drain_pending(server_url, invite_key)
+    except Exception as exc:
+        # Buffer locally so the commit is retried next time
+        _buffer_commit(prompt)
+        print(f"engram: commit buffered locally ({exc})", file=sys.stderr)
+except Exception as exc:
+    print(f"engram: hook error ({exc})", file=sys.stderr)
+
+sys.exit(0)
+'''
+
+
+def _write_claude_code_hook(dry_run: bool) -> bool:
+    """Write the UserPromptSubmit hook script and register it in ~/.claude/settings.json.
+
+    Returns True if the hook was written (or would be in dry-run mode).
+    """
+    hook_dir = Path.home() / ".engram" / "hooks"
+    hook_script = hook_dir / "auto_commit.py"
+    settings_path = Path.home() / ".claude" / "settings.json"
+
+    if dry_run:
+        click.echo(f"[dry-run] Would write hook script to {hook_script}")
+        click.echo(f"[dry-run] Would register UserPromptSubmit hook in {settings_path}")
+        return True
+
+    # Write the hook script
+    hook_dir.mkdir(parents=True, exist_ok=True)
+    hook_script.write_text(_HOOK_SCRIPT)
+    hook_script.chmod(0o755)
+
+    # Read or create settings.json
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+        except Exception:
+            settings = {}
+    else:
+        settings = {}
+
+    # Register the hook — idempotent
+    hooks = settings.setdefault("hooks", {})
+    submit_hooks = hooks.setdefault("UserPromptSubmit", [])
+
+    hook_command = f"python3 {hook_script}"
+    already_registered = any(
+        h.get("command") == hook_command for entry in submit_hooks for h in entry.get("hooks", [])
+    )
+    if not already_registered:
+        submit_hooks.append(
+            {
+                "matcher": "",
+                "hooks": [{"type": "command", "command": hook_command}],
+            }
+        )
+
+    # Write the hosted MCP entry with the invite key so the correct workspace
+    # is connected.  .engram.env overrides ~/.engram/credentials, so running
+    # install inside a project directory always picks the project's key.
+    mcp_url, invite_key = _load_install_credentials()
+    if invite_key:
+        settings.setdefault("mcpServers", {})["engram"] = {
+            "url": mcp_url,
+            "headers": {"Authorization": f"Bearer {invite_key}"},
+        }
+
+    settings_path.write_text(json.dumps(settings, indent=2))
+    return True
+
+
+def _write_project_claude_mcp_config(dry_run: bool) -> bool:
+    """Write project-level .claude/settings.local.json with the invite key from .engram.env.
+
+    This ensures the project's workspace key overrides any global key when Claude
+    Code is opened in this directory — preventing the wrong-workspace-looks-connected
+    problem when a user has multiple Engram workspaces.
+
+    Returns True if written (or would be in dry-run mode).
+    """
+    env_file = Path.cwd() / ".engram.env"
+    if not env_file.exists():
+        return False
+
+    invite_key = ""
+    server_url = "https://mcp.engram-memory.com/mcp"
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("ENGRAM_INVITE_KEY="):
+            invite_key = line[len("ENGRAM_INVITE_KEY=") :].strip()
+        elif line.startswith("ENGRAM_SERVER_URL="):
+            url = line[len("ENGRAM_SERVER_URL=") :].strip().rstrip("/")
+            server_url = url if url.endswith("/mcp") else url + "/mcp"
+
+    if not invite_key:
+        return False
+
+    local_settings_path = Path.cwd() / ".claude" / "settings.local.json"
+
+    if dry_run:
+        click.echo(f"[dry-run] Would write project MCP override to {local_settings_path}")
+        return True
+
+    local_settings_path.parent.mkdir(parents=True, exist_ok=True)
+    if local_settings_path.exists():
+        try:
+            settings = json.loads(local_settings_path.read_text())
+        except Exception:
+            settings = {}
+    else:
+        settings = {}
+
+    settings.setdefault("mcpServers", {})["engram"] = {
+        "url": server_url,
+        "headers": {"Authorization": f"Bearer {invite_key}"},
+    }
+    local_settings_path.write_text(json.dumps(settings, indent=2))
+    return True
+
+
+def _write_windsurf_hook(dry_run: bool) -> bool:
+    """Write the Engram pre_user_prompt hook to ~/.codeium/windsurf/hooks.json.
+
+    Windsurf passes the prompt as JSON on stdin: {"tool_info": {"user_prompt": "..."}}
+    Returns True if written (or would be in dry-run mode).
+    """
+    hook_script = Path.home() / ".engram" / "hooks" / "auto_commit.py"
+    hooks_path = Path.home() / ".codeium" / "windsurf" / "hooks.json"
+
+    if dry_run:
+        click.echo(f"[dry-run] Would write Windsurf hook to {hooks_path}")
+        return True
+
+    if not hooks_path.parent.exists():
+        return False  # Windsurf not installed
+
+    try:
+        # Ensure the hook script exists
+        hook_script.parent.mkdir(parents=True, exist_ok=True)
+        hook_script.write_text(_HOOK_SCRIPT)
+        hook_script.chmod(0o755)
+
+        if hooks_path.exists():
+            try:
+                config = json.loads(hooks_path.read_text())
+            except Exception:
+                config = {}
+        else:
+            config = {}
+
+        hooks = config.setdefault("hooks", {})
+        pre_prompt = hooks.setdefault("pre_user_prompt", [])
+
+        hook_command = f"python3 {hook_script}"
+        if not any(h.get("command") == hook_command for h in pre_prompt):
+            pre_prompt.append({"command": hook_command, "show_output": False})
+
+        hooks_path.write_text(json.dumps(config, indent=2))
+        return True
+    except Exception:
+        return False
+
+
+def _write_cursor_hook(dry_run: bool) -> bool:
+    """Write the Engram beforeSubmitPrompt hook to ~/.cursor/hooks.json.
+
+    Cursor passes the prompt as JSON on stdin: {"prompt": "..."}
+    Returns True if written (or would be in dry-run mode).
+    """
+    hook_script = Path.home() / ".engram" / "hooks" / "auto_commit.py"
+    hooks_path = Path.home() / ".cursor" / "hooks.json"
+
+    if dry_run:
+        click.echo(f"[dry-run] Would write Cursor hook to {hooks_path}")
+        return True
+
+    if not hooks_path.parent.exists():
+        return False  # Cursor not installed
+
+    try:
+        # Ensure the hook script exists
+        hook_script.parent.mkdir(parents=True, exist_ok=True)
+        hook_script.write_text(_HOOK_SCRIPT)
+        hook_script.chmod(0o755)
+
+        if hooks_path.exists():
+            try:
+                config = json.loads(hooks_path.read_text())
+            except Exception:
+                config = {"version": 1}
+        else:
+            config = {"version": 1}
+
+        hooks = config.setdefault("hooks", {})
+        before_prompt = hooks.setdefault("beforeSubmitPrompt", [])
+
+        hook_command = f"python3 {hook_script}"
+        if not any(h.get("command") == hook_command for h in before_prompt):
+            before_prompt.append({"command": hook_command})
+
+        hooks_path.write_text(json.dumps(config, indent=2))
+        return True
+    except Exception:
+        return False
+
+
+# ── Kiro promptSubmit hook ────────────────────────────────────────────
+# This hook fires at the IDE level for every user message — before the LLM
+# processes it. It auto-commits the raw user message to Engram via the REST
+# API using Kiro's $USER_PROMPT env var, regardless of whether the LLM
+# remembers to call engram_commit.
+
+_KIRO_HOOK_COMMAND = (
+    'python3 -c "\n'
+    "import json, os, sys, time, urllib.request, uuid\n"
+    "PENDING = os.path.expanduser('~/.engram/pending.jsonl')\n"
+    "def send(url, key, content, delayed=False):\n"
+    "    args = {'content': content, 'scope': 'general', 'confidence': 0.8, 'fact_type': 'observation', 'invite_key': key}\n"
+    "    if delayed: args['delayed'] = True\n"
+    "    body = json.dumps({'jsonrpc': '2.0', 'id': str(uuid.uuid4()), 'method': 'tools/call', 'params': {'name': 'engram_commit', 'arguments': args}}).encode()\n"
+    "    req = urllib.request.Request(url.rstrip('/') + '/mcp', data=body, headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}, method='POST')\n"
+    "    urllib.request.urlopen(req, timeout=5)\n"
+    "def buffer(content):\n"
+    "    try:\n"
+    "        os.makedirs(os.path.dirname(PENDING), exist_ok=True)\n"
+    "        with open(PENDING, 'a') as f: f.write(json.dumps({'content': content, 'ts': time.time()}) + '\\n')\n"
+    "    except Exception: pass\n"
+    "def drain(url, key):\n"
+    "    if not os.path.exists(PENDING): return\n"
+    "    try:\n"
+    "        with open(PENDING) as f: lines = f.readlines()\n"
+    "        if not lines: return\n"
+    "        remaining = []\n"
+    "        for line in lines:\n"
+    "            try: send(url, key, json.loads(line.strip())['content'], delayed=True)\n"
+    "            except Exception: remaining.append(line)\n"
+    "        with open(PENDING, 'w') as f: f.writelines(remaining)\n"
+    "    except Exception: pass\n"
+    "try:\n"
+    "    prompt = os.environ.get('USER_PROMPT', '').strip()\n"
+    "    if not prompt: sys.exit(0)\n"
+    "    server_url = 'https://www.engram-memory.com'\n"
+    "    invite_key = ''\n"
+    "    for f in [os.path.expanduser('~/.engram/credentials'), os.path.join(os.getcwd(), '.engram.env')]:\n"
+    "        if os.path.exists(f):\n"
+    "            for line in open(f).read().splitlines():\n"
+    "                if line.startswith('ENGRAM_SERVER_URL='): server_url = line[18:].strip()\n"
+    "                elif line.startswith('ENGRAM_INVITE_KEY='): invite_key = line[18:].strip()\n"
+    "    if not invite_key: sys.exit(0)\n"
+    "    try:\n"
+    "        send(server_url, invite_key, prompt)\n"
+    "        drain(server_url, invite_key)\n"
+    "    except Exception as exc:\n"
+    "        buffer(prompt)\n"
+    "        print('engram: commit buffered locally (' + str(exc) + ')', file=sys.stderr)\n"
+    "except Exception as exc:\n"
+    "    print('engram: hook error (' + str(exc) + ')', file=sys.stderr)\n"
+    '"'
+)
+
+_KIRO_HOOK = {
+    "name": "Engram Auto-Commit",
+    "version": "1.0.0",
+    "description": "Commits every user message to Engram shared team memory. Required by Engram ToS.",
+    "when": {"type": "promptSubmit"},
+    "then": {
+        "type": "runCommand",
+        "command": _KIRO_HOOK_COMMAND,
+        "timeout": 10,
+    },
+}
+
+
+def _write_kiro_hook(project_dir: Path, dry_run: bool) -> bool:
+    """Write the Engram promptSubmit hook to .kiro/hooks/ in the project directory.
+
+    The hook is self-contained inline Python — no external script dependency.
+    Returns True if the hook was written (or would be in dry-run mode).
+    """
+    hooks_dir = project_dir / ".kiro" / "hooks"
+    hook_path = hooks_dir / "engram-autocommit.json"
+
+    if dry_run:
+        click.echo(f"[dry-run] Would write Kiro hook to {hook_path}")
+        return True
+
+    try:
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text(json.dumps(_KIRO_HOOK, indent=2) + "\n")
+        return True
+    except Exception:
+        return False
+
 
 # Map of IDE name → list of (file_path, content_or_callable) for steering.
 # Paths are relative to the user's home directory or absolute.
 # We only write to IDEs that were detected (config file exists).
 _STEERING_LOCATIONS: dict[str, list[tuple[Path, str]]] = {
     "Kiro": [
-        (Path.home() / ".kiro" / "steering" / "engram.md", _ENGRAM_AGENT_INSTRUCTIONS),
+        (Path.home() / ".kiro" / "steering" / "engram.md", _KIRO_STEERING_INSTRUCTIONS),
     ],
     "Claude Code": [
         (Path.home() / ".claude" / "CLAUDE.md", _ENGRAM_AGENT_INSTRUCTIONS),
@@ -154,15 +729,23 @@ def _write_steering(client_name: str, dry_run: bool) -> list[str]:
     locations = _STEERING_LOCATIONS.get(client_name, [])
     for file_path, content in locations:
         try:
+            is_dedicated_engram_file = "engram" in file_path.name.lower()
             if file_path.exists():
                 existing = file_path.read_text()
-                if "engram" in existing.lower() and "engram_status" in existing:
-                    continue  # already has engram instructions
-                # Append to existing file
-                if not dry_run:
-                    with open(file_path, "a") as f:
-                        f.write("\n\n" + content)
-                written.append(str(file_path))
+                if is_dedicated_engram_file:
+                    # Always replace dedicated Engram files so instructions stay current
+                    if not dry_run:
+                        file_path.write_text(content)
+                    written.append(str(file_path))
+                elif "engram" in existing.lower() and "engram_status" in existing:
+                    # Shared file already has up-to-date Engram instructions — skip
+                    continue
+                else:
+                    # Shared file (e.g. CLAUDE.md) — append Engram block
+                    if not dry_run:
+                        with open(file_path, "a") as f:
+                            f.write("\n\n" + content)
+                    written.append(str(file_path))
             else:
                 if not dry_run:
                     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,6 +754,53 @@ def _write_steering(client_name: str, dry_run: bool) -> list[str]:
         except Exception:
             pass
     return written
+
+
+def _resolve_git_dir(marker: Path) -> Path | None:
+    if marker.is_dir():
+        return marker
+    if marker.is_file():
+        try:
+            raw = marker.read_text().strip()
+        except Exception:
+            return None
+        if raw.startswith("gitdir:"):
+            git_dir = raw[len("gitdir:") :].strip()
+            resolved = Path(git_dir)
+            if not resolved.is_absolute():
+                resolved = (marker.parent / resolved).resolve()
+            return resolved
+    return None
+
+
+def _find_git_dir(start: Path | None = None) -> Path | None:
+    current = (start or Path.cwd()).resolve()
+    for candidate in (current, *current.parents):
+        git_dir = _resolve_git_dir(candidate / ".git")
+        if git_dir is not None:
+            return git_dir
+    return None
+
+
+def _write_git_pre_commit_hook(dry_run: bool) -> bool:
+    git_dir = _find_git_dir(Path.cwd())
+    if git_dir is None:
+        return False
+
+    hook_path = git_dir / "hooks" / "pre-commit"
+    hook_body = """#!/bin/sh
+# Generated by `engram install`.
+exec engram pre-commit-hook "$@"
+"""
+
+    if dry_run:
+        click.echo(f"[dry-run] Would write Git pre-commit hook to {hook_path}")
+        return True
+
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+    hook_path.write_text(hook_body)
+    hook_path.chmod(0o755)
+    return True
 
 
 @main.command()
@@ -229,6 +859,30 @@ def install(dry_run: bool) -> None:
                 servers = data.setdefault(key, {})
 
                 if "engram" in servers:
+                    desired_entry = _engram_mcp_entry_for_client(client_name)
+                    if client_name == "Cursor" and _is_legacy_cursor_stdio_entry(servers["engram"]):
+                        servers["engram"] = desired_entry
+                        if not dry_run:
+                            config_path.parent.mkdir(parents=True, exist_ok=True)
+                            config_path.write_text(json.dumps(data, indent=2))
+                        added.append(client_name)
+                        steering_written.extend(_write_steering(client_name, dry_run))
+                        continue
+
+                    # Migrate Kiro entries that incorrectly used "serverUrl" instead of "url"
+                    if (
+                        client_name == "Kiro (Amazon)"
+                        and "serverUrl" in servers["engram"]
+                        and "url" not in servers["engram"]
+                    ):
+                        servers["engram"] = desired_entry
+                        if not dry_run:
+                            config_path.parent.mkdir(parents=True, exist_ok=True)
+                            config_path.write_text(json.dumps(data, indent=2))
+                        added.append(client_name)
+                        steering_written.extend(_write_steering(client_name, dry_run))
+                        continue
+
                     skipped.append(client_name)
                     steering_written.extend(_write_steering(client_name, dry_run))
                     continue
@@ -248,15 +902,49 @@ def install(dry_run: bool) -> None:
     # Also try Claude Code CLI if available
     _try_claude_code_cli(dry_run, added, skipped)
 
+    # Write the Claude Code UserPromptSubmit hook (auto-commits every user message
+    # at the shell level, independent of what the LLM does)
+    hook_written = _write_claude_code_hook(dry_run)
+
+    # Write Windsurf and Cursor hooks (same shared script, different config files)
+    windsurf_hook_written = _write_windsurf_hook(dry_run)
+    cursor_hook_written = _write_cursor_hook(dry_run)
+
+    # Write the Kiro promptSubmit hook to the current project directory
+    kiro_hook_written = _write_kiro_hook(Path.cwd(), dry_run)
+
+    git_pre_commit_written = _write_git_pre_commit_hook(dry_run)
+
+    # When .engram.env exists, write a project-level .claude/settings.local.json
+    # override so this project always connects to the correct workspace — even if
+    # the global ~/.claude/settings.json has a different (or stale) invite key.
+    project_mcp_written = _write_project_claude_mcp_config(dry_run)
+
     if added:
         click.echo(f"✓ Engram added to: {', '.join(added)}")
     if skipped:
         click.echo(f"⊙ Already configured: {', '.join(skipped)}")
     if steering_written:
         click.echo(f"📝 Agent instructions written to: {', '.join(steering_written)}")
+    if hook_written:
+        click.echo("⚡ Auto-commit hook installed: every Claude Code message → Engram")
+    if windsurf_hook_written:
+        click.echo("⚡ Auto-commit hook installed: every Windsurf message → Engram")
+    if cursor_hook_written:
+        click.echo("⚡ Auto-commit hook installed: every Cursor message → Engram")
+    if kiro_hook_written:
+        click.echo("⚡ Auto-commit hook installed: every Kiro message → Engram")
+    if git_pre_commit_written:
+        click.echo(
+            "⚡ Git pre-commit hook installed: blocks commits with unresolved Engram conflicts"
+        )
+    if project_mcp_written:
+        click.echo(
+            "🔑 Project MCP override written: .claude/settings.local.json → correct workspace"
+        )
 
     if added:
-        click.echo("\n→ Restart your editor and ask your agent: 'Set up Engram for my team'")
+        click.echo("\n→ Restart your editor and ask your agent: 'Set up Engram for my agents'")
     elif not added and not skipped:
         click.echo(
             "\nNo MCP clients detected. Add Engram manually:\n\n"
@@ -395,7 +1083,17 @@ async def _serve(
         from engram.storage import SQLiteStorage
 
         effective_db = db_path or str(DEFAULT_DB_PATH)
-        storage = SQLiteStorage(db_path=effective_db, workspace_id=workspace_id)
+        try:
+            storage = SQLiteStorage(db_path=effective_db, workspace_id=workspace_id)
+        except TypeError as exc:
+            logger.error(
+                "Failed to start Engram: %s\n"
+                "Your installed version is outdated. Run:\n"
+                "  uvx --from engram-team@latest engram serve\n"
+                "or: pip install --upgrade engram-team",
+                exc,
+            )
+            raise SystemExit(1) from exc
         logger.info("Local mode: SQLite (%s, workspace: %s)", effective_db, workspace_id)
 
     await storage.connect()
@@ -451,7 +1149,7 @@ async def _serve(
             import uvicorn
             from starlette.routing import Mount
 
-            dashboard_routes = build_dashboard_routes(storage)
+            dashboard_routes = build_dashboard_routes(storage, engine=engine)
             federation_routes = build_federation_routes(storage)
             rest_routes = build_rest_routes(
                 engine=engine,
@@ -461,10 +1159,12 @@ async def _serve(
             )
             mcp_app = mcp.streamable_http_app()
 
-            # Add routes to MCP app
+            # Add routes to MCP app.
+            # Dashboard routes include their full /dashboard/* paths — add them
+            # directly to avoid double-prefixing from a Mount("/dashboard").
             mcp_app.router.routes.extend(
                 [
-                    Mount("/dashboard", routes=dashboard_routes),
+                    *dashboard_routes,
                     Mount("/api/federation", routes=federation_routes),
                     *rest_routes,
                 ]
@@ -649,6 +1349,248 @@ def search(topic: str, scope: str | None, limit: int, as_json: bool) -> None:
     click.echo(output)
 
 
+# ── engram commit-check ────────────────────────────────────────────────
+
+
+@main.command("commit-check")
+@click.option("--message", default=None, help="Commit message text to include in the query.")
+@click.option(
+    "--message-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to a commit message file (useful from commit-msg hooks).",
+)
+@click.option(
+    "--staged/--no-staged",
+    default=False,
+    help="Include staged diff and staged file paths in the query.",
+)
+@click.option(
+    "--limit",
+    default=5,
+    type=click.IntRange(1, 50),
+    show_default=True,
+    help="Maximum matching facts to inspect.",
+)
+@click.option(
+    "--threshold",
+    default=0.35,
+    type=click.FloatRange(0.0, 1.0),
+    show_default=True,
+    help="Minimum relevance score required to print a warning.",
+)
+@click.option("--strict", is_flag=True, help="Exit with status 1 when relevant facts are found.")
+@click.option("--json", "as_json", is_flag=True, help="Print raw JSON output for scripting.")
+def commit_check(
+    message: str | None,
+    message_file: Path | None,
+    staged: bool,
+    limit: int,
+    threshold: float,
+    strict: bool,
+    as_json: bool,
+) -> None:
+    """Check staged commit context against Engram workspace memory."""
+    from engram.commit_check import (
+        build_commit_query,
+        filter_relevant_facts,
+        format_commit_warning,
+        get_staged_diff,
+        get_staged_files,
+        load_credentials,
+        query_workspace,
+    )
+
+    if message and message_file is not None:
+        raise click.ClickException("Use either --message or --message-file, not both.")
+
+    commit_message = message
+    if message_file is not None:
+        commit_message = message_file.read_text().strip()
+
+    changed_files: list[str] = []
+    staged_diff = ""
+    if staged:
+        try:
+            changed_files = get_staged_files()
+            staged_diff = get_staged_diff()
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    query = build_commit_query(commit_message, changed_files, staged_diff)
+    if not query:
+        click.echo("Nothing to scan. Provide --message and/or --staged.")
+        return
+
+    server_url, invite_key = load_credentials(Path.cwd())
+    try:
+        results = query_workspace(server_url, invite_key, query, limit=limit)
+    except Exception as exc:
+        click.echo(f"Engram commit check skipped: {exc}")
+        return
+
+    matches = filter_relevant_facts(results, threshold)
+    payload = {
+        "query": query,
+        "threshold": threshold,
+        "strict": strict,
+        "matches_found": len(matches),
+        "matches": matches,
+    }
+
+    if as_json:
+        click.echo(json.dumps(payload, indent=2))
+    elif matches:
+        click.echo(format_commit_warning(matches, threshold=threshold, strict=strict))
+    else:
+        click.echo("No relevant Engram facts found for this commit.")
+
+    if strict and matches:
+        raise SystemExit(1)
+
+
+@main.command()
+def pre_commit_hook() -> None:
+    """Git hook entrypoint: block commits when unresolved Engram conflicts exist."""
+    from engram.commit_check import (
+        fetch_open_conflicts,
+        format_conflict_blocker,
+        load_project_credentials,
+    )
+
+    try:
+        server_url, invite_key = load_project_credentials(Path.cwd())
+    except RuntimeError:
+        # No .engram.env — workspace not configured for this repo; pass silently.
+        raise SystemExit(0)
+
+    try:
+        conflicts = fetch_open_conflicts(server_url, invite_key)
+    except RuntimeError as exc:
+        click.echo(f"Engram pre-commit check skipped: {exc}", err=True)
+        raise SystemExit(0)
+
+    if conflicts:
+        click.echo(format_conflict_blocker(conflicts))
+        raise SystemExit(1)
+
+    click.echo("Engram pre-commit check passed: no unresolved conflicts.")
+
+
+# ── engram import ────────────────────────────────────────────────────
+
+
+async def _import_once(
+    import_path: Path,
+    scope: str,
+    pattern: str,
+    dry_run: bool,
+) -> str:
+    """Import local Markdown/text files into the current workspace."""
+    from engram.engine import EngramEngine
+    from engram.importer import import_documents
+
+    storage = None
+    engine: EngramEngine
+
+    if dry_run:
+        engine = EngramEngine(storage=None)  # type: ignore[arg-type]
+    else:
+        import os
+
+        db_url = os.environ.get("ENGRAM_DB_URL", "")
+        workspace_id = "local"
+        schema = "engram"
+
+        try:
+            from engram.workspace import read_workspace
+
+            ws = read_workspace()
+            if ws and ws.db_url:
+                db_url = ws.db_url
+                workspace_id = ws.engram_id
+                schema = ws.schema
+        except Exception:
+            pass
+
+        if db_url:
+            from engram.postgres_storage import PostgresStorage
+
+            storage = PostgresStorage(db_url=db_url, workspace_id=workspace_id, schema=schema)
+        else:
+            from engram.storage import SQLiteStorage
+
+            storage = SQLiteStorage(db_path=str(DEFAULT_DB_PATH), workspace_id=workspace_id)
+
+        await storage.connect()
+        engine = EngramEngine(storage)
+
+    try:
+        summary = await import_documents(
+            engine,
+            import_path,
+            scope=scope,
+            pattern=pattern,
+            dry_run=dry_run,
+        )
+    finally:
+        if storage is not None:
+            await storage.close()
+
+    lines = [
+        "Engram import summary",
+        f"  Files scanned   : {summary.files_scanned}",
+        f"  Facts extracted : {summary.facts_extracted}",
+        f"  Committed       : {summary.committed}",
+        f"  Duplicates      : {summary.duplicates}",
+        f"  Skipped         : {summary.skipped}",
+    ]
+
+    if dry_run and summary.dry_run_facts:
+        lines.append("")
+        lines.append("Dry run facts:")
+        for idx, fact in enumerate(summary.dry_run_facts, start=1):
+            lines.append(f"  {idx}. [{fact['scope']}] {fact['content']}")
+            lines.append(f"     provenance={fact['provenance']}")
+
+    if summary.errors:
+        lines.append("")
+        lines.append("Errors:")
+        for issue in summary.errors[:10]:
+            lines.append(f"  - {issue.source}: {issue.message}")
+        if len(summary.errors) > 10:
+            lines.append(f"  ... {len(summary.errors) - 10} more")
+
+    return "\n".join(lines)
+
+
+@main.command("import")
+@click.argument("import_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--dry-run", is_flag=True, help="Preview extracted facts without committing.")
+@click.option("--scope", default="imported", show_default=True, help="Scope for imported facts.")
+@click.option(
+    "--pattern",
+    default="*",
+    show_default=True,
+    help='Glob pattern for supported files, for example "*.md".',
+)
+def import_cmd(import_path: Path, dry_run: bool, scope: str, pattern: str) -> None:
+    """Bulk-ingest Markdown/text files into workspace memory."""
+    try:
+        output = asyncio.run(
+            _import_once(
+                import_path=import_path,
+                scope=scope,
+                pattern=pattern,
+                dry_run=dry_run,
+            )
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(output)
+
+
 # ── engram tail ──────────────────────────────────────────────────────
 
 
@@ -670,6 +1612,7 @@ async def _tail_once(
     after: str,
     scope: str | None,
     limit: int,
+    invite_key: str = "",
 ) -> tuple[list[dict[str, object]], str]:
     """Fetch facts newer than the watermark from the REST API."""
     import urllib.parse
@@ -680,8 +1623,12 @@ async def _tail_once(
         params["scope"] = scope
 
     url = f"{base_url.rstrip('/')}/api/tail?{urllib.parse.urlencode(params)}"
+    headers = {"Accept": "application/json"}
+    if invite_key:
+        headers["Authorization"] = f"Bearer {invite_key}"
+    req = urllib.request.Request(url, headers=headers)
 
-    with urllib.request.urlopen(url, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
 
     facts = payload.get("facts", [])
@@ -716,6 +1663,23 @@ def tail(scope: str | None, limit: int, interval: float, base_url: str) -> None:
     """Stream new workspace facts from the terminal."""
     from datetime import datetime, timezone
 
+    invite_key = ""
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws and ws.server_url and not ws.db_url:
+            base_url = ws.server_url.rstrip("/")
+    except Exception:
+        pass
+
+    try:
+        from engram.commit_check import load_credentials
+
+        _, invite_key = load_credentials()
+    except Exception:
+        invite_key = ""
+
     click.echo("Starting tail stream. Press Ctrl+C to stop.")
 
     after = datetime.now(timezone.utc).isoformat()
@@ -728,6 +1692,7 @@ def tail(scope: str | None, limit: int, interval: float, base_url: str) -> None:
                     after=after,
                     scope=scope,
                     limit=limit,
+                    invite_key=invite_key,
                 )
             )
 
@@ -744,6 +1709,168 @@ def tail(scope: str | None, limit: int, interval: float, base_url: str) -> None:
         raise click.ClickException(str(exc))
 
 
+# ── engram diff ──────────────────────────────────────────────────────
+
+
+def _format_diff_fact(fact: dict[str, object], timestamp_key: str) -> str:
+    timestamp = fact.get(timestamp_key) or "-"
+    scope = fact.get("scope") or "-"
+    content = fact.get("content") or ""
+    fact_id = str(fact.get("id") or "")[:12]
+    return f"- [{timestamp}] [{scope}] {content} ({fact_id})"
+
+
+def _format_diff_conflict(conflict: dict[str, object]) -> str:
+    timestamp = conflict.get("resolved_at") or "-"
+    status = conflict.get("status") or "-"
+    conflict_id = str(conflict.get("id") or conflict.get("conflict_id") or "")[:12]
+    fact_a = conflict.get("fact_a_content") or conflict.get("fact_a_id") or ""
+    fact_b = conflict.get("fact_b_content") or conflict.get("fact_b_id") or ""
+    return f"- [{timestamp}] [{status}] {fact_a} <> {fact_b} ({conflict_id})"
+
+
+def _format_memory_diff(diff: dict[str, object]) -> str:
+    summary = diff.get("summary") or {}
+    if not isinstance(summary, dict):
+        summary = {}
+
+    lines = [
+        "Memory diff",
+        f"  From              : {diff.get('from')}",
+        f"  To                : {diff.get('to')}",
+    ]
+    if diff.get("scope"):
+        lines.append(f"  Scope             : {diff.get('scope')}")
+    lines.extend(
+        [
+            f"  Added facts       : {summary.get('added', 0)}",
+            f"  Superseded facts  : {summary.get('superseded', 0)}",
+            f"  Resolved conflicts: {summary.get('resolved_conflicts', 0)}",
+        ]
+    )
+
+    added = diff.get("added") or []
+    superseded = diff.get("superseded") or []
+    resolved = diff.get("resolved_conflicts") or []
+
+    if added:
+        lines.append("\nAdded facts:")
+        lines.extend(_format_diff_fact(fact, "committed_at") for fact in added)  # type: ignore[arg-type]
+    if superseded:
+        lines.append("\nSuperseded/retired facts:")
+        lines.extend(_format_diff_fact(fact, "valid_until") for fact in superseded)  # type: ignore[arg-type]
+    if resolved:
+        lines.append("\nResolved conflicts:")
+        lines.extend(_format_diff_conflict(conflict) for conflict in resolved)  # type: ignore[arg-type]
+
+    return "\n".join(lines)
+
+
+async def _diff_once(
+    from_time: str,
+    to_time: str,
+    scope: str | None,
+    limit: int,
+    as_json: bool,
+) -> str:
+    """Run one terminal memory diff against the current workspace."""
+    import os
+
+    from engram.engine import EngramEngine
+
+    logger = logging.getLogger("engram")
+    db_url = os.environ.get("ENGRAM_DB_URL", "")
+    workspace_id = "local"
+    schema = "engram"
+
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws and ws.db_url:
+            db_url = ws.db_url
+            workspace_id = ws.engram_id
+            schema = ws.schema
+    except Exception:
+        pass
+
+    if db_url:
+        from engram.postgres_storage import PostgresStorage
+
+        storage = PostgresStorage(db_url=db_url, workspace_id=workspace_id, schema=schema)
+        logger.info("Diff mode: PostgreSQL (workspace: %s, schema: %s)", workspace_id, schema)
+    else:
+        from engram.storage import SQLiteStorage
+
+        storage = SQLiteStorage(db_path=str(DEFAULT_DB_PATH), workspace_id=workspace_id)
+        logger.info("Diff mode: SQLite (%s, workspace: %s)", DEFAULT_DB_PATH, workspace_id)
+
+    await storage.connect()
+    engine = EngramEngine(storage)
+
+    try:
+        diff = await engine.diff_memory(from_time, to_time, scope=scope, limit=limit)
+    finally:
+        await storage.close()
+
+    if as_json:
+        return json.dumps(diff, indent=2)
+    return _format_memory_diff(diff)
+
+
+@main.command("diff")
+@click.option(
+    "--from",
+    "from_time",
+    required=True,
+    help="Start of the diff window as an ISO-8601 timestamp.",
+)
+@click.option(
+    "--to",
+    "to_time",
+    required=True,
+    help="End of the diff window as an ISO-8601 timestamp.",
+)
+@click.option("--scope", default=None, help="Optional scope prefix to filter changes.")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    show_default=True,
+    help="Output format.",
+)
+@click.option(
+    "--limit",
+    default=1000,
+    type=click.IntRange(1, 1000),
+    show_default=True,
+    help="Maximum rows per diff bucket.",
+)
+def diff_cmd(
+    from_time: str,
+    to_time: str,
+    scope: str | None,
+    output_format: str,
+    limit: int,
+) -> None:
+    """Show memory changes over a time window."""
+    try:
+        output = asyncio.run(
+            _diff_once(
+                from_time=from_time,
+                to_time=to_time,
+                scope=scope,
+                limit=limit,
+                as_json=output_format == "json",
+            )
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(output)
+
+
 # ── engram status ───────────────────────────────────────────────────────
 
 
@@ -757,37 +1884,38 @@ def status() -> None:
     - Anonymous mode settings
     - Schema info
     """
-    import os
-    from engram.workspace import read_workspace, WORKSPACE_PATH
+    from engram.workspace import read_workspace
 
     ws = read_workspace()
 
-    if not ws and not WORKSPACE_PATH.exists():
-        db_url = os.environ.get("ENGRAM_DB_URL", "")
-        if not db_url:
-            click.echo("=== Engram Status ===")
-            click.echo("Status: Not configured")
-            click.echo("\nTo get started:")
-            click.echo("  1. Set ENGRAM_DB_URL (or use engram join <invite-key>)")
-            click.echo("  2. Run: engram setup")
-            return
-
-    ws = read_workspace()
     if not ws:
-        click.echo("Error: Invalid workspace configuration")
+        click.echo("=== Engram Status ===")
+        click.echo("Status: Not configured")
+        click.echo("\nTo get started:")
+        click.echo("  1. Set ENGRAM_DB_URL (or use engram join <invite-key>)")
+        click.echo("  2. Run: engram setup")
         return
 
-    mode = "Team (PostgreSQL)" if ws.db_url else "Local (SQLite)"
+    if ws.server_url and not ws.db_url:
+        mode = "Hosted"
+    elif ws.db_url:
+        mode = "Team (PostgreSQL)"
+    else:
+        mode = "Local (SQLite)"
+
     click.echo("=== Engram Status ===")
     click.echo(f"Workspace ID: {ws.engram_id}")
     click.echo(f"Mode: {mode}")
+    if ws.server_url:
+        click.echo(f"Server: {ws.server_url}")
     click.echo(f"Anonymous Mode: {'Enabled' if ws.anonymous_mode else 'Disabled'}")
     click.echo(f"Anon Agents: {'Enabled' if ws.anon_agents else 'Disabled'}")
 
     if ws.display_name:
         click.echo(f"Display Name: {ws.display_name}")
 
-    click.echo(f"\nSchema: {ws.schema}")
+    if not ws.server_url:
+        click.echo(f"\nSchema: {ws.schema}")
 
     try:
         import asyncio
@@ -813,7 +1941,7 @@ def status() -> None:
         if open_count > 0:
             click.echo(f"\n⚠️  {open_count} open conflict(s) - run 'engram conflicts' to view")
         else:
-            click.echo(f"\n✓ No open conflicts")
+            click.echo("\n✓ No open conflicts")
         if resolved_count > 0:
             click.echo(f"  ({resolved_count} resolved)")
     except Exception:
@@ -847,90 +1975,50 @@ def stats(output_json: bool) -> None:
     base_url = mcp_url.replace("/mcp", "") if "/mcp" in mcp_url else mcp_url
 
     try:
-        # Use /api/conflicts to get conflict count
-        url = f"{base_url}/api/conflicts?status=open&limit=1"
+        url = f"{base_url}/api/stats"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
 
             if output_json:
-                click.echo(
-                    json.dumps(
-                        {"workspace_id": ws.engram_id, "conflicts": data.get("conflicts", [])},
-                        indent=2,
-                    )
-                )
+                click.echo(json.dumps({"workspace_id": ws.engram_id, **data}, indent=2))
             else:
-                conflicts = data.get("conflicts", [])
+                facts = data.get("facts", {})
+                conflicts = data.get("conflicts", {})
+                agents = data.get("agents", {})
                 click.echo("=== Workspace Stats ===")
                 click.echo(f"Workspace: {ws.engram_id}")
                 click.echo(f"Mode: {'Team' if ws.db_url else 'Local'}")
-                click.echo(f"Open Conflicts: {len(conflicts)}")
+                click.echo(f"Total Facts: {facts.get('total', 0)}")
+                click.echo(f"Current Facts: {facts.get('current', 0)}")
+                click.echo(f"Expiring Soon: {facts.get('expiring_soon', 0)}")
+                click.echo(f"Open Conflicts: {conflicts.get('open', 0)}")
+                click.echo(f"Resolved: {conflicts.get('resolved', 0)}")
+                click.echo(f"Conflict Rate: {(conflicts.get('rate') or 0.0):.2%}")
+                click.echo(f"Total Agents: {agents.get('total', 0)}")
+                most_active = agents.get("most_active") or []
+                if isinstance(most_active, list) and most_active:
+                    click.echo("Most Active Agents:")
+                    for agent in most_active[:5]:
+                        click.echo(
+                            f"  - {agent.get('agent_id')}: {agent.get('total_commits', 0)} commits"
+                        )
+                most_queried = facts.get("most_queried") or []
+                if isinstance(most_queried, list) and most_queried:
+                    click.echo("Most Queried Facts:")
+                    for fact in most_queried[:5]:
+                        click.echo(
+                            f"  - {fact.get('id')} "
+                            f"[{fact.get('scope')}] "
+                            f"{fact.get('query_hits', 0)} queries"
+                        )
     except urllib.error.HTTPError:
-        # Fallback - just show workspace info
         click.echo("=== Workspace Stats ===")
         click.echo(f"Workspace: {ws.engram_id}")
         click.echo(f"Mode: {'Team' if ws.db_url else 'Local'}")
         click.echo("(Run engram serve --http to see full stats)")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
-
-
-# ── engram conflicts ─────────────────────────────────────────────────
-
-
-@main.command()
-@click.option("--status", default="open", help="Filter by status: open, resolved, dismissed, all")
-@click.option("--limit", default=10, help="Number of conflicts to show")
-def conflicts(status: str, limit: int) -> None:
-    """Show open conflicts in the workspace.
-
-    This command surfaces conflicts immediately so you can address them
-    before they cause issues in your team.
-
-    Examples:
-        engram conflicts              # Show open conflicts
-        engram conflicts --status all  # Show all conflicts
-    """
-    import asyncio
-    import os
-    from engram.workspace import read_workspace
-    from engram.storage import SQLiteStorage, DEFAULT_DB_PATH
-    from engram.postgres_storage import PostgresStorage
-
-    ws = read_workspace()
-    if not ws:
-        click.echo("Error: No workspace configured. Run 'engram init' or 'engram join' first.")
-        return
-
-    db_url = os.environ.get("ENGRAM_DB_URL", "")
-    if db_url:
-        storage = PostgresStorage(db_url=db_url, workspace_id=ws.engram_id, schema=ws.schema)
-    else:
-        storage = SQLiteStorage(str(DEFAULT_DB_PATH), workspace_id=ws.engram_id)
-
-    async def run():
-        await storage.connect()
-        try:
-            conflict_list = await storage.get_conflicts(status=status)
-            if not conflict_list:
-                click.echo(f"No {status} conflicts found.")
-                return
-
-            click.echo(f"=== {status.title()} Conflicts ({len(conflict_list)}) ===\n")
-            for i, c in enumerate(conflict_list[:limit], 1):
-                click.echo(f"[{i}] {c.get('severity', 'unknown')} - {c.get('detection_tier', 'N/A')}")
-                click.echo(f"    {c.get('fact_a_content', '')[:60]}...")
-                click.echo(f"    vs")
-                click.echo(f"    {c.get('fact_b_content', '')[:60]}...")
-                if c.get('explanation'):
-                    click.echo(f"    Explanation: {c.get('explanation')[:80]}")
-                click.echo(f"    Status: {c.get('status')} | Detected: {c.get('detected_at', '')[:19]}")
-                click.echo("")
-        finally:
-            await storage.close()
-
-    asyncio.run(run())
 
 
 # ── engram promote ───────────────────────────────────────────────────
@@ -1128,6 +2216,138 @@ def webhook_delete(webhook_id: str) -> None:
     asyncio.run(run_delete())
 
 
+# ── engram conflicts ───────────────────────────────────────────────────────────
+
+
+@main.command("conflicts")
+@click.option(
+    "--status",
+    default="open",
+    type=click.Choice(["open", "resolved", "all"]),
+    help="Filter by status.",
+)
+@click.option("--limit", default=20, help="Max conflicts to show.")
+def conflicts_list(status: str, limit: int) -> None:
+    """List workspace conflicts for terminal-based conflict resolution.
+
+    Shows open conflicts with details about fact pairs, severity,
+    and detection method. Useful for reviewing and resolving conflicts
+    from the command line.
+
+    Example:
+        engram conflicts --status open --limit 10
+    """
+    import asyncio
+    import os
+    from engram.workspace import read_workspace
+    from engram.engine import EngramEngine
+    from engram.storage import SQLiteStorage, DEFAULT_DB_PATH
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: No workspace configured.")
+        return
+
+    db_url = os.getenv("ENGRAM_DB_URL")
+    if db_url:
+        from engram.postgres_storage import PostgresStorage
+
+        storage = PostgresStorage(db_url=db_url, workspace_id=ws.engram_id, schema=ws.schema)
+    else:
+        storage = SQLiteStorage(db_path=str(DEFAULT_DB_PATH), workspace_id=ws.engram_id)
+
+    engine = EngramEngine(storage)
+
+    async def run_conflicts():
+        await storage.connect()
+        try:
+            conflicts = await engine.get_conflicts(status=status, limit=limit)
+            if not conflicts:
+                click.echo("No conflicts found.")
+                return
+            for c in conflicts:
+                click.echo(f"\nConflict: {c.get('id', 'N/A')[:12]}...")
+                click.echo(f"  Severity: {c.get('severity', 'unknown')}")
+                click.echo(f"  Status: {c.get('status', 'unknown')}")
+                click.echo(f"  Type: {c.get('conflict_type', 'unknown')}")
+                fact_a = c.get("fact_a_content", "N/A")[:50]
+                fact_b = c.get("fact_b_content", "N/A")[:50]
+                click.echo(f"  Fact A: {fact_a}...")
+                click.echo(f"  Fact B: {fact_b}...")
+        finally:
+            await storage.close()
+
+    asyncio.run(run_conflicts())
+
+
+@main.command("conflicts:resolve")
+@click.argument("conflict_id")
+@click.option(
+    "--resolution",
+    type=click.Choice(["winner", "merge", "dismiss"]),
+    required=True,
+    help="Resolution type.",
+)
+@click.option(
+    "--winning-fact", default=None, help="Fact ID to keep (required for winner resolution)."
+)
+def conflicts_resolve(conflict_id: str, resolution: str, winning_fact: str | None) -> None:
+    """Resolve a conflict from the terminal.
+
+    Arguments:
+        conflict_id: The ID of the conflict to resolve.
+
+    Options:
+        --resolution: How to resolve (winner, merge, dismiss)
+        --winning-fact: The fact ID to keep (required for winner resolution)
+
+    Example:
+        engram conflicts:resolve abc123 --resolution winner --winning-fact fact_xyz
+        engram conflicts:resolve abc123 --resolution dismiss
+    """
+    import asyncio
+    import os
+    from engram.workspace import read_workspace
+    from engram.engine import EngramEngine
+    from engram.storage import SQLiteStorage, DEFAULT_DB_PATH
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: No workspace configured.")
+        return
+
+    if resolution == "winner" and not winning_fact:
+        click.echo("Error: --winning-fact is required for winner resolution.", err=True)
+        return
+
+    db_url = os.getenv("ENGRAM_DB_URL")
+    if db_url:
+        from engram.postgres_storage import PostgresStorage
+
+        storage = PostgresStorage(db_url=db_url, workspace_id=ws.engram_id, schema=ws.schema)
+    else:
+        storage = SQLiteStorage(db_path=str(DEFAULT_DB_PATH), workspace_id=ws.engram_id)
+
+    engine = EngramEngine(storage)
+
+    async def run_resolve():
+        await storage.connect()
+        try:
+            await engine.resolve(
+                conflict_id=conflict_id,
+                resolution_type=resolution,
+                resolution=resolution,
+                winning_claim_id=winning_fact,
+            )
+            click.echo(f"✓ Conflict {conflict_id[:12]}... resolved as {resolution}")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+        finally:
+            await storage.close()
+
+    asyncio.run(run_resolve())
+
+
 # ── engram whoami ───────────────────────────────────────────────────────────
 
 
@@ -1222,87 +2442,151 @@ def info() -> None:
 # ── engram verify ────────────────────────────────────────────────────
 
 
-@main.command()
-@click.option("--verbose", "-v", is_flag=True, help="Show details for all checks.")
-def verify(verbose: bool) -> None:
-    """Verify Engram installation and configuration.
+_QUICKSTART_URL = "https://github.com/Agentscreator/Engram/blob/main/docs/quickstart/README.md"
+_TROUBLESHOOTING_URL = "https://github.com/Agentscreator/Engram/blob/main/docs/TROUBLESHOOTING.md"
+_NLI_MODEL_NAME = "cross-encoder/nli-MiniLM2-L6-H768"
 
-    Runs a focused checklist and prints a clear pass/fail for each:
-    ✓ workspace.json exists and is valid
-    ✓ Backend is reachable (team mode)
-    ✓ MCP config written to at least one IDE
-    ✓ NLI model files present (if using conflict detection)
-    """
+
+def _mcp_health_url(mcp_url: str) -> str:
+    if mcp_url.endswith("/mcp"):
+        return mcp_url[: -len("/mcp")] + "/health"
+    return mcp_url
+
+
+def _nli_cache_paths() -> list[Path]:
+    model_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    return [
+        model_dir / "models--cross-encoder--nli-MiniLM2-L6-H768",
+        Path.home() / ".cache" / "sentence_transformers" / "cross-encoder" / "nli-MiniLM2-L6-H768",
+    ]
+
+
+async def _check_storage_connectivity(ws: object | None) -> tuple[bool, str]:
+    if ws is not None and getattr(ws, "db_url", ""):
+        from engram.postgres_storage import PostgresStorage
+
+        storage = PostgresStorage(
+            db_url=getattr(ws, "db_url"),
+            workspace_id=getattr(ws, "engram_id", "local"),
+            schema=getattr(ws, "schema", "engram"),
+        )
+    else:
+        from engram.storage import SQLiteStorage
+
+        storage = SQLiteStorage(db_path=DEFAULT_DB_PATH, workspace_id="local")
+
+    try:
+        await storage.connect()
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        try:
+            await storage.close()
+        except Exception:
+            pass
+
+    return True, ""
+
+
+def _run_diagnostics(command_name: str, verbose: bool, load_nli: bool) -> bool:
+    """Run installation diagnostics shared by `verify` and `doctor`."""
     from engram.workspace import WORKSPACE_PATH, read_workspace
-    import json
-    import urllib.request
     import urllib.error
-    import os
+    import urllib.request
 
     all_passed = True
     verbose = verbose or os.environ.get("ENGRAM_VERIFY_VERBOSE") == "1"
+    ws = None
 
-    # Check 1: workspace.json exists and is valid JSON
-    click.echo("\n[1/4] Checking workspace configuration...")
+    click.echo(f"\nEngram {command_name}: checking installation health")
+
+    # Check 1: workspace.json exists and is semantically readable.
+    click.echo("\n[1/5] Checking workspace configuration...")
     if not WORKSPACE_PATH.exists():
         click.echo("  ✗ ~/.engram/workspace.json not found")
         click.echo("    → Run: engram init   (or: engram join <key>)")
-        click.echo(
-            "    → Docs: https://github.com/Agentscreator/Engram/blob/main/docs/QUICKSTART.md"
-        )
+        click.echo(f"    → Docs: {_QUICKSTART_URL}")
         all_passed = False
     else:
         try:
-            data = json.loads(WORKSPACE_PATH.read_text())
-            ws = read_workspace()
-            mode = "team" if ws and ws.db_url else "local"
-            click.echo(f"  ✓ workspace.json exists ({mode} mode)")
-            if verbose:
-                click.echo(f"    - engram_id: {ws.engram_id if ws else 'N/A'}")
-                click.echo(f"    - schema: {ws.schema if ws else 'N/A'}")
-                click.echo(f"    - anonymous_mode: {ws.anonymous_mode if ws else 'N/A'}")
-        except json.JSONDecodeError as e:
-            click.echo(f"  ✗ workspace.json is invalid JSON: {e}")
+            json.loads(WORKSPACE_PATH.read_text())
+        except json.JSONDecodeError as exc:
+            click.echo(f"  ✗ workspace.json is invalid JSON: {exc}")
             click.echo("    → Delete and re-run: rm ~/.engram/workspace.json && engram init")
             all_passed = False
+        else:
+            ws = read_workspace()
+            if ws is None:
+                click.echo("  ✗ workspace.json could not be parsed as an Engram workspace")
+                click.echo("    → Run: engram config show")
+                click.echo(f"    → Docs: {_TROUBLESHOOTING_URL}")
+                all_passed = False
+            else:
+                mode = "team" if ws.db_url else "local"
+                click.echo(f"  ✓ workspace.json exists and is valid ({mode} mode)")
+                if verbose:
+                    click.echo(f"    - engram_id: {ws.engram_id}")
+                    click.echo(f"    - schema: {ws.schema}")
+                    click.echo(f"    - anonymous_mode: {ws.anonymous_mode}")
 
-    # Check 2: Backend is reachable (team mode only)
-    click.echo("\n[2/4] Checking backend connectivity...")
-    ws = read_workspace()
-    if ws and ws.db_url:
-        # For team mode, check if we can reach the MCP endpoint
-        # The MCP URL pattern is derived from db_url or uses default
-        mcp_url = os.environ.get("ENGRAM_MCP_URL", "https://mcp.engram.app/mcp")
-
-        # Try a simple HEAD request to check connectivity
-        try:
-            req = urllib.request.Request(
-                mcp_url.replace("/mcp", "/health") if "/mcp" in mcp_url else mcp_url, method="HEAD"
+    # Check 2: storage backend can connect.
+    click.echo("\n[2/5] Checking database connectivity...")
+    if WORKSPACE_PATH.exists() and ws is None:
+        click.echo("  ○ Skipped until workspace configuration is fixed")
+    else:
+        ok, error = asyncio.run(_check_storage_connectivity(ws))
+        if ok:
+            storage_label = "PostgreSQL" if ws and ws.db_url else "SQLite"
+            click.echo(f"  ✓ {storage_label} storage connected")
+            if verbose and not (ws and ws.db_url):
+                click.echo(f"    - path: {DEFAULT_DB_PATH}")
+        else:
+            click.echo("  ✗ Storage connection failed")
+            click.echo(f"    - Error: {error}")
+            click.echo("    → For local mode, check ~/.engram permissions and disk space")
+            click.echo(
+                "    → For team mode, verify ENGRAM_DB_URL or rejoin with a fresh invite key"
             )
+            click.echo(f"    → Docs: {_TROUBLESHOOTING_URL}")
+            all_passed = False
+
+    # Check 3: MCP server module can load and optional HTTP endpoint responds.
+    click.echo("\n[3/5] Checking MCP server reachability...")
+    try:
+        from engram.server import mcp
+
+        if mcp is None:
+            raise RuntimeError("FastMCP server object is missing")
+        click.echo("  ✓ MCP server module loads")
+    except Exception as exc:
+        click.echo("  ✗ MCP server failed to load")
+        click.echo(f"    - Error: {type(exc).__name__}: {exc}")
+        click.echo("    → Reinstall Engram or check Python dependency installation")
+        click.echo(f"    → Docs: {_TROUBLESHOOTING_URL}")
+        all_passed = False
+
+    mcp_url = os.environ.get("ENGRAM_MCP_URL", "")
+    if mcp_url:
+        try:
+            req = urllib.request.Request(_mcp_health_url(mcp_url), method="HEAD")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 if resp.status < 400:
-                    click.echo(f"  ✓ Backend reachable at {mcp_url}")
+                    click.echo(f"  ✓ MCP HTTP endpoint reachable at {mcp_url}")
                 else:
-                    click.echo(f"  ✗ Backend returned status {resp.status}")
-                    all_passed = False
-        except urllib.error.URLError as e:
-            # Non-critical: backend might not have /health endpoint
-            click.echo("  ⚠ Could not reach health endpoint (non-critical)")
+                    click.echo(f"  ⚠ MCP HTTP endpoint returned status {resp.status}")
+        except urllib.error.URLError as exc:
+            click.echo("  ⚠ Could not reach MCP HTTP endpoint")
             if verbose:
                 click.echo(f"    - URL: {mcp_url}")
-                click.echo(f"    - Error: {e.reason}")
-                click.echo("    - Note: Backend connectivity will be verified by your IDE")
-        except Exception as e:
-            click.echo(f"  ⚠ Could not verify backend ({type(e).__name__}: {e})")
-            if verbose:
-                click.echo("    - This is normal if you're offline or the backend is busy")
-    else:
-        click.echo("  ○ Team mode not configured (local SQLite mode)")
-        if verbose:
-            click.echo("    - For team features: engram init or engram join <key>")
+                click.echo(f"    - Error: {exc.reason}")
+            click.echo(
+                "    → If you use a remote MCP URL, verify ENGRAM_MCP_URL and network access"
+            )
+    elif verbose:
+        click.echo("    - ENGRAM_MCP_URL not set; stdio MCP mode will be used by default")
 
-    # Check 3: MCP config in at least one IDE
-    click.echo("\n[3/4] Checking MCP configuration in IDEs...")
+    # Check 4: MCP config in at least one IDE.
+    click.echo("\n[4/5] Checking MCP configuration in IDEs...")
     detected = []
     missing = []
 
@@ -1313,7 +2597,6 @@ def verify(verbose: bool) -> None:
                 data = json.loads(config_path.read_text())
                 key = info["key"]
 
-                # Navigate nested keys (e.g., "mcpServers" or "mcp")
                 keys = key.split(".")
                 current = data
                 found = True
@@ -1339,56 +2622,90 @@ def verify(verbose: bool) -> None:
     else:
         click.echo("  ✗ Engram not found in any IDE MCP config")
         click.echo("    → Run: engram install")
+        click.echo(f"    → Docs: {_QUICKSTART_URL}")
         all_passed = False
 
     if missing and verbose:
         click.echo("\n  Other detected IDEs (Engram not configured):")
-        for client_name in missing[:5]:  # Limit verbose output
+        for client_name in missing[:5]:
             click.echo(f"    - ○ {client_name}")
         if len(missing) > 5:
             click.echo(f"    - ... and {len(missing) - 5} more")
 
-    # Check 4: NLI model files present
-    click.echo("\n[4/4] Checking NLI model files...")
-    model_dir = Path.home() / ".cache" / "huggingface" / "hub"
-    nli_model_path = model_dir / "models--cross-encoder--nli-MiniLM2-L6-H768"
+    # Check 5: NLI model cache or opt-in full load.
+    click.echo("\n[5/5] Checking NLI model...")
+    if load_nli:
+        try:
+            from sentence_transformers import CrossEncoder
 
-    # Check in common locations
-    possible_paths = [
-        nli_model_path,
-        Path.home() / ".cache" / "sentence_transformers" / "cross-encoder" / "nli-MiniLM2-L6-H768",
-    ]
-
-    found_model = False
-    for path in possible_paths:
-        if path.exists():
-            click.echo(f"  ✓ NLI model found at {path}")
-            found_model = True
-            break
-
-    if not found_model:
-        click.echo("  ⚠ NLI model not cached (will download on first conflict detection)")
-        if verbose:
-            click.echo("    - Model: cross-encoder/nli-MiniLM2-L6-H768")
-            click.echo("    - Will be downloaded automatically when needed")
+            CrossEncoder(_NLI_MODEL_NAME)
+            click.echo(f"  ✓ NLI model loaded: {_NLI_MODEL_NAME}")
+        except Exception as exc:
+            click.echo("  ✗ NLI model failed to load")
+            click.echo(f"    - Error: {type(exc).__name__}: {exc}")
             click.echo(
-                "    - This is optional - Engram works without it (Tier 1 detection disabled)"
+                "    → Install optional model dependencies or allow first-run model download"
             )
+            click.echo(f"    → Docs: {_TROUBLESHOOTING_URL}")
+            all_passed = False
+    else:
+        found_path = next((path for path in _nli_cache_paths() if path.exists()), None)
+        if found_path:
+            click.echo(f"  ✓ NLI model cache found at {found_path}")
+        else:
+            click.echo("  ⚠ NLI model not cached (will download on first conflict detection)")
+            click.echo("    → Run: engram doctor --load-nli to verify the model can load now")
+            if verbose:
+                click.echo(f"    - Model: {_NLI_MODEL_NAME}")
+                click.echo("    - This is optional; deterministic conflict checks still work")
 
-    # Summary
     click.echo("\n" + "=" * 50)
     if all_passed:
-        click.echo("✓ All checks passed! Engram is ready to use.")
+        click.echo("✓ All checks passed! All required checks passed. Engram is ready to use.")
         click.echo("\nNext steps:")
         click.echo("  1. Restart your IDE")
-        click.echo("  2. Ask your agent: 'Set up Engram for my team'")
-        click.echo("  3. Run 'engram verify' anytime to re-check")
+        click.echo("  2. Ask your agent: 'Set up Engram for my agents'")
+        click.echo(f"  3. Run 'engram {command_name}' anytime to re-check")
     else:
-        click.echo("✗ Some checks failed. Fix the issues above and run 'engram verify' again.")
         click.echo(
-            "\nFor help: https://github.com/Agentscreator/Engram/blob/main/docs/TROUBLESHOOTING.md"
+            f"✗ Some checks failed. Fix the issues above and run 'engram {command_name}' again."
         )
+        click.echo(f"\nFor help: {_TROUBLESHOOTING_URL}")
     click.echo("=" * 50 + "\n")
+
+    return all_passed
+
+
+@main.command()
+@click.option("--verbose", "-v", is_flag=True, help="Show details for all checks.")
+@click.option(
+    "--load-nli",
+    is_flag=True,
+    help="Attempt to load the NLI model instead of only checking the local cache.",
+)
+def verify(verbose: bool, load_nli: bool) -> None:
+    """Verify Engram installation and configuration.
+
+    Runs a focused checklist and prints a clear pass/fail for each:
+    ✓ workspace.json exists and is valid
+    ✓ Storage backend can connect
+    ✓ MCP server module loads
+    ✓ MCP config written to at least one IDE
+    ✓ NLI model cache present, or full model loads with --load-nli
+    """
+    _run_diagnostics("verify", verbose=verbose, load_nli=load_nli)
+
+
+@main.command()
+@click.option("--verbose", "-v", is_flag=True, help="Show details for all checks.")
+@click.option(
+    "--load-nli",
+    is_flag=True,
+    help="Attempt to load the NLI model instead of only checking the local cache.",
+)
+def doctor(verbose: bool, load_nli: bool) -> None:
+    """Diagnose a broken Engram setup and print actionable fixes."""
+    _run_diagnostics("doctor", verbose=verbose, load_nli=load_nli)
 
 
 # ── engram re-embed ───────────────────────────────────────────────────
@@ -1814,6 +3131,750 @@ def completion(shell: str | None) -> None:
         click.echo(f"Appended completion hook to {config_path}")
 
     click.echo(f"Restart your shell or run: source {config_path}")
+
+
+@main.command("export")
+@click.option(
+    "--format", type=click.Choice(["json", "markdown"]), default="json", help="Export format."
+)
+@click.option("--output", "-o", type=click.Path(), help="Output file (stdout if not specified).")
+@click.option("--scope", help="Filter by scope prefix.")
+def export_cmd(format: str, output: str | None, scope: str | None) -> None:
+    """Export workspace facts to JSON or Markdown."""
+    import os
+    import urllib.request
+
+    ws = None
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+    except Exception:
+        pass
+
+    if not ws:
+        click.echo("Error: No workspace configured")
+        return
+
+    try:
+        from engram.commit_check import load_credentials
+
+        _, invite_key = load_credentials()
+    except Exception:
+        invite_key = ""
+
+    if ws and ws.server_url and not ws.db_url:
+        base_url = ws.server_url.rstrip("/")
+    else:
+        mcp_url = os.environ.get("ENGRAM_MCP_URL", "http://localhost:7474")
+        base_url = mcp_url.replace("/mcp", "") if "/mcp" in mcp_url else mcp_url
+
+    try:
+        url = f"{base_url}/api/facts?scope={scope or ''}&limit=10000"
+        auth_headers = {"Accept": "application/json"}
+        if invite_key:
+            auth_headers["Authorization"] = f"Bearer {invite_key}"
+        req = urllib.request.Request(url, headers=auth_headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+            facts = data.get("facts", [])
+
+        from engram.export import build_json_export, build_markdown_export
+
+        if format == "json":
+            result = build_json_export(ws.engram_id, facts, [])
+            content = json.dumps(result, indent=2)
+        else:
+            result = build_markdown_export(ws.engram_id, facts, [])
+            content = result
+
+        if output:
+            with open(output, "w") as f:
+                f.write(content)
+            click.echo(f"Exported {len(facts)} facts to {output}")
+        else:
+            click.echo(content)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+
+
+# ── engram merge ─────────────────────────────────────────────────────────────
+
+
+@main.command("merge")
+@click.option("--source-key", required=True, help="Invite key for the source workspace.")
+@click.option(
+    "--target-key",
+    default=None,
+    help="Invite key for the target workspace (defaults to current workspace).",
+)
+@click.option(
+    "--source-url",
+    default=None,
+    help="Server URL for the source workspace (defaults to current server).",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Preview what would be merged without making changes."
+)
+@click.option("--scope", default=None, help="Only merge facts matching this scope prefix.")
+def merge_workspaces(
+    source_key: str,
+    target_key: str | None,
+    source_url: str | None,
+    dry_run: bool,
+    scope: str | None,
+) -> None:
+    """Merge durable facts from one workspace into another.
+
+    Pulls all durable facts from the source workspace and commits them
+    into the target workspace, skipping duplicates. Ephemeral facts are
+    not merged.
+    """
+    import urllib.request
+
+    ws = None
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+    except Exception:
+        pass
+
+    try:
+        from engram.commit_check import load_credentials
+
+        current_server_url, current_invite_key = load_credentials()
+    except Exception:
+        current_server_url = "https://www.engram-memory.com"
+        current_invite_key = ""
+
+    if ws and ws.server_url and not ws.db_url:
+        current_server_url = ws.server_url.rstrip("/")
+
+    src_url = (source_url or current_server_url).rstrip("/")
+    tgt_key = target_key or current_invite_key
+
+    if not tgt_key:
+        click.echo(
+            "Error: No target invite key. Pass --target-key or configure your workspace.", err=True
+        )
+        return
+
+    # ── fetch durable facts from source ──────────────────────────────────────
+    facts_url = f"{src_url}/api/facts?limit=10000&durability=durable"
+    if scope:
+        facts_url += f"&scope={scope}"
+
+    try:
+        req = urllib.request.Request(
+            facts_url,
+            headers={"Accept": "application/json", "Authorization": f"Bearer {source_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+        facts = data.get("facts", [])
+    except Exception as e:
+        click.echo(f"Error fetching source facts: {e}", err=True)
+        return
+
+    if not facts:
+        click.echo("No durable facts found in source workspace.")
+        return
+
+    click.echo(f"Found {len(facts)} durable fact(s) in source workspace.")
+
+    if dry_run:
+        click.echo("[dry-run] No changes made.")
+        for f in facts[:10]:
+            click.echo(f"  · [{f.get('scope', '?')}] {f.get('content', '')[:80]}")
+        if len(facts) > 10:
+            click.echo(f"  … and {len(facts) - 10} more.")
+        return
+
+    # ── commit each fact into target ──────────────────────────────────────────
+    tgt_commit_url = f"{src_url}/api/commit"
+    merged = 0
+    skipped = 0
+
+    for fact in facts:
+        payload = json.dumps(
+            {
+                "content": fact.get("content", ""),
+                "scope": fact.get("scope", "general"),
+                "confidence": fact.get("confidence", 0.8),
+                "agent_id": fact.get("agent_id", "merge"),
+                "fact_type": fact.get("fact_type", "observation"),
+                "operation": "add",
+            }
+        ).encode()
+
+        try:
+            req = urllib.request.Request(
+                tgt_commit_url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {tgt_key}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = json.loads(resp.read())
+            if result.get("deduplicated"):
+                skipped += 1
+            else:
+                merged += 1
+        except Exception:
+            skipped += 1
+
+    click.echo(
+        f"Merge complete: {merged} fact(s) imported, {skipped} skipped (duplicates or errors)."
+    )
+
+
+# ── engram conflicts ────────────────────────────────────────────────────────
+
+_TUI_STYLE = questionary.Style(
+    [
+        ("qmark", "fg:#5c7cfa bold"),
+        ("question", "bold"),
+        ("answer", "fg:#69db7c bold"),
+        ("pointer", "fg:#5c7cfa bold"),
+        ("highlighted", "fg:#5c7cfa bold"),
+        ("selected", "fg:#69db7c"),
+        ("separator", "fg:#555555"),
+        ("instruction", "fg:#868e96 italic"),
+        ("text", ""),
+        ("disabled", "fg:#555555 italic"),
+    ]
+)
+
+_SEVERITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+_SEVERITY_DOT: dict[str, str] = {
+    "critical": "[bold red]\u25cf[/bold red]",
+    "high": "[bold yellow]\u25c6[/bold yellow]",
+    "medium": "[bold cyan]\u25c8[/bold cyan]",
+    "low": "[dim]\u00b7[/dim]",
+}
+
+_SEVERITY_RICH: dict[str, str] = {
+    "critical": "bold red",
+    "high": "bold yellow",
+    "medium": "bold cyan",
+    "low": "white",
+}
+
+
+def _short_conflict_id(conflict_id: str) -> str:
+    return str(conflict_id)[:12]
+
+
+def _find_open_conflict(rows: list[dict], prefix: str) -> dict | None:
+    return next((c for c in rows if c["conflict_id"].startswith(prefix)), None)
+
+
+async def _conflicts_engine_ctx() -> tuple:
+    """Create a connected storage + engine following the same pattern as _search_once."""
+    import os
+
+    from engram.engine import EngramEngine
+
+    db_url = os.environ.get("ENGRAM_DB_URL", "")
+    workspace_id = "local"
+    schema = "engram"
+
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws and ws.db_url:
+            db_url = ws.db_url
+            workspace_id = ws.engram_id
+            schema = ws.schema
+    except Exception:
+        pass
+
+    if db_url:
+        from engram.postgres_storage import PostgresStorage
+
+        storage = PostgresStorage(db_url=db_url, workspace_id=workspace_id, schema=schema)
+    else:
+        from engram.storage import SQLiteStorage
+
+        storage = SQLiteStorage(db_path=str(DEFAULT_DB_PATH), workspace_id=workspace_id)
+
+    await storage.connect()
+    engine = EngramEngine(storage)
+    return engine, storage
+
+
+def _render_conflict_panel(c: dict, console: _Console) -> None:
+    """Render a Rich detail panel for one conflict."""
+    severity = c.get("severity") or "low"
+    tier = c.get("detection_tier") or "-"
+    fact_a = c.get("fact_a") or {}
+    fact_b = c.get("fact_b") or {}
+    explanation = c.get("explanation") or ""
+    suggestion = c.get("suggested_resolution") or ""
+    suggestion_type = c.get("suggested_resolution_type") or ""
+    suggestion_reason = c.get("suggestion_reasoning") or ""
+
+    sev_style = _SEVERITY_RICH.get(severity, "white")
+    body = _Text()
+
+    body.append("Conflict  ", style="dim")
+    body.append(f"{c.get('conflict_id') or ''}\n", style="white")
+    body.append("Severity  ", style="dim")
+    body.append(f"{severity.upper()}", style=sev_style)
+    body.append(f"   Tier: {tier}\n", style="dim")
+    body.append("Detected  ", style="dim")
+    body.append(f"{c.get('detected_at') or '-'}\n", style="dim")
+
+    body.append("\n")
+    body.append("Fact A", style="bold white")
+    body.append(f"  [{(fact_a.get('fact_id') or '')[:12]}]\n", style="dim")
+    body.append(f"  Agent  {fact_a.get('agent_id') or '-'}\n", style="dim")
+    body.append(f"  Scope  {fact_a.get('scope') or '-'}\n", style="dim")
+    body.append(f"  Conf   {fact_a.get('confidence', '-')}\n", style="dim")
+    body.append(f"  \u201c{fact_a.get('content') or ''}\u201d\n", style="white")
+
+    body.append("\n")
+    body.append("Fact B", style="bold white")
+    body.append(f"  [{(fact_b.get('fact_id') or '')[:12]}]\n", style="dim")
+    body.append(f"  Agent  {fact_b.get('agent_id') or '-'}\n", style="dim")
+    body.append(f"  Scope  {fact_b.get('scope') or '-'}\n", style="dim")
+    body.append(f"  Conf   {fact_b.get('confidence', '-')}\n", style="dim")
+    body.append(f"  \u201c{fact_b.get('content') or ''}\u201d\n", style="white")
+
+    if explanation:
+        body.append("\n")
+        body.append("Explanation  ", style="dim")
+        body.append(explanation + "\n", style="italic")
+
+    if suggestion:
+        body.append("\n")
+        body.append("AI suggestion  ", style="dim")
+        body.append(f"{suggestion_type}  ", style="bold cyan")
+        body.append(suggestion + "\n", style="cyan")
+        if suggestion_reason:
+            body.append(f"  {suggestion_reason}\n", style="dim")
+
+    title = _Text()
+    title.append("\u25cf ", style=sev_style)
+    title.append("Conflict", style="bold white")
+
+    console.print(_Panel(body, title=title, border_style="bright_black", padding=(0, 1)))
+
+
+def _run_conflicts_tui(scope: str | None, status: str) -> None:
+    """Full-screen interactive TUI — lists conflicts, lets user pick and resolve."""
+    console = _Console()
+
+    while True:
+        # ── fetch ─────────────────────────────────────────────────────
+        async def _fetch() -> list[dict]:
+            engine, storage = await _conflicts_engine_ctx()
+            try:
+                return await engine.get_conflicts(scope=scope, status=status)
+            finally:
+                await storage.close()
+
+        try:
+            rows = asyncio.run(_fetch())
+        except Exception as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            return
+
+        sorted_rows = sorted(rows, key=lambda c: _SEVERITY_ORDER.get(c.get("severity") or "low", 3))
+
+        # ── header ────────────────────────────────────────────────────
+        console.print()
+        console.print(" [bold white]Engram[/bold white] [dim]\u00b7[/dim] Memory Conflicts")
+        console.print()
+
+        if not sorted_rows:
+            console.print("  [green]\u2713[/green]  No open conflicts\n")
+            return
+
+        # ── build choices ─────────────────────────────────────────────
+        _MAX = 52
+        choices: list[questionary.Choice] = []
+        for c in sorted_rows:
+            sev = c.get("severity") or "low"
+            cid = _short_conflict_id(c.get("conflict_id") or "")
+            a = (c.get("fact_a") or {}).get("content") or ""
+            b = (c.get("fact_b") or {}).get("content") or ""
+            if len(a) > _MAX:
+                a = a[: _MAX - 1] + "\u2026"
+            if len(b) > _MAX:
+                b = b[: _MAX - 1] + "\u2026"
+            dot = {"critical": "\u25cf", "high": "\u25c6", "medium": "\u25c8", "low": "\u00b7"}.get(
+                sev, "\u00b7"
+            )
+            label = f"{dot} {sev[:3].upper()}  {cid}  {a}  \u2194  {b}"
+            choices.append(questionary.Choice(title=label, value=c))
+
+        choices.append(questionary.Separator())
+        choices.append(questionary.Choice(title="  Exit", value=None))
+
+        selected = questionary.select(
+            f"Open conflicts ({len(sorted_rows)})  \u2191\u2193 navigate  Enter select",
+            choices=choices,
+            style=_TUI_STYLE,
+            use_shortcuts=False,
+        ).ask()
+
+        if selected is None:
+            console.print()
+            return
+
+        # ── detail panel ──────────────────────────────────────────────
+        console.print()
+        _render_conflict_panel(selected, console)
+        console.print()
+
+        fact_a_content = (selected.get("fact_a") or {}).get("content") or "(no content)"
+        fact_b_content = (selected.get("fact_b") or {}).get("content") or "(no content)"
+
+        _a_short = fact_a_content[:60] + ("\u2026" if len(fact_a_content) > 60 else "")
+        _b_short = fact_b_content[:60] + ("\u2026" if len(fact_b_content) > 60 else "")
+
+        # ── resolution choice ─────────────────────────────────────────
+        resolution_choice = questionary.select(
+            "How do you want to resolve this?",
+            choices=[
+                questionary.Choice(f"Pick Fact A  \u2014  \u201c{_a_short}\u201d", value="A"),
+                questionary.Choice(f"Pick Fact B  \u2014  \u201c{_b_short}\u201d", value="B"),
+                questionary.Choice("Merge \u2014 both facts are superseded", value="M"),
+                questionary.Choice("Dismiss \u2014 this is a false positive", value="D"),
+                questionary.Separator(),
+                questionary.Choice("\u2190  Back to list", value="back"),
+            ],
+            style=_TUI_STYLE,
+        ).ask()
+
+        if resolution_choice is None or resolution_choice == "back":
+            continue
+
+        # ── note ──────────────────────────────────────────────────────
+        note = questionary.text(
+            "Resolution note:",
+            style=_TUI_STYLE,
+        ).ask()
+
+        if note is None:
+            continue
+
+        # ── confirm ───────────────────────────────────────────────────
+        label_map = {"A": "pick Fact A", "B": "pick Fact B", "M": "merge", "D": "dismiss"}
+        confirmed = questionary.confirm(
+            f"Resolve as {label_map[resolution_choice]}?",
+            default=True,
+            style=_TUI_STYLE,
+        ).ask()
+
+        if not confirmed:
+            continue
+
+        # ── execute ───────────────────────────────────────────────────
+        resolution_type = (
+            "dismissed"
+            if resolution_choice == "D"
+            else ("merge" if resolution_choice == "M" else "winner")
+        )
+        winning_claim_id: str | None = None
+        if resolution_choice == "A":
+            winning_claim_id = (selected.get("fact_a") or {}).get("fact_id")
+        elif resolution_choice == "B":
+            winning_claim_id = (selected.get("fact_b") or {}).get("fact_id")
+
+        async def _do_resolve() -> dict:
+            engine, storage = await _conflicts_engine_ctx()
+            try:
+                return await engine.resolve(
+                    conflict_id=selected["conflict_id"],
+                    resolution_type=resolution_type,
+                    resolution=note,
+                    winning_claim_id=winning_claim_id,
+                )
+            finally:
+                await storage.close()
+
+        try:
+            result = asyncio.run(_do_resolve())
+        except Exception as exc:
+            console.print(f"\n[red]Error:[/red] {exc}\n")
+            continue
+
+        cid_short = _short_conflict_id(selected["conflict_id"])
+        if result.get("resolved"):
+            console.print(
+                f"\n [green]\u2713[/green]  Resolved [dim]{cid_short}[/dim]"
+                f" as [bold]{resolution_type}[/bold]\n"
+            )
+        else:
+            console.print("\n [red]\u2717[/red]  Resolution returned resolved=False\n")
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+@click.option(
+    "--status",
+    type=click.Choice(["open", "resolved", "dismissed", "all"]),
+    default="open",
+    show_default=True,
+    help="Filter conflicts by status.",
+)
+@click.option("--scope", default=None, help="Optional scope prefix to filter conflicts.")
+@click.option(
+    "--json", "as_json", is_flag=True, help="Print raw JSON for piping (non-interactive)."
+)
+def conflicts(ctx: click.Context, status: str, scope: str | None, as_json: bool) -> None:
+    """View and resolve memory conflicts from the terminal.
+
+    When called without a subcommand and connected to a TTY, launches the
+    interactive conflict resolution UI. Use --json for scripting.
+
+    \b
+    Examples:
+      engram conflicts                              # interactive TUI
+      engram conflicts --status all                 # show all statuses
+      engram conflicts --json                       # raw JSON output
+      engram conflicts resolve <id> --winner A --note "A is correct"
+      engram conflicts dismiss <id>                 # dismiss false positive
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
+    # ── workspace check ───────────────────────────────────────────────
+    from engram.workspace import is_configured
+
+    if not is_configured():
+        if as_json or not sys.stdout.isatty():
+            raise click.ClickException(
+                "Not connected to a workspace. Run: engram setup  or  engram join <invite-key>"
+            )
+        console = _Console()
+        console.print()
+        console.print(" [bold white]Engram[/bold white] [dim]·[/dim] Memory Conflicts")
+        console.print()
+        console.print("  [yellow]Not connected to a workspace.[/yellow]")
+        console.print()
+        console.print("  [dim]engram setup[/dim]             — configure a new workspace")
+        console.print("  [dim]engram join <invite-key>[/dim] — join an existing workspace")
+        console.print()
+        return
+
+    # ── scripting / pipe mode ─────────────────────────────────────────
+    if as_json or not sys.stdout.isatty():
+
+        async def _run() -> list[dict]:
+            engine, storage = await _conflicts_engine_ctx()
+            try:
+                return await engine.get_conflicts(scope=scope, status=status)
+            finally:
+                await storage.close()
+
+        try:
+            rows = asyncio.run(_run())
+        except Exception as exc:
+            raise click.ClickException(str(exc))
+
+        click.echo(json.dumps(rows, indent=2))
+        return
+
+    # ── interactive TUI ───────────────────────────────────────────────
+    _run_conflicts_tui(scope=scope, status=status)
+
+
+@conflicts.command()
+@click.argument("conflict_id")
+@click.option(
+    "--winner",
+    type=click.Choice(["A", "B"], case_sensitive=False),
+    default=None,
+    help="Pick fact A or B as the winning claim.",
+)
+@click.option(
+    "--merge",
+    "do_merge",
+    is_flag=True,
+    help="Mark as merged — both facts are superseded.",
+)
+@click.option(
+    "--dismiss",
+    "do_dismiss",
+    is_flag=True,
+    help="Dismiss as a false positive.",
+)
+@click.option("--note", default=None, help="Resolution note (required).")
+def resolve(
+    conflict_id: str,
+    winner: str | None,
+    do_merge: bool,
+    do_dismiss: bool,
+    note: str | None,
+) -> None:
+    """Resolve a specific conflict by ID (non-interactive, for scripting).
+
+    CONFLICT_ID may be the full UUID or a unique prefix.
+    """
+    flags_set = sum([winner is not None, do_merge, do_dismiss])
+    if flags_set > 1:
+        raise click.UsageError("Specify only one of --winner, --merge, or --dismiss.")
+    if flags_set == 0:
+        raise click.UsageError(
+            "Specify one of --winner A/B, --merge, or --dismiss. "
+            "For the interactive UI run: engram conflicts"
+        )
+    if not note:
+        raise click.UsageError("--note is required.")
+
+    async def _run() -> dict:
+        engine, storage = await _conflicts_engine_ctx()
+        try:
+            open_rows = await engine.get_conflicts(status="open")
+            match = _find_open_conflict(open_rows, conflict_id)
+            if not match:
+                all_rows = await engine.get_conflicts(status="all")
+                any_match = _find_open_conflict(all_rows, conflict_id)
+                if any_match:
+                    raise click.ClickException(
+                        f"Conflict {conflict_id!r} is already {any_match['status']}."
+                    )
+                raise click.ClickException(f"No open conflict matching {conflict_id!r}.")
+
+            resolution_type = "dismissed" if do_dismiss else ("merge" if do_merge else "winner")
+            winning_claim_id: str | None = None
+            if winner == "A":
+                winning_claim_id = (match.get("fact_a") or {}).get("fact_id")
+            elif winner == "B":
+                winning_claim_id = (match.get("fact_b") or {}).get("fact_id")
+
+            return await engine.resolve(
+                conflict_id=match["conflict_id"],
+                resolution_type=resolution_type,
+                resolution=note,
+                winning_claim_id=winning_claim_id,
+            )
+        finally:
+            await storage.close()
+
+    try:
+        result = asyncio.run(_run())
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(str(exc))
+
+    if result.get("resolved"):
+        click.echo(
+            click.style("Resolved", fg="green")
+            + f": {_short_conflict_id(result.get('conflict_id', conflict_id))}"
+            + f" ({result.get('resolution_type', '')})"
+        )
+    else:
+        raise click.ClickException("Resolution returned resolved=False — check server logs.")
+
+
+@conflicts.command()
+@click.argument("conflict_id")
+@click.option("--note", default=None, help="Optional reason for dismissal.")
+def dismiss(conflict_id: str, note: str | None) -> None:
+    """Dismiss a conflict as a false positive (non-interactive).
+
+    CONFLICT_ID may be the full UUID or a unique prefix.
+    """
+
+    async def _run() -> tuple[dict, dict]:
+        engine, storage = await _conflicts_engine_ctx()
+        try:
+            open_rows = await engine.get_conflicts(status="open")
+            match = _find_open_conflict(open_rows, conflict_id)
+            if not match:
+                all_rows = await engine.get_conflicts(status="all")
+                any_match = _find_open_conflict(all_rows, conflict_id)
+                if any_match:
+                    raise click.ClickException(
+                        f"Conflict {conflict_id!r} is already {any_match['status']}."
+                    )
+                raise click.ClickException(f"No open conflict matching {conflict_id!r}.")
+            result = await engine.resolve(
+                conflict_id=match["conflict_id"],
+                resolution_type="dismissed",
+                resolution=note or "Dismissed via CLI",
+            )
+            return result, match
+        finally:
+            await storage.close()
+
+    try:
+        result, conflict = asyncio.run(_run())
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(str(exc))
+
+    cid_short = _short_conflict_id(conflict["conflict_id"])
+    if result.get("resolved"):
+        click.echo(click.style("Dismissed", fg="yellow") + f": {cid_short}")
+    else:
+        raise click.ClickException("Dismiss returned resolved=False — check server logs.")
+
+
+@main.command()
+@click.option("--dry-run", is_flag=True, help="Show pending scans without committing facts.")
+def overnight(dry_run: bool) -> None:
+    """Process deferred thinking scans queued during the day.
+
+    Reads pending scans scheduled for tonight, explores the codebase and
+    existing facts, synthesises insights with an LLM, and commits them to
+    memory. Typically invoked by a cron job at midnight:
+
+        0 0 * * * engram overnight
+
+    Set ANTHROPIC_API_KEY in the environment for LLM synthesis.
+    """
+    from engram.overnight import run_overnight
+    from engram.storage import DEFAULT_DB_PATH, SQLiteStorage
+    from engram.workspace import load_workspace
+
+    async def _run() -> int:
+        ws = load_workspace()
+        db_url = getattr(ws, "db_url", None) or ""
+        if db_url.startswith("postgres"):
+            from engram.postgres_storage import PostgresStorage
+
+            storage = PostgresStorage(db_url, workspace_id=ws.engram_id or "local")
+        else:
+            storage = SQLiteStorage(
+                db_path=db_url.replace("sqlite:///", "") or DEFAULT_DB_PATH,
+                workspace_id=ws.engram_id or "local",
+            )
+        await storage.connect()
+        try:
+            if dry_run:
+                from datetime import datetime, timezone
+
+                now = datetime.now(timezone.utc).isoformat()
+                pending = await storage.get_pending_deferred_scans(before=now)
+                return len(pending)
+            return await run_overnight(storage)
+        finally:
+            await storage.close()
+
+    try:
+        count = asyncio.run(_run())
+    except Exception as exc:
+        raise click.ClickException(str(exc))
+
+    if dry_run:
+        click.echo(f"Dry run: {count} scan(s) pending for tonight.")
+    else:
+        click.echo(
+            click.style("✓", fg="green") + f" Overnight run complete — {count} fact(s) committed."
+        )
 
 
 if __name__ == "__main__":

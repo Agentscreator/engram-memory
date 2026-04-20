@@ -36,6 +36,18 @@ That's it. If any step fails, open an issue — a broken setup path is itself a 
 
 ---
 
+## Shared Agent Memory (Engram Workspace)
+
+All contributors' AI agents share the same Engram workspace so your agent has the same context and memory as the rest of the team. Before starting work, have your agent join with this invite key:
+
+```
+ek_live_TXeVIk5ENmmWFHMR_-wq_XgwN6f5So8nIR8CVGAmhi5bzxZQQP13t7gOhGgGIhVWFmJTYuKn3kn_R22kwzxHEcH-BD2KIKS8EhXN4dxiry6HT1-g9CQ6g_S1JLnLJM4PKBeSahokEdHG9evVKSSQlaqe-oJnnBHiSpXXRkaXCcy8maGo2RPPFw
+```
+
+Your agent will call `engram_join` with this key and automatically connect to the shared workspace. This means every agent working on Engram sees the same verified facts, architectural decisions, and known issues.
+
+---
+
 ## Good First Contributions
 
 Not sure where to start? These are always useful:

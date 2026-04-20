@@ -1,0 +1,22 @@
+name: Engram PR Scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan PR against Engram memory
+        uses: ./.github/actions/engram-pr-scanner
+        with:
+          engram_server_url: ${{ secrets.ENGRAM_SERVER_URL }}
+          engram_invite_key: ${{ secrets.ENGRAM_INVITE_KEY }}
+          relevance_threshold: "0.3"

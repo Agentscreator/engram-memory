@@ -15,10 +15,8 @@ Setup:
 from __future__ import annotations
 
 import os
-from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 from pydantic import BaseModel
 
 
@@ -27,6 +25,7 @@ app = FastAPI(title="Engram Slack Bot")
 
 class SlackCommand(BaseModel):
     """Slack slash command payload."""
+
     command: str
     text: str
     user_id: str
@@ -36,6 +35,7 @@ class SlackCommand(BaseModel):
 
 class SlackMessage(BaseModel):
     """Response message for Slack."""
+
     response_type: str = "in_channel"
     text: str
 
@@ -150,5 +150,6 @@ async def handle_conflicts() -> SlackMessage:
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.environ.get("PORT", "7475"))
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -74,7 +74,7 @@ The most comprehensive survey of agent memory as of early 2026. Confirms that sh
 
 ---
 
-## [30] Zep: A Temporal Knowledge Graph Architecture for Agent Memory (Round 3)
+## [30] Zep: A Temporal Knowledge Graph Architecture for Agent Memory
 
 **Authors:** Preston Rasmussen, Pavlo Paliychuk, Travis Jewett, Daniel Chalef (Zep AI)
 **ArXiv:** [2501.13956](https://arxiv.org/abs/2501.13956) (Jan 2025)
@@ -82,13 +82,49 @@ The most comprehensive survey of agent memory as of early 2026. Confirms that sh
 
 ### Summary
 
-Graphiti is a temporally-aware knowledge graph engine for AI agent memory. Its key architectural contribution relevant to Engram is **bitemporal modeling**: every node and edge carries both *valid time* (when the fact was true in the world) and *transaction time* (when the system learned it). This provides full auditability and point-in-time queryability without any separate archive mechanism.
+Graphiti is a temporally-aware knowledge graph engine for AI agent memory that outperforms MemGPT on the Deep Memory Retrieval benchmark (94.8% vs 93.4%) and achieves up to 18.5% accuracy improvement on LongMemEval while reducing latency by 90%. Its core architectural contribution is **bi-temporal modeling on a graph structure**: every edge carries both *valid time* (when the fact was true in the world) and *transaction time* (when the system learned it), enabling full auditability and point-in-time queries.
 
-**Critical insight for Round 3:** Graphiti uses temporal edge invalidation — when a conflict is detected, the old edge's `invalid_at` timestamp is set, preserving historical record while marking it as not current. This is the same primitive as Engram's `valid_until` but applied to a graph structure.
+### Architecture (from source code study)
 
-**Why not just use Graphiti?** Graphiti requires Neo4j (external service, ~1GB RAM, JVM). Engram's design philosophy is local-first with `pip install`. Graphiti's primary use case is rich knowledge graph traversal; Engram's is consistency checking. The bitemporal validity insight transfers; the implementation does not.
+Graphiti's ingestion pipeline (`graphiti.py`, `edge_operations.py`) processes each episode through five stages:
 
-**Influence on Round 3 rewrite:** Graphiti's `valid_from`/`valid_until` model directly inspired the collapse of Round 2's four versioning mechanisms (`superseded_by`, `facts_archive`, `utility_score`, version chain) into a single temporal invariant.
+1. **Entity extraction** — LLM extracts entity nodes from episode content. Nodes carry name embeddings for fuzzy dedup and evolving summaries.
+2. **Node resolution** — Extracted nodes are deduplicated against the existing graph via embedding similarity + LLM confirmation. "PostgreSQL" and "Postgres" merge into one node.
+3. **Edge extraction** — LLM extracts relationship triplets (EntityEdge: source → relation → target) with `valid_at`/`invalid_at` timestamps parsed from temporal references in the content.
+4. **Edge resolution** — Three-phase dedup: exact text match fast path, embedding similarity search for candidates, then LLM call (`dedupe_edges.resolve_edge`) to classify as duplicate, contradiction, or genuinely new. The LLM prompt uses continuous indexing across existing facts and invalidation candidates.
+5. **Temporal contradiction resolution** (`resolve_edge_contradictions`) — When a new edge contradicts an existing one, `valid_at` ordering determines which gets expired. If the existing edge is older, it gets `invalid_at` set to the new edge's `valid_at`. If the new edge is older (out-of-order ingestion), the *new* edge is born expired. Edges are never deleted — only expired.
+
+Key data model (`edges.py`):
+- `EntityEdge`: `source_node_uuid`, `target_node_uuid`, `name` (relation), `fact` (natural language label), `fact_embedding`, `episodes` (list of episode UUIDs), `created_at`, `expired_at`, `valid_at`, `invalid_at`, `reference_time`, `attributes` (Pydantic-typed)
+- `EntityNode`: `name`, `name_embedding`, `summary` (evolving), `labels` (ontology types), `attributes`
+- `EpisodicNode`: raw episode content with `valid_at` timestamp — the provenance chain
+
+### Implementation in Engram
+
+Engram's TKG (`src/engram/tkg.py`, `src/engram/tkg_llm.py`) implements Graphiti's core architecture adapted for multi-agent conflict detection:
+
+**What we adopted from Graphiti:**
+- Bi-temporal edge model (`created_at`/`expired_at` + `valid_at`/`invalid_at`)
+- LLM-powered triplet extraction via gpt-4o-mini (same role as Graphiti's `extract_edges` LLM call)
+- LLM-powered edge dedup and contradiction detection (same role as `dedupe_edges.resolve_edge`)
+- Temporal contradiction resolution with `valid_at` ordering for out-of-order episodes
+- Node dedup via embedding cosine similarity + alias table
+- Evolving node summaries built from edge fact labels
+- Episode tracking on edges (`episode_ids` field, maps to Graphiti's `episodes` list)
+- Edges expired, never deleted — full provenance preserved
+
+**What we built on top of Graphiti:**
+- **Reversal detection** — Graph traversal finds A→B→A patterns (entity changed from X to Y and back to X). Graphiti builds the graph but doesn't analyze it for coherence.
+- **Belief drift detection** — Identifies when different agents assert different values for the same entity+relation over time.
+- **Stale edge detection** — Finds old active edges that newer evidence suggests are outdated.
+- **Conflict integration** — TKG reversals create `tier3_tkg_reversal` conflicts in Engram's existing detection pipeline, surfaced via `engram_conflicts`.
+- **Multi-agent attribution** — Every edge tracks which agent made the assertion, enabling cross-agent drift analysis.
+
+**What we intentionally differ on:**
+- **Graph backend:** Graphiti requires Neo4j/FalkorDB/Kuzu (external graph database). Engram uses SQLite/Postgres relational tables with indexed queries. Graph traversal is simulated with JOINs — sufficient at Engram's scale (<100k nodes) and avoids a JVM dependency.
+- **Extraction model:** Graphiti uses configurable LLM providers (OpenAI, Anthropic, Gemini, Ollama). Engram uses gpt-4o-mini via raw httpx calls (same pattern as the hosted Detective in `api/mcp.py`), with a regex fallback for local-only deployments without API keys.
+- **Community detection:** Graphiti clusters related entities into communities with LLM-generated summaries. Not implemented — Engram's value is conflict detection, not knowledge organization.
+- **Saga/conversation threading:** Graphiti links episodes into sagas with NEXT_EPISODE edges and incremental summarization. Not implemented — Engram facts are independent commits, not conversation turns.
 
 ---
 
@@ -162,7 +198,7 @@ The underlying goal (single-source facts are less trusted) is achievable without
 | Hu et al. [4] (Survey) | Full landscape | Flagged as unsolved frontier | No | 2026 |
 | Rasmussen et al. [30] (Zep/Graphiti) | Single-agent temporal KG | Bitemporal edge invalidation | Implicit (supersession) | 2025 |
 | Alqithami [6] (FiFA/MaRS) | Memory-budgeted forgetting policies | Importance-based decay | No (single-agent) | 2025 |
-| **Engram** | **Multi-agent shared memory** | **Cross-agent fact consistency** | **Yes (`engram_conflicts`)** | **2026** |
+| **Engram** | **Multi-agent shared memory + TKG** | **Cross-agent fact consistency + temporal graph** | **Yes — 4 tiers + TKG reversal/drift/stale** | **2026** |
 
 ### Round 3 Structural Simplifications vs. Round 2
 

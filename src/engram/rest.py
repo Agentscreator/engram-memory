@@ -136,6 +136,8 @@ if TYPE_CHECKING:
     from engram.engine import EngramEngine
     from engram.storage import Storage
 
+from engram.tool_version import deprecation_warning, tool_surface_metadata
+
 logger = logging.getLogger("engram")
 
 
@@ -149,6 +151,27 @@ def build_rest_routes(
 
     def _error(msg: str, status: int = 400) -> JSONResponse:
         return JSONResponse({"error": msg, "status": status}, status_code=status)
+
+    async def _check_invite_key_auth(request: Request) -> bool:
+        """Return True if the request carries a valid invite key as Bearer token.
+
+        Accepts: Authorization: Bearer ek_live_...
+        Validates against the workspace's invite_keys table (does NOT consume a use).
+        Falls through (returns False) when no invite key is present, allowing the
+        caller to apply its own auth logic.
+        """
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer ek_live_"):
+            return False
+        raw_key = auth_header[len("Bearer ") :]
+        try:
+            from engram.workspace import invite_key_hash
+
+            key_hash = invite_key_hash(raw_key)
+        except Exception:
+            return False
+        row = await storage.validate_invite_key(key_hash)
+        return row is not None
 
     async def api_commit(request: Request) -> JSONResponse:
         try:
@@ -198,8 +221,10 @@ def build_rest_routes(
                     status=429,
                 )
 
-        # Scope permission check
-        if auth_enabled and agent_id:
+        # Scope permission check — skipped when a valid invite key is present
+        # (the key proves workspace membership, granting global write access)
+        invite_key_valid = await _check_invite_key_auth(request)
+        if auth_enabled and agent_id and not invite_key_valid:
             from engram.auth import check_scope_permission
 
             allowed = await check_scope_permission(storage, agent_id, scope, "write")
@@ -248,6 +273,7 @@ def build_rest_routes(
         as_of = body.get("as_of")
         fact_type = body.get("fact_type")
         agent_id = body.get("agent_id")
+        include_history = bool(body.get("include_history", False))
 
         try:
             limit = int(limit)
@@ -264,8 +290,9 @@ def build_rest_routes(
                     "'as_of' must be a valid ISO 8601 datetime string (e.g. '2024-01-01T00:00:00Z')."
                 )
 
-        # Scope read permission check
-        if auth_enabled and agent_id and scope:
+        # Scope read permission check — skipped when a valid invite key is present
+        invite_key_valid = await _check_invite_key_auth(request)
+        if auth_enabled and agent_id and scope and not invite_key_valid:
             from engram.auth import check_scope_permission
 
             allowed = await check_scope_permission(storage, agent_id, scope, "read")
@@ -282,6 +309,7 @@ def build_rest_routes(
                 limit=limit,
                 as_of=as_of,
                 fact_type=fact_type,
+                include_history=include_history,
             )
         except Exception as exc:
             logger.exception("REST /api/query error")
@@ -349,6 +377,7 @@ def build_rest_routes(
         resolution_type = body.get("resolution_type", "")
         resolution = body.get("resolution", "")
         winning_claim_id = body.get("winning_claim_id")
+        winning_fact_id = body.get("winning_fact_id")
 
         if not conflict_id:
             return _error("'conflict_id' is required.")
@@ -358,6 +387,19 @@ def build_rest_routes(
             return _error("'resolution_type' must be 'winner', 'merge', or 'dismissed'.")
         if not resolution:
             return _error("'resolution' is required.")
+
+        warnings: list[dict[str, str]] = []
+
+        if winning_claim_id is not None and winning_fact_id is not None:
+            return _error(
+                "Provide only one of 'winning_claim_id' or deprecated alias 'winning_fact_id'."
+            )
+
+        if winning_fact_id is not None:
+            warning = deprecation_warning("engram_resolve", "winning_fact_id")
+            if warning:
+                warnings.append(warning)
+            winning_claim_id = winning_fact_id
 
         try:
             result = await engine.resolve(
@@ -371,6 +413,10 @@ def build_rest_routes(
         except Exception as exc:
             logger.exception("REST /api/resolve error")
             return _error(str(exc), status=500)
+
+        result.update(tool_surface_metadata())
+        if warnings:
+            result["deprecation_warnings"] = warnings
 
         return JSONResponse(result)
 
@@ -826,6 +872,180 @@ def build_rest_routes(
             return _error(str(exc), status=500)
         return JSONResponse(result)
 
+    # ── GDPR erasure ──────────────────────────────────────────────────
+
+    async def api_gdpr_erase(request: Request) -> JSONResponse:
+        """POST /api/gdpr/erase — erase all personal data for an agent.
+
+        Request body: {"agent_id": "...", "mode": "soft"|"hard"}
+        Restricted to workspace creator.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return _error("Request body must be valid JSON.")
+
+        agent_id = body.get("agent_id", "")
+        mode = body.get("mode", "soft")
+
+        if not agent_id:
+            return _error("agent_id is required.")
+        if mode not in ("soft", "hard"):
+            return _error("mode must be 'soft' or 'hard'.")
+
+        try:
+            result = await engine.gdpr_erase_agent(
+                agent_id=agent_id,
+                mode=mode,
+                actor=body.get("actor"),
+            )
+        except PermissionError as exc:
+            return _error(str(exc), status=403)
+        except ValueError as exc:
+            return _error(str(exc), status=400)
+        except Exception as exc:
+            logger.exception("REST /api/gdpr/erase error")
+            return _error(str(exc), status=500)
+
+        return JSONResponse(result)
+
+    async def api_invite_key_rotate(request: Request) -> JSONResponse:
+        """POST /api/invite-key/rotate — rotate the workspace invite key.
+
+        Body (JSON):
+            grace_minutes  int   optional, default 15  (0 = immediate revocation)
+            reason         str   optional note for the audit log
+            expires_days   int   optional, default 90
+            uses           int   optional, default 10
+
+        Returns {status, invite_key, new_generation, old_generation, grace_until}
+        Restricted to workspace creator.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        try:
+            result = await engine.rotate_invite_key(
+                expires_days=int(body.get("expires_days", 90)),
+                uses=int(body.get("uses", 10)),
+                grace_minutes=int(body.get("grace_minutes", 15)),
+                reason=body.get("reason") or None,
+                actor=body.get("actor"),
+            )
+        except PermissionError as exc:
+            return _error(str(exc), status=403)
+        except ValueError as exc:
+            return _error(str(exc), status=400)
+        except Exception as exc:
+            logger.exception("REST /api/invite-key/rotate error")
+            return _error(str(exc), status=500)
+
+        return JSONResponse({"status": "rotated", **result})
+
+    async def api_invite_key_history(request: Request) -> JSONResponse:
+        """GET /api/invite-key/history?limit=N — rotation audit trail.
+
+        Returns a list of audit log entries for key_rotation events,
+        ordered most-recent first.
+        """
+        try:
+            limit = int(request.query_params.get("limit", "20"))
+        except ValueError:
+            limit = 20
+
+        entries = await engine.get_rotation_history(limit=limit)
+        return JSONResponse({"entries": entries, "count": len(entries)})
+
+    async def api_chat(request: Request) -> JSONResponse:
+        """POST /api/chat — query OpenAI with Engram fact corpus as context.
+
+        Body (JSON):
+            message   str   required  — the user's message
+            limit     int   optional  — max facts to include (default 20)
+
+        Returns {reply: str} or {error: str}.
+        The OPENAI_API_KEY must be set as a server environment variable.
+        """
+        import http.client
+        import json as _json
+        import os
+
+        try:
+            body = await request.json()
+        except Exception:
+            return _error("Request body must be valid JSON.")
+
+        message = body.get("message", "").strip()
+        if not message:
+            return _error("'message' is required.")
+
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return _error("OPENAI_API_KEY is not configured on the server.", status=503)
+
+        limit = min(int(body.get("limit", 20)), 50)
+
+        # Fetch relevant facts from Engram
+        try:
+            facts = await engine.query(topic=message, limit=limit)
+        except Exception:
+            facts = []
+
+        system_content = (
+            "You are an AI assistant with access to a shared team memory (Engram). "
+            "Use the facts below as context when answering. "
+            "If the facts are not relevant, answer from your general knowledge.\n\n"
+        )
+        if facts:
+            system_content += "Engram fact corpus:\n"
+            for i, fact in enumerate(facts, 1):
+                system_content += f"{i}. {fact.get('content', '')}\n"
+        else:
+            system_content += "No relevant facts found in memory."
+
+        payload = _json.dumps(
+            {
+                "model": "gpt-4o",
+                "messages": [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": message},
+                ],
+                "max_tokens": 1024,
+            }
+        ).encode()
+
+        try:
+            conn = http.client.HTTPSConnection("api.openai.com", timeout=30)
+            conn.request(
+                "POST",
+                "/v1/chat/completions",
+                payload,
+                {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(payload)),
+                    "Authorization": f"Bearer {api_key}",
+                },
+            )
+            resp = conn.getresponse()
+            data = _json.loads(resp.read())
+        except Exception as exc:
+            logger.exception("REST /api/chat openai error")
+            return _error(str(exc), status=502)
+
+        if resp.status != 200:
+            err = data.get("error", {})
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            return _error(f"OpenAI error: {msg}", status=502)
+
+        try:
+            reply = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError):
+            return _error("Unexpected response from OpenAI.", status=502)
+
+        return JSONResponse({"reply": reply})
+
     return [
         Route("/api/commit", api_commit, methods=["POST"]),
         Route("/api/query", api_query, methods=["POST"]),
@@ -864,4 +1084,10 @@ def build_rest_routes(
         Route("/api/diff/{fact_id_a}/{fact_id_b}", api_diff, methods=["GET"]),
         # Audit
         Route("/api/audit", api_audit, methods=["GET"]),
+        # GDPR
+        Route("/api/gdpr/erase", api_gdpr_erase, methods=["POST"]),
+        # Invite key lifecycle
+        Route("/api/invite-key/rotate", api_invite_key_rotate, methods=["POST"]),
+        Route("/api/invite-key/history", api_invite_key_history, methods=["GET"]),
+        Route("/api/chat", api_chat, methods=["POST"]),
     ]

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
 import pytest
 
-from engram.dashboard import _esc, _render_index
+from engram.dashboard import _esc, _render_fact_detail, _render_index
 from engram.storage import Storage
 
 
@@ -63,3 +64,36 @@ async def test_dashboard_counts(storage: Storage):
         }
     )
     assert await storage.count_facts() == 1
+
+
+def test_render_fact_detail_shows_ticket_refs():
+    fact = {
+        "id": uuid.uuid4().hex,
+        "content": "Constraint came from GH-123 and LINEAR-456",
+        "scope": "auth",
+        "fact_type": "decision",
+        "confidence": 0.95,
+        "agent_id": "agent-auth",
+        "committed_at": datetime.now(timezone.utc).isoformat(),
+        "provenance": "docs/auth.md",
+        "lineage_id": uuid.uuid4().hex,
+        "query_hits": 3,
+        "durability": "durable",
+        "corroborating_agents": 1,
+        "entities": json.dumps(
+            [
+                {"name": "GH-123", "type": "ticket_ref", "value": "123", "system": "gh"},
+                {
+                    "name": "LINEAR-456",
+                    "type": "ticket_ref",
+                    "value": "456",
+                    "system": "linear",
+                },
+            ]
+        ),
+    }
+
+    html = _render_fact_detail(fact, lineage=[])
+    assert "Linked Tickets" in html
+    assert "GH-123" in html
+    assert "LINEAR-456" in html

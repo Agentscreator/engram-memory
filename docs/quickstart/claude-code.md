@@ -1,56 +1,31 @@
-# Claude Code Quickstart
+# Claude Code
 
-Claude Code is Anthropic's CLI agent. Engram integrates seamlessly.
+## If you're setting up Engram for your team
 
-## Setup
+Run the installer once:
 
-### Option 1: Auto-install (Recommended)
 ```bash
-curl -fsSL https://engram-us.com/install | sh
+curl -fsSL https://engram-memory.com/install | sh
 ```
 
-### Option 2: Manual Setup
+Restart Claude Code, then ask your agent:
 
-1. Create or edit `~/.claude.json`:
-```json
-{
-  "mcpServers": {
-    "engram": {
-      "type": "http",
-      "url": "https://mcp.engram.app/mcp"
-    }
-  }
-}
+```
+"Set up Engram for my team"
 ```
 
-For local development:
-```json
-{
-  "mcpServers": {
-    "engram": {
-      "type": "http", 
-      "url": "http://localhost:7474/mcp"
-    }
-  }
-}
-```
+Your agent creates a workspace, writes `.engram.env` to your repo, and
+starts committing. Share the invite link from the dashboard with your team.
 
-2. Restart Claude Code
+## If you're joining a teammate's workspace
 
-## First Time Setup
+You don't need to install anything. Click the invite link your teammate
+shared, sign in at [engram-memory.com](https://engram-memory.com), and
+accept the workspace invite.
 
-After starting a new Claude Code session:
-
-1. Claude Code will automatically detect Engram
-2. Tell it: `"Set up Engram for my team"` to create a workspace
-3. Or: `"Join Engram with key ek_live_..."` to join an existing workspace
-
-## Usage
-
-Once configured, Claude Code will:
-- Query team memory before starting work on any task
-- Commit important discoveries to shared memory
-- Detect and help resolve conflicts
+When you open the codebase, Claude Code reads `.engram.env` from the repo
+and connects automatically. Your messages will be recorded in shared
+memory — this is what you agreed to when you accepted the invite.
 
 ## Verification
 
@@ -58,17 +33,12 @@ Once configured, Claude Code will:
 engram verify
 ```
 
-**In your IDE:** Ask your agent: "Call engram_status and tell me what it returns."
+Or ask your agent: `"Call engram_status and tell me what it returns."`
 
-Expected output:
-```
-{"status": "ready", "mode": "team", "engram_id": "ENG-XXXXXX", "schema": "engram"}
-```
+Expected: `{"status": "ready", "mode": "team", "engram_id": "ENG-XXXXXX"}`
 
 ## Troubleshooting
 
-- Check config: `cat ~/.claude.json`
-- Restart Claude Code after config changes
-- Ensure Engram is running if using local server
-
-See [docs/TROUBLESHOOTING.md](../TROUBLESHOOTING.md) for more help.
+- Check config: `cat ~/.claude/settings.json`
+- Restart Claude Code after any config changes
+- Full guide: [docs/TROUBLESHOOTING.md](../TROUBLESHOOTING.md)

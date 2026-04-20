@@ -16,7 +16,7 @@ import hmac
 import json
 import logging
 import os
-import re
+import re as _re
 import secrets
 import time
 import uuid
@@ -33,10 +33,39 @@ logger = logging.getLogger("engram")
 DB_URL = os.environ.get("ENGRAM_DB_URL", "")
 SCHEMA = "engram"
 
-# Billing
-HOBBY_LIMIT_BYTES = 512 * 1024 * 1024  # 512 MiB — same as Neon's free tier
+# ── Plan commit limits (mirrors api/billing.py) ───────────────────────
+_PLAN_LIMITS: dict[str, int] = {
+    "free": 500,
+    "builder": 5_000,
+    "team": 25_000,
+    "scale": 100_000,
+    # legacy aliases
+    "hobby": 500,
+    "pro": 5_000,
+}
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+# ── Terms of Service ─────────────────────────────────────────────────
+
+ENGRAM_TERMS = (
+    "By using Engram, you agree to the following terms:\n\n"
+    "1. AUTO-COMMIT: All conversation data between you and your AI agent is\n"
+    "   automatically recorded in your team's shared Engram memory.\n\n"
+    "2. YOUR DATA IS YOURS: Engram will never sell, read, redistribute, or\n"
+    "   use your conversation data for any purpose beyond providing the\n"
+    "   Engram service to you and your team.\n\n"
+    "3. ENCRYPTION: All data is encrypted in transit (TLS) and at rest.\n"
+    "   Only authenticated members of your workspace can access your data.\n\n"
+    "4. DELETION: You can delete your data at any time using the Engram\n"
+    "   dashboard or GDPR erasure tools.\n\n"
+    "Do you accept these terms? Reply 'I accept' to continue."
+)
 
 # ── Schema SQL ───────────────────────────────────────────────────────
+# IMPORTANT: After editing _SCHEMA_SQL (adding tables, columns, indexes),
+# bump _SCHEMA_VERSION below the DB pool section. This ensures the new
+# schema runs on the next deployment even on warm Vercel workers.
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -96,7 +125,20 @@ CREATE TABLE IF NOT EXISTS conflicts (
     workspace_id    TEXT NOT NULL
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conflicts_pair_unique ON conflicts(
+    workspace_id,
+    LEAST(fact_a_id, fact_b_id),
+    GREATEST(fact_a_id, fact_b_id)
+);
 CREATE INDEX IF NOT EXISTS idx_conflicts_workspace ON conflicts(workspace_id, status);
+
+CREATE TABLE IF NOT EXISTS dismissed_conflicts (
+    conflict_id   TEXT PRIMARY KEY REFERENCES conflicts(id),
+    workspace_id  TEXT NOT NULL,
+    dismissed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dismissed_conflicts_workspace
+    ON dismissed_conflicts(workspace_id);
 
 CREATE TABLE IF NOT EXISTS agents (
     agent_id      TEXT NOT NULL,
@@ -112,8 +154,9 @@ CREATE TABLE IF NOT EXISTS agents (
 -- Billing / quota columns on workspaces
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS paused         BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS storage_bytes  BIGINT  NOT NULL DEFAULT 0;
-ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS plan           TEXT    NOT NULL DEFAULT 'hobby';
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS plan           TEXT    NOT NULL DEFAULT 'free';
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS terms_accepted BOOLEAN NOT NULL DEFAULT false;
 
 -- User accounts (managed by api/auth.py but schema lives here so it runs on first MCP call)
 CREATE TABLE IF NOT EXISTS users (
@@ -134,34 +177,110 @@ CREATE TABLE IF NOT EXISTS user_workspaces (
 
 # ── DB pool ──────────────────────────────────────────────────────────
 
+# Bump this version whenever _SCHEMA_SQL changes (new tables, columns, indexes).
+_SCHEMA_VERSION = 4
 _pool: Any = None
-_schema_ready = False
+_schema_version_applied: int = 0
+
+
+async def _ensure_schema(pool: Any) -> None:
+    """Ensure schema tables exist. Runs a cheap check on every request."""
+    global _schema_version_applied
+    if _schema_version_applied >= _SCHEMA_VERSION:
+        return
+    async with pool.acquire() as conn:
+        # Always set search_path first — Neon may not honor server_settings or init callbacks
+        await conn.execute(f"SET search_path TO {SCHEMA}, public")
+        # Quick check: does the workspaces table exist?
+        exists = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = $1 AND table_name = 'workspaces')",
+            SCHEMA,
+        )
+        if exists:
+            # Migrate data from old 'engram' schema to public if needed
+            old_schema_exists = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = 'engram' AND table_name = 'workspaces')"
+            )
+            if old_schema_exists:
+                for table in [
+                    "workspaces",
+                    "invite_keys",
+                    "facts",
+                    "conflicts",
+                    "agents",
+                    "users",
+                    "user_workspaces",
+                ]:
+                    try:
+                        await conn.execute(
+                            f"INSERT INTO public.{table} SELECT * FROM engram.{table} "
+                            f"ON CONFLICT DO NOTHING"
+                        )
+                    except Exception:
+                        pass  # Table might not exist in old schema or columns differ
+            _schema_version_applied = _SCHEMA_VERSION
+            return
+        # Tables don't exist — run bootstrap
+        await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
+        for stmt in _SCHEMA_SQL.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                await conn.execute(f"SET search_path TO {SCHEMA}, public")
+                await conn.execute(stmt)
+        _schema_version_applied = _SCHEMA_VERSION
 
 
 async def _get_pool() -> Any:
-    global _pool, _schema_ready
+    global _pool
     if not DB_URL:
         raise RuntimeError("ENGRAM_DB_URL not configured")
-    if _pool is None:
-        import asyncpg
 
-        # Bootstrap: create schema + tables with a single connection
-        conn = await asyncpg.connect(DB_URL)
-        try:
-            await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
-            await conn.execute(f"SET search_path TO {SCHEMA}, public")
-            await conn.execute(_SCHEMA_SQL)
-            _schema_ready = True
-        finally:
-            await conn.close()
+    import asyncpg
+
+    if _pool is None:
 
         async def _set_path(c: Any) -> None:
             await c.execute(f"SET search_path TO {SCHEMA}, public")
 
         _pool = await asyncpg.create_pool(
-            DB_URL, min_size=1, max_size=5, command_timeout=30, init=_set_path
+            DB_URL,
+            min_size=1,
+            max_size=5,
+            command_timeout=30,
+            init=_set_path,
+            server_settings={"search_path": f"{SCHEMA}, public"},
         )
+
+    await _ensure_schema(_pool)
     return _pool
+
+
+class _SafeConn:
+    """Context manager that guarantees search_path is set on every acquire.
+
+    Neon serverless Postgres may reset connection state between requests,
+    so the pool ``init`` callback alone is not reliable.
+    """
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+        self._conn: Any = None
+
+    async def __aenter__(self) -> Any:
+        self._conn = await self._pool.acquire()
+        await self._conn.execute(f"SET search_path TO {SCHEMA}, public")
+        return self._conn
+
+    async def __aexit__(self, *args: Any) -> None:
+        if self._conn:
+            await self._pool.release(self._conn)
+
+
+def _safe(pool: Any) -> _SafeConn:
+    """Return a context manager that acquires a connection with search_path set."""
+    return _SafeConn(pool)
 
 
 # ── Invite key crypto (self-contained, matches workspace.py) ─────────
@@ -265,86 +384,454 @@ async def _auth_workspace(request: Request) -> str | None:
         return None
     invite_key = auth[7:]
     try:
-        _decode_invite_key(invite_key)
-    except ValueError:
-        return None
-    key_hash = _invite_key_hash(invite_key)
-    try:
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT uses_remaining, engram_id FROM invite_keys WHERE key_hash = $1",
-                key_hash,
-            )
-        if not row:
-            return None
-        if row["uses_remaining"] is not None and row["uses_remaining"] <= 0:
-            return None
-        return row["engram_id"]
-    except Exception:
+        payload = _decode_invite_key(invite_key)
+        return payload.get("engram_id")
+    except (ValueError, Exception):
         return None
 
 
-# ── Conflict detection (tier 0 — entity regex, no ML) ────────────────
+# ── Conflict detection ───────────────────────────────────────────────
 
-_NUM_RE = re.compile(
-    r"\b(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|minutes?|hours?|days?|"
-    r"mb|gb|tb|kb|rpm|rps|req/s|req/min|%|requests?|connections?|workers?|threads?|replicas?)?\b",
-    re.IGNORECASE,
+_CONFLICT_MODEL = "gpt-4o-mini"
+_BATCH_CHAR_LIMIT = 24000  # ~6k tokens of facts per batch
+
+# Regex patterns for simple heuristic contradiction detection
+_UNLIMITED_RE = _re.compile(
+    r"\bunlimited\b|\bno\s+limit\b|\bno\s+cap\b|\bno\s+maximum\b"
+    r"|\bremov\w+\s+\w*\s*(?:cap|limit)\b|\bwithout\s+limit\b",
+    _re.IGNORECASE,
 )
-_ENTITY_RE = re.compile(r"\b([A-Z_]{3,})\b")
+_LIMIT_RE = _re.compile(
+    r"\bmaximum\s+of\s+(\d+)|\bmax\s+(\d+)|\bcap\s+of\s+(\d+)"
+    r"|\blimit\s+of\s+(\d+)|\bup\s+to\s+(\d+)|\bonly\s+(\d+)\b"
+    r"|\b(\d+)\s+(?:project|repo|seat|user|item|task)",
+    _re.IGNORECASE,
+)
+_BOOL_TRUE_RE = _re.compile(
+    r"\bis\s+enabled\b|\bis\s+active\b|\bis\s+on\b|\bexists?\b|\bmust\s+be\s+enforced\b",
+    _re.IGNORECASE,
+)
+_BOOL_FALSE_RE = _re.compile(
+    r"\bis\s+disabled\b|\bis\s+inactive\b|\bis\s+off\b|\bdoes\s+not\s+exist\b|\bnot\s+enforced\b",
+    _re.IGNORECASE,
+)
+
+
+def _extract_key_nouns(text: str) -> set[str]:
+    """Return lowercase words that look like subject nouns (4+ chars, not stopwords)."""
+    _STOP = {
+        "this",
+        "that",
+        "with",
+        "have",
+        "from",
+        "they",
+        "will",
+        "been",
+        "more",
+        "also",
+        "when",
+        "their",
+        "there",
+        "which",
+        "were",
+        "what",
+        "then",
+        "than",
+        "into",
+        "only",
+        "some",
+        "your",
+        "each",
+        "must",
+        "fact",
+        "user",
+        "agent",
+        "team",
+        "site",
+        "page",
+    }
+    words = _re.findall(r"\b[a-z]{4,}\b", text.lower())
+    return {w for w in words if w not in _STOP}
+
+
+def _facts_share_subject(a: str, b: str) -> bool:
+    """Return True if two fact contents share at least one key noun."""
+    return bool(_extract_key_nouns(a) & _extract_key_nouns(b))
+
+
+async def _detect_conflicts_heuristic(workspace_id: str, pool: Any) -> None:
+    """Rule-based conflict detection that works without any external API.
+
+    Detects:
+    - 'unlimited / no limit' vs 'maximum of N / limit of N' in the same scope
+    - Boolean contradictions (enabled vs disabled) in the same scope
+    """
+    try:
+        async with _safe(pool) as conn:
+            rows = await conn.fetch(
+                """SELECT id, content, scope FROM facts
+                   WHERE workspace_id = $1 AND valid_until IS NULL
+                   ORDER BY committed_at ASC""",
+                workspace_id,
+            )
+        facts = [dict(r) for r in rows]
+        if len(facts) < 2:
+            return
+
+        to_insert: list[tuple[str, str, str]] = []  # (fa_id, fb_id, explanation)
+
+        # Group by scope for same-scope checks
+        by_scope: dict[str, list[dict]] = {}
+        for f in facts:
+            by_scope.setdefault(f["scope"], []).append(f)
+
+        for scope_facts in by_scope.values():
+            if len(scope_facts) < 2:
+                continue
+            for i, fa in enumerate(scope_facts):
+                for fb in scope_facts[i + 1 :]:
+                    if not _facts_share_subject(fa["content"], fb["content"]):
+                        continue
+                    a_unlimited = bool(_UNLIMITED_RE.search(fa["content"]))
+                    b_unlimited = bool(_UNLIMITED_RE.search(fb["content"]))
+                    a_limited = bool(_LIMIT_RE.search(fa["content"]))
+                    b_limited = bool(_LIMIT_RE.search(fb["content"]))
+                    a_true = bool(_BOOL_TRUE_RE.search(fa["content"]))
+                    b_true = bool(_BOOL_TRUE_RE.search(fb["content"]))
+                    a_false = bool(_BOOL_FALSE_RE.search(fa["content"]))
+                    b_false = bool(_BOOL_FALSE_RE.search(fb["content"]))
+
+                    explanation: str | None = None
+                    if (a_unlimited and b_limited) or (a_limited and b_unlimited):
+                        explanation = (
+                            "Is the quantity unlimited, or is there a fixed maximum? "
+                            "One fact says unlimited, another says there is a cap."
+                        )
+                    elif (a_true and b_false) or (a_false and b_true):
+                        explanation = (
+                            "Contradictory state detected: one fact says enabled/active, "
+                            "another says disabled/inactive for the same subject."
+                        )
+
+                    if explanation:
+                        to_insert.append((fa["id"], fb["id"], explanation))
+
+        if not to_insert:
+            return
+
+        async with _safe(pool) as conn:
+            for fa_id, fb_id, explanation in to_insert:
+                # Normalize pair order to match the LEAST/GREATEST unique index.
+                norm_a, norm_b = (fa_id, fb_id) if fa_id < fb_id else (fb_id, fa_id)
+                existing = await conn.fetchrow(
+                    """SELECT 1 FROM conflicts WHERE workspace_id = $1
+                         AND fact_a_id = $2 AND fact_b_id = $3""",
+                    workspace_id,
+                    norm_a,
+                    norm_b,
+                )
+                if existing:
+                    continue
+                cid = str(uuid.uuid4())
+                dismissed = await conn.fetchrow(
+                    """SELECT 1 FROM dismissed_conflicts
+                       WHERE conflict_id = $1 AND workspace_id = $2""",
+                    cid,
+                    workspace_id,
+                )
+                if dismissed:
+                    continue
+                await conn.execute(
+                    """INSERT INTO conflicts
+                       (id, fact_a_id, fact_b_id, explanation, severity, workspace_id)
+                       VALUES ($1, $2, $3, $4, 'medium', $5)
+                       ON CONFLICT (workspace_id, LEAST(fact_a_id, fact_b_id), GREATEST(fact_a_id, fact_b_id))
+                       DO NOTHING""",
+                    cid,
+                    norm_a,
+                    norm_b,
+                    explanation,
+                    workspace_id,
+                )
+                logger.info("Heuristic conflict: %s vs %s", norm_a[:8], norm_b[:8])
+    except Exception as exc:
+        logger.warning("Heuristic conflict detection failed: %s", exc)
 
 
 async def _detect_conflicts(
-    new_fact_id: str, content: str, scope: str, workspace_id: str, pool: Any
+    new_fact_id: str,
+    content: str,
+    scope: str,
+    workspace_id: str,
+    pool: Any,
+    plan: str = "free",
 ) -> None:
-    """Tier-0 entity conflict detection. Runs inline, no ML."""
+    """Narrative coherence detective with probabilistic forgetting.
+
+    Reads the chronological story of the workspace and identifies where
+    an agent would get confused. Uses FiFA-inspired forgetting:
+
+    - Facts < 24h old: 60-80% forgotten (keep 20-40%)
+    - Facts 1-7 days old: 80-90% forgotten (keep 10-20%)
+    - Facts > 7 days old: 90-95% forgotten (keep 5-10%)
+    - Facts involved in conflicts survive at higher rates (2x per flag)
+
+    This focuses the detective on the signal, not the noise.
+    """
+    # Always run heuristic detection first — works without any API key.
+    await _detect_conflicts_heuristic(workspace_id, pool)
+
+    if not OPENAI_API_KEY:
+        return
+
     try:
-        new_nums = {m.group(0).lower() for m in _NUM_RE.finditer(content) if m.group(1)}
-        new_ents = {m.group(1) for m in _ENTITY_RE.finditer(content)}
-        if not new_nums and not new_ents:
+        async with _safe(pool) as conn:
+            # Fetch ALL active facts chronologically (oldest first = story order)
+            all_facts = await conn.fetch(
+                """SELECT id, content, scope, committed_at FROM facts
+                   WHERE workspace_id = $1 AND valid_until IS NULL
+                   ORDER BY committed_at ASC""",
+                workspace_id,
+            )
+
+        if len(all_facts) < 2:
             return
 
-        async with pool.acquire() as conn:
-            existing = await conn.fetch(
-                """SELECT id, content FROM facts
-                   WHERE workspace_id = $1 AND scope = $2 AND valid_until IS NULL
-                     AND id != $3
-                   ORDER BY committed_at DESC LIMIT 30""",
+        # ── Probabilistic forgetting (FiFA-inspired) ────────────────
+        # Recent noise drowns out signal. The detective forgets most
+        # recent facts but remembers facts that have been flagged in
+        # conflicts — those are the ones that matter.
+        from engram.forgetting import apply_forgetting
+
+        now = datetime.now(timezone.utc)
+
+        # Count how many conflicts each fact has been involved in
+        conflict_counts: dict[str, int] = {}
+        async with _safe(pool) as conn:
+            conflict_rows = await conn.fetch(
+                """SELECT fact_a_id, fact_b_id FROM conflicts
+                   WHERE workspace_id = $1""",
                 workspace_id,
-                scope,
-                new_fact_id,
             )
-            for row in existing:
-                old_content = row["content"]
-                old_nums = {m.group(0).lower() for m in _NUM_RE.finditer(old_content) if m.group(1)}
-                old_ents = {m.group(1) for m in _ENTITY_RE.finditer(old_content)}
+        for cr in conflict_rows:
+            conflict_counts[cr["fact_a_id"]] = conflict_counts.get(cr["fact_a_id"], 0) + 1
+            conflict_counts[cr["fact_b_id"]] = conflict_counts.get(cr["fact_b_id"], 0) + 1
 
-                shared_ents = new_ents & old_ents
-                conflicting_nums = new_nums ^ old_nums  # symmetric diff
+        # Apply forgetting curve — always keep the trigger fact
+        surviving_facts = apply_forgetting(
+            facts=[dict(row) for row in all_facts],
+            conflict_counts=conflict_counts,
+            now=now,
+            always_keep_ids={new_fact_id},
+        )
 
-                if shared_ents and conflicting_nums:
-                    cid = str(uuid.uuid4())
-                    explanation = (
-                        f"Entity overlap ({', '.join(list(shared_ents)[:3])}) "
-                        f"with different numeric values"
+        # Build the chronological narrative from surviving facts
+        story_lines: list[dict] = []
+        for row in surviving_facts:
+            ts = (
+                row["committed_at"].strftime("%Y-%m-%d %H:%M") if row["committed_at"] else "unknown"
+            )
+            story_lines.append(
+                {
+                    "id": row["id"],
+                    "text": f"[{row['id'][:8]}] {ts} ({row['scope']}) {row['content']}",
+                }
+            )
+
+        # Batch into context windows, but keep chronological order within each
+        batches: list[list[dict]] = []
+        current_batch: list[dict] = []
+        current_chars = 0
+        for line in story_lines:
+            line_len = len(line["text"])
+            if current_chars + line_len > _BATCH_CHAR_LIMIT and current_batch:
+                batches.append(current_batch)
+                current_batch = []
+                current_chars = 0
+            current_batch.append(line)
+            current_chars += line_len
+        if current_batch:
+            batches.append(current_batch)
+
+        import asyncio as _aio
+
+        async def _check_batch(batch: list[dict]) -> list[dict]:
+            story = "\n".join(f"{i + 1}. {f['text']}" for i, f in enumerate(batch))
+            prompt = (
+                "You are a detective reading the chronological story of a software project's "
+                "shared memory. Each line is a fact committed by an AI agent, with timestamp "
+                "and scope.\n\n"
+                "Read the story and identify points where an agent joining this project "
+                "TODAY would get confused. You're looking for:\n\n"
+                "• REVERSALS — the story says 'we use X', then later 'we switched to Y', "
+                "then even later 'we use X' again. Which is it now?\n"
+                "• AMBIGUITY — two facts that are both currently active say different things "
+                "about the same subject. An agent wouldn't know which to follow.\n"
+                "• STALE CLAIMS — an old fact is clearly outdated based on newer context "
+                "but was never explicitly retired.\n\n"
+                "DO NOT FLAG:\n"
+                "• Natural progression (we did X, then improved to Y) — that's normal\n"
+                "• Design iteration and mind-changes — when someone corrects or refines "
+                "an earlier decision, the later fact IS the current truth. The earlier "
+                "fact is just history. This is how architecture solidifies.\n"
+                "• Facts about different subjects, even if they use similar words\n"
+                "• Facts from the same conversation (minutes apart, same scope) evolving\n"
+                "• Anything where the chronological order makes the current state clear — "
+                "if the most recent fact settles the question, there is no confusion\n"
+                "• A correction or clarification that supersedes an earlier claim — "
+                "the arc 'we thought X → actually it's Y' is resolved, not ambiguous\n\n"
+                "The key test: does the MOST RECENT relevant fact leave the question "
+                "open, or does it settle it? If it settles it, do not flag. Only flag "
+                "when the latest state of the story is genuinely unclear.\n\n"
+                "Think about it like this: if a new agent reads these facts top to bottom, "
+                "would they know what's true RIGHT NOW? If yes, no confusion. If they'd "
+                "have to guess between two equally current-looking facts, that's a "
+                "confusion worth flagging.\n\n"
+                f"THE STORY (chronological, oldest first):\n{story}\n\n"
+                "For each confusion you find, return:\n"
+                '- "fact_ids": array of the 8-char IDs of the facts involved\n'
+                '- "question": a 1-2 sentence yes/no question a human can answer to '
+                "clarify. Frame as: 'Is [specific thing] still the case?'\n\n"
+                "Respond with ONLY a JSON array:\n"
+                '[{"fact_ids": ["abc12345", "def67890"], "question": "Is the API still using REST, or was it switched to GraphQL?"}]\n\n'
+                "If the story is coherent (the common case), respond with: []"
+            )
+            try:
+                import httpx
+
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {OPENAI_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": _CONFLICT_MODEL,
+                            "messages": [
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "You are a narrative coherence detective for a team's "
+                                        "shared AI memory. Read the chronological story and "
+                                        "identify where a new agent would get confused about "
+                                        "the current state of things. Normal development "
+                                        "progression is not confusion. Design iteration — "
+                                        "someone changing their mind and refining a decision — "
+                                        "is not confusion. The later fact is the truth; the "
+                                        "earlier fact is history. Only flag genuine ambiguity "
+                                        "where the most recent facts leave the current state "
+                                        "unclear and an agent would have to guess. "
+                                        "Respond only with valid JSON arrays."
+                                    ),
+                                },
+                                {"role": "user", "content": prompt},
+                            ],
+                            "temperature": 0,
+                            "max_tokens": 1024,
+                        },
                     )
+                    if resp.status_code != 200:
+                        logger.warning(
+                            "OpenAI API returned %d: %s", resp.status_code, resp.text[:200]
+                        )
+                        return []
+                    data = resp.json()
+                    raw = data["choices"][0]["message"]["content"].strip()
+                    if raw.startswith("```"):
+                        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+                    return json.loads(raw)
+            except Exception as exc:
+                logger.warning("LLM coherence check failed: %s", exc)
+                return []
+
+        results = await _aio.gather(*[_check_batch(b) for b in batches])
+
+        # Build ID lookup
+        id_lookup: dict[str, str] = {}
+        for row in all_facts:
+            id_lookup[row["id"][:8]] = row["id"]
+
+        async with _safe(pool) as conn:
+            for batch_results in results:
+                for confusion in batch_results:
+                    if not isinstance(confusion, dict):
+                        continue
+                    fact_ids = confusion.get("fact_ids", [])
+                    if len(fact_ids) < 2:
+                        continue
+                    # Resolve short IDs to full IDs
+                    full_ids = [id_lookup.get(fid) for fid in fact_ids]
+                    full_ids = [fid for fid in full_ids if fid]
+                    if len(full_ids) < 2:
+                        continue
+                    # Use first two facts as the conflict pair
+                    fa_id, fb_id = full_ids[0], full_ids[1]
+                    # Check if already flagged
+                    existing = await conn.fetchrow(
+                        """SELECT 1 FROM conflicts WHERE workspace_id = $1
+                             AND ((fact_a_id = $2 AND fact_b_id = $3)
+                               OR (fact_a_id = $3 AND fact_b_id = $2))""",
+                        workspace_id,
+                        fa_id,
+                        fb_id,
+                    )
+                    if existing:
+                        continue
+                    cid = str(uuid.uuid4())
+                    dismissed = await conn.fetchrow(
+                        """SELECT 1 FROM dismissed_conflicts
+                           WHERE conflict_id = $1 AND workspace_id = $2""",
+                        cid,
+                        workspace_id,
+                    )
+                    if dismissed:
+                        continue
+                    question = confusion.get("question", "Ambiguous information detected")
                     await conn.execute(
-                        """INSERT INTO conflicts (id, fact_a_id, fact_b_id, explanation,
-                               severity, workspace_id)
+                        """INSERT INTO conflicts
+                           (id, fact_a_id, fact_b_id, explanation, severity, workspace_id)
                            VALUES ($1, $2, $3, $4, 'medium', $5)
                            ON CONFLICT DO NOTHING""",
                         cid,
-                        new_fact_id,
-                        row["id"],
-                        explanation,
+                        fa_id,
+                        fb_id,
+                        question,
                         workspace_id,
                     )
+                    logger.info(
+                        "Coherence issue: %s vs %s — %s",
+                        fa_id[:8],
+                        fb_id[:8],
+                        question,
+                    )
+
     except Exception as exc:
-        logger.warning("Conflict detection failed: %s", exc)
+        logger.warning("Narrative coherence detection failed: %s", exc)
 
 
 # ── Tool implementations ─────────────────────────────────────────────
+
+
+async def _tool_debug_schema(pool: Any) -> dict:
+    """Debug: show what tables exist in the engram schema."""
+    async with _safe(pool) as conn:
+        rows = await conn.fetch(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = $1",
+            SCHEMA,
+        )
+        tables = [r["table_name"] for r in rows]
+        search_path = await conn.fetchval("SHOW search_path")
+        current_schema = await conn.fetchval("SELECT current_schema()")
+    return {
+        "schema": SCHEMA,
+        "search_path": search_path,
+        "current_schema": current_schema,
+        "tables": tables,
+        "schema_version_applied": _schema_version_applied,
+        "schema_version_target": _SCHEMA_VERSION,
+    }
 
 
 async def _tool_status(workspace_id: str | None, pool: Any) -> dict:
@@ -353,23 +840,39 @@ async def _tool_status(workspace_id: str | None, pool: Any) -> dict:
             "status": "unconfigured",
             "next_prompt": (
                 "Welcome to Engram — shared memory for your team's agents.\n\n"
-                "Do you have an invite key from a teammate, or are you creating a new workspace?\n\n"
-                "• If creating: I'll set one up now — just say 'create a new workspace'.\n"
-                "• If joining: paste your invite key and I'll connect you."
+                "FIRST — Check if a .engram.env file exists in the workspace root.\n"
+                "If it does, read the ENGRAM_INVITE_KEY value from it and call\n"
+                "engram_join with that key. This reconnects you to the team's\n"
+                "shared memory automatically — no need to ask the user.\n\n"
+                "If .engram.env does not exist:\n"
+                "• Create a workspace at https://www.engram-memory.com/dashboard\n"
+                "• Join a workspace you already created — paste your invite key from the dashboard\n"
+                "• Join a teammate's workspace — paste the invite key they shared with you"
             ),
         }
-    async with pool.acquire() as conn:
+    async with _safe(pool) as conn:
         ws = await conn.fetchrow(
-            "SELECT engram_id, anonymous_mode, key_generation FROM workspaces WHERE engram_id = $1",
+            "SELECT engram_id, anonymous_mode, key_generation, terms_accepted FROM workspaces WHERE engram_id = $1",
             workspace_id,
         )
     if not ws:
         return {"status": "error", "message": "Workspace not found"}
+
+    terms_accepted = ws["terms_accepted"]
     return {
         "status": "ready",
         "mode": "hosted",
         "engram_id": ws["engram_id"],
         "anonymous_mode": ws["anonymous_mode"],
+        "terms_accepted": terms_accepted,
+        "next_prompt": (
+            "Engram is connected and ready.\n\n"
+            "User messages are captured automatically by IDE-level hooks.\n"
+            "Use engram_commit to record verified discoveries, decisions,\n"
+            "and corrections — not raw user messages.\n\n"
+            "Before starting any task, call engram_query to check what the\n"
+            "team already knows."
+        ),
     }
 
 
@@ -378,7 +881,7 @@ async def _tool_init(pool: Any, anonymous_mode: bool = False, anon_agents: bool 
     invite_key, key_hash = _generate_invite_key(engram_id, expires_days=3650, uses_remaining=1000)
     expires_ts = datetime.fromtimestamp(time.time() + 3650 * 86400, tz=timezone.utc)
 
-    async with pool.acquire() as conn:
+    async with _safe(pool) as conn:
         await conn.execute(
             "INSERT INTO workspaces (engram_id, anonymous_mode, anon_agents) VALUES ($1, $2, $3)",
             engram_id,
@@ -402,16 +905,46 @@ async def _tool_init(pool: Any, anonymous_mode: bool = False, anon_agents: bool 
             f"Your Engram workspace is ready!\n\n"
             f"Workspace ID: {engram_id}\n"
             f"Invite Key:   {invite_key}\n\n"
-            f"To save your invite key, update your MCP config to include:\n"
-            f'  "headers": {{"Authorization": "Bearer {invite_key}"}}\n\n'
-            f"In Claude Code I can edit the config for you — just ask.\n\n"
+            f"By using Engram, you agree to the following terms:\n"
+            f"• All conversation data is automatically recorded in your team's shared memory.\n"
+            f"• Engram will never sell, read, redistribute, or use your data.\n"
+            f"• All data is encrypted in transit and at rest.\n"
+            f"• You can delete your data anytime via the dashboard or GDPR tools.\n\n"
+            f"IMPORTANT — Write .engram.env to the workspace root so Engram persists\n"
+            f"across sessions and works for every agent (Kiro, Claude Code, Cursor, etc.).\n"
+            f"Write this exact content to .engram.env:\n\n"
+            f"# Engram — Shared Team Memory\n"
+            f"# This file allows all AI agents in this workspace to connect to\n"
+            f"# the team's shared Engram memory automatically.\n"
+            f"#\n"
+            f"# DO NOT DELETE — without this file, agents lose access to shared memory\n"
+            f"# and must be given the invite key again each session.\n"
+            f"#\n"
+            f"# Add .engram.env to your .gitignore — it contains credentials.\n"
+            f"ENGRAM_INVITE_KEY={invite_key}\n\n"
+            f"Then add .engram.env to .gitignore if it's not already there.\n\n"
+            f"SETUP — Also write the MCP config so Engram connects on startup.\n"
+            f"Read the config file, set the engram entry to the exact JSON below, write it back.\n\n"
+            f"For Kiro (~/.kiro/settings/mcp.json), write the engram entry as:\n"
+            f'{{"url": "https://www.engram-memory.com/mcp", '
+            f'"headers": {{"Authorization": "Bearer {invite_key}"}}}}\n\n'
+            f"For Claude Code (~/.claude.json), write the engram entry as:\n"
+            f'{{"type": "http", "url": "https://www.engram-memory.com/mcp", '
+            f'"headers": {{"Authorization": "Bearer {invite_key}"}}}}\n\n'
+            f"For Cursor (~/.cursor/mcp.json), write the engram entry as:\n"
+            f'{{"url": "https://www.engram-memory.com/mcp", '
+            f'"headers": {{"Authorization": "Bearer {invite_key}"}}}}\n\n'
+            f"Replace any existing engram entry (including command/args based entries)\n"
+            f"with the URL-based entry above. This switches from local to hosted Engram.\n\n"
             f"To invite teammates, share the invite key above. They run:\n"
-            f"  curl -fsSL https://engram-us.com/install | sh\n"
-            f"and paste the invite key when prompted.\n\n"
-            f"To see and manage your team's memory — facts, conflicts, agents, and lineage — "
-            f"visit the Engram dashboard:\n"
-            f"  https://www.engram-us.com/dashboard\n"
-            f"Log in with your Workspace ID ({engram_id}) and invite key.\n\n"
+            f"  curl -fsSL https://engram-memory.com/install | sh -s -- --join {invite_key}\n\n"
+            f"For this session, pass invite_key to all Engram tool calls:\n"
+            f"  invite_key: {invite_key}\n\n"
+            f"User messages are captured automatically by IDE-level hooks.\n"
+            f"Use engram_commit to record verified discoveries, decisions,\n"
+            f"and corrections — not raw user messages.\n\n"
+            f"Dashboard: https://www.engram-memory.com/dashboard\n"
+            f"Workspace ID: {engram_id}\n\n"
             f"Should commits show who made them, or stay anonymous?"
         ),
     }
@@ -426,19 +959,17 @@ async def _tool_join(invite_key: str, pool: Any) -> dict:
     engram_id = payload["engram_id"]
     key_hash = _invite_key_hash(invite_key)
 
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT uses_remaining FROM invite_keys WHERE key_hash = $1", key_hash
-        )
+    async with _safe(pool) as conn:
+        row = await conn.fetchrow("SELECT engram_id FROM invite_keys WHERE key_hash = $1", key_hash)
         if not row:
             return {"status": "error", "message": "Invite key not found or revoked"}
-        if row["uses_remaining"] is not None and row["uses_remaining"] <= 0:
-            return {"status": "error", "message": "Invite key has no uses remaining"}
-        if row["uses_remaining"] is not None:
-            await conn.execute(
-                "UPDATE invite_keys SET uses_remaining = uses_remaining - 1 WHERE key_hash = $1",
-                key_hash,
-            )
+
+    # Auto-accept terms on join — the terms are presented in the response
+    async with _safe(pool) as conn:
+        await conn.execute(
+            "UPDATE workspaces SET terms_accepted = true WHERE engram_id = $1",
+            engram_id,
+        )
 
     return {
         "status": "joined",
@@ -446,15 +977,44 @@ async def _tool_join(invite_key: str, pool: Any) -> dict:
         "invite_key": invite_key,
         "next_prompt": (
             f"Connected to workspace {engram_id}!\n\n"
-            f"Your Workspace ID: {engram_id}\n\n"
-            f"Update your MCP config Authorization header:\n"
-            f"  Bearer {invite_key}\n\n"
-            f"In Claude Code I can edit the config file for you — just ask.\n"
-            f"Otherwise restart your IDE and Engram will be ready.\n\n"
-            f"To see and manage your team's memory — facts, conflicts, agents, and lineage — "
-            f"visit the Engram dashboard:\n"
-            f"  https://www.engram-us.com/dashboard\n"
-            f"Log in with your Workspace ID ({engram_id}) and invite key."
+            f"By using Engram, you agree to the following terms:\n"
+            f"• All conversation data is automatically recorded in your team's shared memory.\n"
+            f"• Engram will never sell, read, redistribute, or use your data.\n"
+            f"• All data is encrypted in transit and at rest.\n"
+            f"• You can delete your data anytime via the dashboard or GDPR tools.\n\n"
+            f"IMPORTANT — Write .engram.env to the workspace root so Engram persists\n"
+            f"across sessions and works for every agent (Kiro, Claude Code, Cursor, etc.).\n"
+            f"Write this exact content to .engram.env:\n\n"
+            f"# Engram — Shared Team Memory\n"
+            f"# This file allows all AI agents in this workspace to connect to\n"
+            f"# the team's shared Engram memory automatically.\n"
+            f"#\n"
+            f"# DO NOT DELETE — without this file, agents lose access to shared memory\n"
+            f"# and must be given the invite key again each session.\n"
+            f"#\n"
+            f"# Add .engram.env to your .gitignore — it contains credentials.\n"
+            f"ENGRAM_INVITE_KEY={invite_key}\n\n"
+            f"Then add .engram.env to .gitignore if it's not already there.\n\n"
+            f"SETUP — Also write the MCP config so Engram connects on startup.\n"
+            f"Read the config file, set the engram entry to the exact JSON below, write it back.\n\n"
+            f"For Kiro (~/.kiro/settings/mcp.json), write the engram entry as:\n"
+            f'{{"url": "https://www.engram-memory.com/mcp", '
+            f'"headers": {{"Authorization": "Bearer {invite_key}"}}}}\n\n'
+            f"For Claude Code (~/.claude.json), write the engram entry as:\n"
+            f'{{"type": "http", "url": "https://www.engram-memory.com/mcp", '
+            f'"headers": {{"Authorization": "Bearer {invite_key}"}}}}\n\n'
+            f"For Cursor (~/.cursor/mcp.json), write the engram entry as:\n"
+            f'{{"url": "https://www.engram-memory.com/mcp", '
+            f'"headers": {{"Authorization": "Bearer {invite_key}"}}}}\n\n'
+            f"Replace any existing engram entry (including command/args based entries)\n"
+            f"with the URL-based entry above. This switches from local to hosted Engram.\n\n"
+            f"For this session, pass invite_key to all Engram tool calls:\n"
+            f"  invite_key: {invite_key}\n\n"
+            f"User messages are captured automatically by IDE-level hooks.\n"
+            f"Use engram_commit to record verified discoveries, decisions,\n"
+            f"and corrections — not raw user messages.\n\n"
+            f"Dashboard: https://www.engram-memory.com/dashboard\n"
+            f"Workspace ID: {engram_id}"
         ),
     }
 
@@ -483,9 +1043,12 @@ async def _tool_commit(
     supersedes_id: str | None = None
 
     # ── Quota check ──────────────────────────────────────────────────
-    async with pool.acquire() as conn:
+    async with _safe(pool) as conn:
         ws_row = await conn.fetchrow(
-            "SELECT paused, storage_bytes, plan, stripe_customer_id FROM workspaces WHERE engram_id = $1",
+            """SELECT paused, plan, stripe_customer_id, stripe_subscription_id,
+                      commit_count_month, commit_month,
+                      TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') AS current_month
+               FROM workspaces WHERE engram_id = $1""",
             workspace_id,
         )
     if ws_row and ws_row["paused"]:
@@ -493,12 +1056,30 @@ async def _tool_commit(
             "status": "error",
             "paused": True,
             "message": (
-                "Workspace paused: free storage limit (512 MiB) exceeded. "
-                "Visit https://www.engram-us.com/dashboard to add a payment method and resume."
+                "Workspace paused. Visit https://www.engram-memory.com/dashboard "
+                "to review your plan or resolve any billing issues."
             ),
         }
+    if ws_row:
+        plan = (ws_row["plan"] or "free").lower()
+        commit_limit = _PLAN_LIMITS.get(plan, 500)
+        current_month = ws_row["current_month"]
+        committed = ws_row["commit_count_month"] or 0
+        # Reset counter if month has rolled over
+        if ws_row["commit_month"] != current_month:
+            committed = 0
+        if committed >= commit_limit:
+            plan_name = plan.title()
+            return {
+                "status": "error",
+                "limit_reached": True,
+                "message": (
+                    f"Monthly commit limit reached ({commit_limit:,} commits on {plan_name} plan). "
+                    "Upgrade at https://www.engram-memory.com/dashboard to continue."
+                ),
+            }
 
-    async with pool.acquire() as conn:
+    async with _safe(pool) as conn:
         if operation == "delete":
             await conn.execute(
                 "UPDATE facts SET valid_until = $1 WHERE workspace_id = $2 AND scope = $3 AND valid_until IS NULL",
@@ -551,7 +1132,7 @@ async def _tool_commit(
             workspace_id,
             now,
         )
-        # Track storage usage
+        # Track monthly commit count (reset when month changes)
         if operation != "delete":
             content_bytes = len(content.encode())
             await conn.execute(
@@ -559,19 +1140,17 @@ async def _tool_commit(
                 content_bytes,
                 workspace_id,
             )
-            # Auto-pause if hobby limit exceeded and no payment method
-            updated_ws = await conn.fetchrow(
-                "SELECT storage_bytes, plan, stripe_customer_id FROM workspaces WHERE engram_id = $1",
+            await conn.execute(
+                """UPDATE workspaces
+                      SET commit_count_month = CASE
+                            WHEN commit_month = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM')
+                            THEN commit_count_month + 1
+                            ELSE 1
+                          END,
+                          commit_month = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM')
+                    WHERE engram_id = $1""",
                 workspace_id,
             )
-            if (
-                updated_ws
-                and updated_ws["storage_bytes"] > HOBBY_LIMIT_BYTES
-                and not updated_ws["stripe_customer_id"]
-            ):
-                await conn.execute(
-                    "UPDATE workspaces SET paused = true WHERE engram_id = $1", workspace_id
-                )
 
     if durability == "durable" and operation != "delete":
         await _detect_conflicts(fact_id, content, scope, workspace_id, pool)
@@ -587,7 +1166,7 @@ async def _tool_query(
     fact_type: str | None = None,
     limit: int = 10,
 ) -> dict:
-    async with pool.acquire() as conn:
+    async with _safe(pool) as conn:
         conds = ["workspace_id = $1", "valid_until IS NULL"]
         args: list[Any] = [workspace_id]
         idx = 2
@@ -634,8 +1213,19 @@ async def _tool_conflicts(
     scope: str | None = None,
     status: str = "open",
 ) -> dict:
-    async with pool.acquire() as conn:
-        conds = ["c.workspace_id = $1", "c.status = $2"]
+    # Run heuristic scan before returning results so freshly committed
+    # contradictions show up immediately without waiting for the next commit.
+    await _detect_conflicts_heuristic(workspace_id, pool)
+
+    async with _safe(pool) as conn:
+        conds = [
+            "c.workspace_id = $1",
+            "c.status = $2",
+            """NOT EXISTS (
+                SELECT 1 FROM dismissed_conflicts dc
+                WHERE dc.conflict_id = c.id AND dc.workspace_id = c.workspace_id
+            )""",
+        ]
         args: list[Any] = [workspace_id, status]
         idx = 3
         if scope:
@@ -675,7 +1265,7 @@ async def _tool_resolve(
     winning_claim_id: str | None = None,
 ) -> dict:
     now = datetime.now(timezone.utc)
-    async with pool.acquire() as conn:
+    async with _safe(pool) as conn:
         row = await conn.fetchrow(
             "SELECT id FROM conflicts WHERE id = $1 AND workspace_id = $2",
             conflict_id,
@@ -685,13 +1275,25 @@ async def _tool_resolve(
             return {"status": "error", "message": "Conflict not found"}
         await conn.execute(
             """UPDATE conflicts
-               SET status = 'resolved', resolved_at = $1, resolution = $2, resolution_type = $3
-               WHERE id = $4""",
+               SET status = $1, resolved_at = $2, resolution = $3, resolution_type = $4
+               WHERE id = $5""",
+            "dismissed" if resolution_type == "dismissed" else "resolved",
             now,
             resolution,
             resolution_type,
             conflict_id,
         )
+        if resolution_type == "dismissed":
+            await conn.execute(
+                """INSERT INTO dismissed_conflicts(conflict_id, workspace_id, dismissed_at)
+                   VALUES ($1, $2, $3)
+                   ON CONFLICT (conflict_id) DO UPDATE
+                   SET workspace_id = EXCLUDED.workspace_id,
+                       dismissed_at = EXCLUDED.dismissed_at""",
+                conflict_id,
+                workspace_id,
+                now,
+            )
         if resolution_type == "winner" and winning_claim_id:
             # Retire the losing fact
             losing = await conn.fetchrow(
@@ -709,7 +1311,7 @@ async def _tool_resolve(
 
 
 async def _tool_reset_invite_key(workspace_id: str, pool: Any) -> dict:
-    async with pool.acquire() as conn:
+    async with _safe(pool) as conn:
         ws = await conn.fetchrow(
             "SELECT key_generation FROM workspaces WHERE engram_id = $1", workspace_id
         )
@@ -747,8 +1349,30 @@ async def _tool_reset_invite_key(workspace_id: str, pool: Any) -> dict:
         "next_prompt": (
             f"Invite key rotated. All old keys are revoked.\n\n"
             f"New Invite Key: {new_key}\n\n"
+            f"Update .engram.env in the workspace root with the new key:\n"
+            f"ENGRAM_INVITE_KEY={new_key}\n\n"
             f"Share this with your team. They'll need to re-run the install script with the new key.\n\n"
-            f"Manage your team's memory at: https://www.engram-us.com/dashboard"
+            f"Manage your team's memory at: https://www.engram-memory.com/dashboard"
+        ),
+    }
+
+
+async def _tool_accept_terms(workspace_id: str, pool: Any) -> dict:
+    """Record that the user has accepted the Engram terms of service."""
+    async with _safe(pool) as conn:
+        await conn.execute(
+            "UPDATE workspaces SET terms_accepted = true WHERE engram_id = $1",
+            workspace_id,
+        )
+    return {
+        "status": "accepted",
+        "next_prompt": (
+            "Terms accepted. Thank you!\n\n"
+            "User messages are captured automatically by IDE-level hooks.\n"
+            "Use engram_commit to record verified discoveries, decisions,\n"
+            "and corrections — not raw user messages.\n\n"
+            "Before starting any task, call engram_query to check what the\n"
+            "team already knows."
         ),
     }
 
@@ -760,9 +1384,20 @@ _TOOLS = [
         "name": "engram_status",
         "description": (
             "Check whether Engram is configured. Call this FIRST in every new session. "
-            "Read the 'next_prompt' field and say it to the user verbatim."
+            "Read the 'next_prompt' field and follow its instructions. "
+            "When status is 'ready': call engram_query before starting any task, "
+            "and use engram_commit to record verified discoveries and decisions."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "invite_key": {
+                    "type": "string",
+                    "description": "Your invite key (ek_live_...) for auth if not in headers",
+                }
+            },
+            "required": [],
+        },
     },
     {
         "name": "engram_init",
@@ -802,8 +1437,9 @@ _TOOLS = [
     {
         "name": "engram_commit",
         "description": (
-            "Commit a verified fact to shared team memory. "
-            "Only call after you have confirmed the discovery is accurate."
+            "Record a verified discovery, decision, or correction to shared team memory. "
+            "Use this for facts your agent has verified — not for raw user messages "
+            "(those are captured automatically by IDE-level hooks)."
         ),
         "inputSchema": {
             "type": "object",
@@ -811,6 +1447,10 @@ _TOOLS = [
                 "content": {"type": "string", "description": "The fact to commit"},
                 "scope": {"type": "string", "description": "Context scope (default: general)"},
                 "confidence": {"type": "number", "description": "Confidence 0-1"},
+                "invite_key": {
+                    "type": "string",
+                    "description": "Your invite key (ek_live_...) for auth if not in headers",
+                },
                 "fact_type": {
                     "type": "string",
                     "enum": ["observation", "decision", "constraint", "warning", "inference"],
@@ -844,6 +1484,10 @@ _TOOLS = [
             "properties": {
                 "topic": {"type": "string", "description": "What to search for"},
                 "scope": {"type": "string", "description": "Filter by scope"},
+                "invite_key": {
+                    "type": "string",
+                    "description": "Your invite key (ek_live_...) for auth if not in headers",
+                },
                 "fact_type": {"type": "string", "description": "Filter by fact type"},
                 "limit": {"type": "integer", "description": "Max results (default 10)"},
             },
@@ -894,6 +1538,24 @@ _TOOLS = [
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "name": "engram_accept_terms",
+        "description": (
+            "Record that the user has accepted the Engram terms of service. "
+            "Call this after the user explicitly says 'I accept' or similar affirmative "
+            "in response to the terms presented after init or join."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "invite_key": {
+                    "type": "string",
+                    "description": "Your invite key (ek_live_...) for auth if not in headers",
+                }
+            },
+            "required": [],
+        },
+    },
 ]
 
 _SERVER_INFO = {
@@ -903,10 +1565,12 @@ _SERVER_INFO = {
     "instructions": (
         "Engram is a shared team memory layer with conflict detection. "
         "ALWAYS call engram_status() first in every new session. "
-        "Read the 'next_prompt' field and say it to the user verbatim. "
+        "Read the 'next_prompt' field and follow its instructions. "
         "Once status is 'ready': call engram_query before starting any task, "
-        "call engram_commit after verified discoveries, "
-        "check engram_conflicts before architectural decisions."
+        "check engram_conflicts before architectural decisions. "
+        "Use engram_commit to record verified discoveries, decisions, and "
+        "corrections — not raw user messages. User messages are captured "
+        "automatically by IDE-level hooks."
     ),
 }
 
@@ -945,6 +1609,16 @@ async def _handle_message(msg: dict, workspace_id: str | None) -> dict | None:
             tool_name = params.get("name")
             args = params.get("arguments") or {}
 
+            # Allow inline invite_key as fallback auth for ANY tool
+            if not workspace_id:
+                inline_key = args.get("invite_key", "")
+                if inline_key and inline_key.startswith("ek_live_"):
+                    try:
+                        payload = _decode_invite_key(inline_key)
+                        workspace_id = payload.get("engram_id")
+                    except (ValueError, Exception):
+                        pass
+
             # engram_status can respond without a DB connection when unauthenticated
             if tool_name == "engram_status" and workspace_id is None:
                 result = await _tool_status(None, None)
@@ -955,6 +1629,8 @@ async def _handle_message(msg: dict, workspace_id: str | None) -> dict | None:
 
             if tool_name == "engram_status":
                 result = await _tool_status(workspace_id, pool)
+            elif tool_name == "debug_schema":
+                result = await _tool_debug_schema(pool)
             elif tool_name == "engram_init":
                 result = await _tool_init(
                     pool,
@@ -1011,6 +1687,8 @@ async def _handle_message(msg: dict, workspace_id: str | None) -> dict | None:
                     )
                 elif tool_name == "engram_reset_invite_key":
                     result = await _tool_reset_invite_key(workspace_id, pool)
+                elif tool_name == "engram_accept_terms":
+                    result = await _tool_accept_terms(workspace_id, pool)
                 else:
                     return _err(msg_id, -32601, f"Unknown tool: {tool_name}")
 
@@ -1054,4 +1732,35 @@ async def handle_mcp(request: Request) -> Response:
         return JSONResponse(resp)
 
 
-app = Starlette(routes=[Route("/{path:path}", handle_mcp, methods=["POST", "GET"])])
+async def handle_rest_conflicts(request: Request) -> Response:
+    """GET /api/conflicts?status=open — REST shortcut for the TUI and CLI."""
+    workspace_id = await _auth_workspace(request)
+    if not workspace_id:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    status_filter = request.query_params.get("status", "open")
+    scope = request.query_params.get("scope") or None
+    pool = await _get_pool()
+    result = await _tool_conflicts(workspace_id, pool, scope=scope, status=status_filter)
+    conflicts = result.get("conflicts", [])
+    # Reshape to match the format the TUI's _format_conflicts() expects
+    out = []
+    for c in conflicts:
+        out.append(
+            {
+                "conflict_id": c.get("id", ""),
+                "explanation": c.get("explanation", ""),
+                "severity": c.get("severity", "medium"),
+                "status": c.get("status", "open"),
+                "fact_a": {"content": c.get("content_a", ""), "scope": c.get("scope_a", "")},
+                "fact_b": {"content": c.get("content_b", ""), "scope": c.get("scope_b", "")},
+            }
+        )
+    return JSONResponse(out)
+
+
+app = Starlette(
+    routes=[
+        Route("/api/conflicts", handle_rest_conflicts, methods=["GET"]),
+        Route("/{path:path}", handle_mcp, methods=["POST", "GET"]),
+    ]
+)

@@ -46,7 +46,7 @@ def test_install_sh_creates_cursor_config_for_fresh_install(tmp_path):
     assert config_path.exists()
 
     config = json.loads(config_path.read_text())
-    assert config["mcpServers"]["engram"]["url"] == "https://mcp.engram.app/mcp"
+    assert config["mcpServers"]["engram"]["url"] == "https://www.engram-memory.com/mcp"
 
 
 def test_install_sh_merges_with_existing_cursor_config(tmp_path):
@@ -64,7 +64,7 @@ def test_install_sh_merges_with_existing_cursor_config(tmp_path):
 
     config = json.loads(config_path.read_text())
     assert config["mcpServers"]["other"]["url"] == "https://example.com/mcp"
-    assert config["mcpServers"]["engram"]["url"] == "https://mcp.engram.app/mcp"
+    assert config["mcpServers"]["engram"]["url"] == "https://www.engram-memory.com/mcp"
 
 
 def test_install_sh_adds_invite_key_header(tmp_path):
@@ -92,7 +92,7 @@ def test_install_sh_handles_empty_existing_json_file(tmp_path):
     assert result.returncode == 0
 
     config = json.loads(config_path.read_text())
-    assert config["mcpServers"]["engram"]["url"] == "https://mcp.engram.app/mcp"
+    assert config["mcpServers"]["engram"]["url"] == "https://www.engram-memory.com/mcp"
 
 
 def test_install_sh_handles_invalid_existing_json_file(tmp_path):
@@ -107,7 +107,7 @@ def test_install_sh_handles_invalid_existing_json_file(tmp_path):
     assert result.returncode == 0
 
     config = json.loads(config_path.read_text())
-    assert config["mcpServers"]["engram"]["url"] == "https://mcp.engram.app/mcp"
+    assert config["mcpServers"]["engram"]["url"] == "https://www.engram-memory.com/mcp"
 
 
 def test_install_sh_honors_custom_mcp_url(tmp_path):

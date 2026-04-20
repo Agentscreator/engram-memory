@@ -5,3 +5,4 @@ pydantic
 uvicorn
 aiohttp
 stripe
+httpx

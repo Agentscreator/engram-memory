@@ -23,6 +23,34 @@ _NUMERIC_PATTERNS = [
     re.compile(r"(?:port|version|v)\s*(?P<value>[\d.]+)", re.IGNORECASE),
 ]
 
+# Limit/cap expressions: "maximum of 3 projects", "up to 5 users", "limit of 10 items"
+# Captures the count and the limited concept so they get a stable name via _infer_limit_name.
+_LIMIT_VALUE_PATTERN = re.compile(
+    r"(?:maximum\s+of|max\s+of|up\s+to|at\s+most|cap\s+of|limit\s+of|"
+    r"no\s+more\s+than|capped\s+at|limited\s+to)\s+"
+    r"(?P<value>\d[\d,]*)\s+(?P<concept>[a-z][a-z0-9_-]*(?:\s+[a-z][a-z0-9_-]*)?)",
+    re.IGNORECASE,
+)
+
+# Also: "3 project cap", "5 user limit" (count precedes the concept+limit noun)
+_TRAILING_LIMIT_PATTERN = re.compile(
+    r"(?P<value>\d[\d,]*)\s+(?P<concept>[a-z][a-z0-9_-]*(?:\s+[a-z][a-z0-9_-]*)?)"
+    r"\s+(?:cap|limit|max|maximum|ceiling)",
+    re.IGNORECASE,
+)
+
+# Unlimited / no-limit expressions — value sentinel is -1 (means "no finite cap").
+# "unlimited projects", "no project limit", "removed the 3-project cap"
+_UNLIMITED_PATTERN = re.compile(
+    r"\bunlimited\s+(?P<concept>[a-z][a-z0-9_-]*(?:\s+[a-z][a-z0-9_-]*)?)",
+    re.IGNORECASE,
+)
+_NO_LIMIT_PATTERN = re.compile(
+    r"\bno\s+(?:(?P<concept1>[a-z][a-z0-9_-]*)\s+)?(?:limit|cap|ceiling|maximum|max)\b"
+    r"(?:\s+on\s+(?P<concept2>[a-z][a-z0-9_-]*))?",
+    re.IGNORECASE,
+)
+
 # ALL_CAPS identifiers (config keys, env vars)
 _CONFIG_KEY_PATTERN = re.compile(r"\b(?P<name>[A-Z][A-Z0-9_]{2,})\b")
 
@@ -34,6 +62,12 @@ _SERVICE_PATTERN = re.compile(
 
 # Version strings
 _VERSION_PATTERN = re.compile(r"\bv?(?P<value>\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9.]+)?)\b")
+
+# Ticket references: GH-123, LINEAR-456, JIRA-789
+_TICKET_REF_PATTERN = re.compile(
+    r"\b(?P<system>GH|LINEAR|JIRA)-(?P<id>\d+)\b",
+    re.IGNORECASE,
+)
 
 # Technology names (common ones)
 _TECH_NAMES = {
@@ -135,6 +169,54 @@ def extract_entities(content: str) -> list[dict[str, Any]]:
             seen.add(key)
             entities.append({"name": name, "type": "version", "value": value})
 
+    # Ticket references
+    for m in _TICKET_REF_PATTERN.finditer(content):
+        system = m.group("system").upper()
+        ticket_id = m.group("id")
+        ref = f"{system}-{ticket_id}"
+        key = f"ticket_ref:{ref}"
+        if key not in seen:
+            seen.add(key)
+            entities.append(
+                {
+                    "name": ref,
+                    "type": "ticket_ref",
+                    "value": ticket_id,
+                    "system": system.lower(),
+                }
+            )
+
+    # Limit/cap values: "maximum of 3 projects", "up to 5 users", etc.
+    for pattern in (_LIMIT_VALUE_PATTERN, _TRAILING_LIMIT_PATTERN):
+        for m in pattern.finditer(content):
+            raw_value = m.group("value").replace(",", "")
+            concept = m.group("concept").lower().strip()
+            name = _infer_limit_name(concept)
+            numeric_value = _parse_number(raw_value)
+            key = f"numeric:{name}:{numeric_value}"
+            if key not in seen:
+                seen.add(key)
+                entities.append({"name": name, "type": "numeric", "value": numeric_value})
+
+    # Unlimited / no-limit expressions — sentinel value -1 means "no finite cap".
+    for m in _UNLIMITED_PATTERN.finditer(content):
+        concept = m.group("concept").lower().strip()
+        name = _infer_limit_name(concept)
+        key = f"numeric:{name}:-1"
+        if key not in seen:
+            seen.add(key)
+            entities.append({"name": name, "type": "numeric", "value": -1})
+
+    for m in _NO_LIMIT_PATTERN.finditer(content):
+        concept = (m.group("concept1") or m.group("concept2") or "").lower().strip()
+        if not concept:
+            continue
+        name = _infer_limit_name(concept)
+        key = f"numeric:{name}:-1"
+        if key not in seen:
+            seen.add(key)
+            entities.append({"name": name, "type": "numeric", "value": -1})
+
     return entities
 
 
@@ -182,6 +264,36 @@ def extract_keywords(content: str) -> list[str]:
             seen.add(wl)
             keywords.append(wl)
     return keywords[:30]  # Cap at 30 keywords
+
+
+def _infer_limit_name(concept: str) -> str:
+    """Map a concept noun phrase to a canonical limit-entity name.
+
+    Called when extracting "maximum of N <concept>" or "unlimited <concept>".
+    Returns a stable name so Tier 2 can compare the two entities.
+    """
+    concept = concept.lower().strip()
+    mappings = [
+        (r"projects?", "project_limit"),
+        (r"users?|members?|accounts?", "user_limit"),
+        (r"items?|records?|entries|rows?", "item_limit"),
+        (r"seats?", "seat_limit"),
+        (r"workspaces?", "workspace_limit"),
+        (r"teams?", "team_limit"),
+        (r"agents?", "agent_limit"),
+        (r"requests?", "request_limit"),
+        (r"api\s+calls?", "api_call_limit"),
+        (r"connections?", "connection_limit"),
+        (r"tasks?", "task_limit"),
+        (r"files?|uploads?", "file_limit"),
+        (r"storage", "storage_limit"),
+    ]
+    for pattern, name in mappings:
+        if re.search(pattern, concept):
+            return name
+    # Fallback: normalise the concept phrase into a snake_case name
+    slug = re.sub(r"\s+", "_", concept.strip())
+    return f"{slug}_limit"
 
 
 def _infer_numeric_name(context: str, unit: str | None) -> str:

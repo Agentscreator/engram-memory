@@ -1,0 +1,47 @@
+# Version control
+.git
+.gitignore
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv
+venv/
+env/
+
+# Test & tooling artifacts
+.pytest_cache
+.ruff_cache
+.mypy_cache
+htmlcov/
+.coverage
+coverage.xml
+
+# Dev / local config
+.env
+.envrc
+*.env.local
+.engram.env
+
+# Documentation and assets
+docs/
+assets/
+benchmark/
+papers/
+*.mp4
+
+# Node (if any tooling is added later)
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

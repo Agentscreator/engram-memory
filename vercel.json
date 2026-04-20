@@ -9,7 +9,8 @@
     },
     "api/mcp.py": {
       "excludeFiles": "{src/**,tests/**,docs/**,assets/**,.pytest_cache/**}",
-      "maxDuration": 60
+      "maxDuration": 60,
+      "memory": 512
     },
     "api/workspace.py": {
       "excludeFiles": "{src/**,tests/**,docs/**,assets/**,.pytest_cache/**}"
@@ -25,9 +26,14 @@
     },
     "api/billing.py": {
       "excludeFiles": "{src/**,tests/**,docs/**,assets/**,.pytest_cache/**}"
+    },
+    "api/conflicts.py": {
+      "excludeFiles": "{src/**,tests/**,docs/**,assets/**,.pytest_cache/**}"
     }
   },
   "rewrites": [
+    { "source": "/api/conflicts", "destination": "/api/conflicts" },
+    { "source": "/api/conflicts/(.*)", "destination": "/api/conflicts" },
     { "source": "/mcp", "destination": "/api/mcp" },
     { "source": "/mcp/(.*)", "destination": "/api/mcp" },
     { "source": "/auth", "destination": "/api/auth" },

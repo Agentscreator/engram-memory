@@ -1,61 +1,53 @@
-# Pricing Page - engram-us.com/pricing
+# Pricing Page - engram-memory.com/pricing
 
 ## Overview
 
-This document provides the pricing page design for engram-us.com. Copy the HTML below to your website.
+This document provides the pricing page design for engram-memory.com.
 
 ## Pricing Tiers
 
-### Free (Individuals)
+All plans include LLM suggestions, conflict detection, and the full feature set. Plans differ only by monthly commit volume.
+
+### Free
 - **Price:** $0/month
 - **Best for:** Solo developers and experimentation
-- **Limits:**
-  - 1 workspace
-  - 1,000 facts/month
-  - 5 agents
-  - Local storage only (no team sync)
+- **Commits:** 500/month
 - **Features:**
-  - MCP server (stdio mode)
-  - Basic conflict detection
-  - SQLite storage
-  - Community support
+  - MCP server (stdio + HTTP)
+  - Conflict detection (entity, NLI, narrative coherence)
+  - LLM suggestions for conflict resolution
+  - Forgetting-based memory management
+  - Dashboard access
+  - 1 workspace
 
-### Team ($15/user/month)
-- **Price:** $15/user/month (billed monthly) or $12/user/month (billed annually)
-- **Best for:** Engineering teams who need shared memory
-- **Limits:**
-  - Unlimited workspaces
-  - 50,000 facts/user/month
-  - Unlimited agents
-  - Shared PostgreSQL backend (Engram Cloud hosted)
+### Builder ($12/month)
+- **Price:** $12/month
+- **Best for:** Solo developers shipping regularly
+- **Commits:** 5,000/month
 - **Features:**
   - Everything in Free
-  - Team memory sync
-  - Dashboard at dashboard.engram.us
-  - Real-time conflict notifications
+  - Overage at $0.015/commit above limit
+  - Unlimited workspaces
+
+### Team ($39/month)
+- **Price:** $39/month
+- **Best for:** Engineering teams with shared memory
+- **Commits:** 25,000/month
+- **Features:**
+  - Everything in Builder
   - Invite key-based team joining
   - Priority email support
-  - SSO (coming soon)
-- **Stripe:** Team tier uses Stripe Checkout for self-service upgrades
 
-### Enterprise (Custom)
-- **Price:** Contact us for pricing
-- **Best for:** Large organizations with compliance requirements
-- **Limits:** Custom based on agreement
+### Scale ($99/month)
+- **Price:** $99/month
+- **Best for:** Production workloads at scale
+- **Commits:** 100,000/month
 - **Features:**
   - Everything in Team
-  - SSO (SAML/OIDC)
-  - Data residency options (US, EU, APAC)
-  - Dedicated SLA (99.9% uptime)
+  - Dedicated support
   - Custom rate limits
-  - On-premise deployment option
-  - Dedicated support engineer
-  - Security review & BAA
-  - Custom integrations
 
 ## Implementation
-
-Copy this HTML for the pricing page:
 
 ```html
 <!DOCTYPE html>
@@ -70,7 +62,7 @@ Copy this HTML for the pricing page:
         .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
         h1 { text-align: center; font-size: 2.5rem; margin-bottom: 16px; }
         .subtitle { text-align: center; color: #666; margin-bottom: 48px; font-size: 1.1rem; }
-        .pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+        .pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 24px; }
         .pricing-card { background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 32px; position: relative; transition: transform 0.2s, box-shadow 0.2s; }
         .pricing-card:hover { transform: translateY(-4px); box-shadow: 0 12px 24px rgba(0,0,0,0.1); }
         .pricing-card.featured { border: 2px solid #6366f1; }
@@ -89,73 +81,66 @@ Copy this HTML for the pricing page:
         .cta-secondary:hover { background: #e5e7eb; }
         .cta-outline { border: 1px solid #d1d5db; color: #374151; }
         .cta-outline:hover { background: #f9fafb; }
-        .limits { margin-top: 16px; padding: 12px; background: #f9fafb; border-radius: 8px; font-size: 0.85rem; }
-        .limits h4 { margin-bottom: 8px; font-size: 0.9rem; }
-        .limits ul { list-style: none; }
-        .limits li { padding: 4px 0; color: #666; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Simple, Transparent Pricing</h1>
-        <p class="subtitle">Start free, scale as your team grows</p>
-        
+        <p class="subtitle">All plans include LLM suggestions and conflict detection. Scale by commits.</p>
+
         <div class="pricing-grid">
-            <!-- Free Tier -->
             <div class="pricing-card">
                 <div class="plan-name">Free</div>
                 <div class="price">$0<span>/month</span></div>
-                <p class="description">Perfect for solo developers and experimentation</p>
+                <p class="description">Solo developers and experimentation</p>
                 <ul class="features">
-                    <li>1 workspace</li>
-                    <li>1,000 facts/month</li>
-                    <li>5 agents</li>
-                    <li>Local storage only</li>
-                    <li>MCP server (stdio)</li>
-                    <li>Basic conflict detection</li>
+                    <li>500 commits/month</li>
+                    <li>LLM suggestions</li>
+                    <li>Conflict detection</li>
+                    <li>Forgetting-based memory</li>
+                    <li>Dashboard access</li>
                 </ul>
                 <a href="#" class="cta cta-outline">Get Started</a>
             </div>
-            
-            <!-- Team Tier -->
+
+            <div class="pricing-card">
+                <div class="plan-name">Builder</div>
+                <div class="price">$12<span>/month</span></div>
+                <p class="description">Solo developers shipping regularly</p>
+                <ul class="features">
+                    <li>5,000 commits/month</li>
+                    <li>Everything in Free</li>
+                    <li>Overage at $0.015/commit</li>
+                    <li>Unlimited workspaces</li>
+                </ul>
+                <a href="#" class="cta cta-primary">Upgrade</a>
+            </div>
+
             <div class="pricing-card featured">
                 <div class="badge">Most Popular</div>
                 <div class="plan-name">Team</div>
-                <div class="price">$15<span>/user/month</span></div>
-                <p class="description">For engineering teams who need shared memory</p>
+                <div class="price">$39<span>/month</span></div>
+                <p class="description">Engineering teams with shared memory</p>
                 <ul class="features">
-                    <li>Unlimited workspaces</li>
-                    <li>50,000 facts/user/month</li>
-                    <li>Unlimited agents</li>
-                    <li>Shared PostgreSQL backend</li>
-                    <li>Dashboard access</li>
-                    <li>Real-time conflict notifications</li>
-                    <li>Priority email support</li>
+                    <li>25,000 commits/month</li>
+                    <li>Everything in Builder</li>
+                    <li>Team invite keys</li>
+                    <li>Priority support</li>
                 </ul>
-                <a href="#" class="cta cta-primary">Start Free Trial</a>
-                <div class="limits">
-                    <h4>Or pay annually:</h4>
-                    <ul>
-                        <li>$12/user/month (save 20%)</li>
-                    </ul>
-                </div>
+                <a href="#" class="cta cta-primary">Upgrade</a>
             </div>
-            
-            <!-- Enterprise Tier -->
+
             <div class="pricing-card">
-                <div class="plan-name">Enterprise</div>
-                <div class="price">Custom</div>
-                <p class="description">For large organizations with compliance requirements</p>
+                <div class="plan-name">Scale</div>
+                <div class="price">$99<span>/month</span></div>
+                <p class="description">Production workloads at scale</p>
                 <ul class="features">
+                    <li>100,000 commits/month</li>
                     <li>Everything in Team</li>
-                    <li>SSO (SAML/OIDC)</li>
-                    <li>Data residency options</li>
-                    <li>Dedicated SLA (99.9%)</li>
-                    <li>On-premise option</li>
+                    <li>Dedicated support</li>
                     <li>Custom rate limits</li>
-                    <li>Dedicated support engineer</li>
                 </ul>
-                <a href="#" class="cta cta-secondary">Contact Sales</a>
+                <a href="#" class="cta cta-secondary">Upgrade</a>
             </div>
         </div>
     </div>
@@ -165,41 +150,6 @@ Copy this HTML for the pricing page:
 
 ## Stripe Integration
 
-For Team tier self-service upgrades:
+Stripe handles subscriptions for Builder, Team, and Scale tiers. Free tier requires no payment.
 
-1. Create Stripe products for monthly and annual plans
-2. Use Stripe Checkout for payment flow
-3. Webhook to update user tier on successful payment
-
-```python
-# Example Stripe webhook handler
-@app.post("/webhooks/stripe")
-async def stripe_webhook(request: Request):
-    payload = await request.body()
-    sig = request.headers.get("stripe-signature")
-    
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, sig, WEBHOOK_SECRET
-        )
-    except ValueError:
-        return {"error": "Invalid payload"}, 400
-    except stripe.error.SignatureVerificationError:
-        return {"error": "Invalid signature"}, 400
-    
-    if event["type"] == "checkout.session.completed":
-        # Upgrade user to Team tier
-        session = event["data"]["object"]
-        user_id = session["metadata"]["user_id"]
-        await upgrade_to_team(user_id, session["subscription"])
-    
-    return {"received": True}
-```
-
-## Next Steps
-
-1. Create Stripe account and products
-2. Deploy pricing page to engram-us.com
-3. Implement Stripe Checkout flow
-4. Set up webhook endpoint
-5. Test payment flow end-to-end
+Overage on paid plans is billed at $0.015/commit above the monthly limit via Stripe metered billing at period end.

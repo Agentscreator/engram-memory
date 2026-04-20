@@ -1,0 +1,59 @@
+name: "Engram PR Conflict Scanner"
+description: "Query Engram workspace memory for facts that may contradict a pull request."
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  engram_server_url:
+    description: "Base URL of the Engram HTTP server (e.g. https://engram-memory.com or http://localhost:7474)"
+    required: true
+  engram_invite_key:
+    description: "Workspace invite key (ek_live_...). Store as a GitHub secret."
+    required: true
+  relevance_threshold:
+    description: "Minimum relevance score (0.0–1.0) to include a fact in the comment. Lower = more results."
+    required: false
+    default: "0.3"
+  max_results:
+    description: "Maximum number of facts to return per query."
+    required: false
+    default: "10"
+  post_comment:
+    description: "Whether to post a PR comment when conflicts are found. Set to 'false' for dry-run."
+    required: false
+    default: "true"
+
+outputs:
+  facts_found:
+    description: "Number of potentially conflicting facts found."
+    value: ${{ steps.scan.outputs.facts_found }}
+  comment_body:
+    description: "The formatted comment body (useful when post_comment is false)."
+    value: ${{ steps.scan.outputs.comment_body }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: |
+        if ! command -v jq &> /dev/null; then
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq > /dev/null
+        fi
+
+    - name: Scan PR against Engram memory
+      id: scan
+      shell: bash
+      env:
+        ENGRAM_SERVER_URL: ${{ inputs.engram_server_url }}
+        ENGRAM_INVITE_KEY: ${{ inputs.engram_invite_key }}
+        RELEVANCE_THRESHOLD: ${{ inputs.relevance_threshold }}
+        MAX_RESULTS: ${{ inputs.max_results }}
+        POST_COMMENT: ${{ inputs.post_comment }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_TITLE: ${{ github.event.pull_request.title }}
+        PR_BODY: ${{ github.event.pull_request.body }}
+        GITHUB_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: bash "${{ github.action_path }}/scan.sh"

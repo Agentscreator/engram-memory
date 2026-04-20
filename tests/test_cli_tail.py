@@ -55,7 +55,8 @@ def test_tail_once_fetches_facts(monkeypatch):
         def read(self):
             return json.dumps(payload).encode("utf-8")
 
-    def fake_urlopen(url, timeout=30):
+    def fake_urlopen(req_or_url, timeout=30):
+        url = req_or_url.full_url if hasattr(req_or_url, "full_url") else req_or_url
         assert "/api/tail?" in url
         assert "after=2026-04-09T09%3A00%3A00%2B00%3A00" in url
         assert "scope=payments" in url
@@ -83,7 +84,7 @@ def test_tail_once_fetches_facts(monkeypatch):
 def test_tail_command_prints_fact_and_stops(monkeypatch):
     calls = {"count": 0}
 
-    async def fake_tail_once(base_url, after, scope, limit):
+    async def fake_tail_once(base_url, after, scope, limit, invite_key=""):
         return (
             [
                 {

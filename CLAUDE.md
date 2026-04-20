@@ -31,12 +31,12 @@ All source lives under `src/engram/`.
 
 | Module | Purpose |
 |--------|---------|
-| `server.py` | MCP server (FastMCP) with 14 tools — the I/O layer |
-| `engine.py` | Core memory engine: commit pipeline, conflict detection (5-tier async) |
+| `server.py` | MCP server (FastMCP) with 15 tools — the I/O layer |
+| `engine.py` | Core memory engine: commit pipeline, conflict detection (5-tier async), GDPR erasure, invite key rotation |
 | `storage.py` | SQLite backend (async, WAL mode, FTS5) |
 | `postgres_storage.py` | PostgreSQL backend (pgvector, tsvector, TIMESTAMPTZ) |
-| `schema.py` | Database schema definitions and migrations (currently v7) |
-| `cli.py` | CLI commands: `serve`, `verify`, `install`, `config`, `completion`, `re-embed` |
+| `schema.py` | Database schema definitions and migrations (currently v10) |
+| `cli.py` | CLI commands: `serve`, `verify`, `install`, `config`, `gdpr`, `completion`, `re-embed` |
 | `rest.py` | REST API for non-MCP clients (`/api/commit`, `/api/query`, etc.) |
 | `dashboard.py` | HTML dashboard with HTMX at `/dashboard` |
 | `workspace.py` | Workspace configuration (team ID, db_url, schema) |
@@ -50,7 +50,7 @@ All source lives under `src/engram/`.
 
 ## Schema Version Invariant
 
-- Database schema version is tracked in `src/engram/schema.py` (currently **v7**)
+- Database schema version is tracked in `src/engram/schema.py` (currently **v11**)
 - When adding new tables or columns, increment `SCHEMA_VERSION` and add a migration entry
 - Document the migration path in `docs/MIGRATION_SCHEMA.md`
 
@@ -60,7 +60,17 @@ All source lives under `src/engram/`.
 2. **Run existing tests** — `pytest tests/ -x` to ensure nothing breaks
 3. **Check `docs/MIGRATION_SCHEMA.md`** — If changes affect the database, document the migration path
 
-## MCP Tools (14 total)
+## Engram Session Start
+
+At the start of each session, call `engram_status()` and follow the
+`next_prompt` field. Call `engram_query("<topic>")` before starting any
+substantive task.
+
+User messages are captured automatically by IDE-level hooks — do not call
+`engram_commit` for raw user messages. Use `engram_commit` to record verified
+discoveries, decisions, and corrections.
+
+## MCP Tools (15 total)
 
 **Onboarding:**
 - `engram_status` — Check workspace state, guide setup
@@ -84,6 +94,10 @@ All source lives under `src/engram/`.
 - `engram_expiring` — Facts with TTL approaching expiry
 - `engram_bulk_dismiss` — Batch dismiss conflicts
 - `engram_export` — Export data (JSON, Markdown)
+
+**Compliance:**
+- `engram_gdpr_erase` — GDPR right-to-erasure for an agent (founder only; soft or hard mode)
+- `engram_reset_invite_key` — now accepts `grace_minutes` (default 15) and `reason` params; fires `invite_key.rotated` webhook event and writes audit log entry
 
 ## Rules
 

@@ -3,11 +3,93 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
 
-from engram.engine import EngramEngine
+from engram.engine import EngramEngine, _effective_confidence
+
+
+def _confidence_fact(**overrides):
+    fact = {
+        "confidence": 0.8,
+        "committed_at": datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat(),
+        "query_hits": 0,
+        "corroborating_agents": 0,
+    }
+    fact.update(overrides)
+    return fact
+
+
+async def _update_fact_reinforcement(
+    engine: EngramEngine,
+    fact_id: str,
+    *,
+    committed_at: datetime | None = None,
+    query_hits: int | None = None,
+    corroborating_agents: int | None = None,
+) -> None:
+    assignments = []
+    params = []
+    if committed_at is not None:
+        committed_iso = committed_at.isoformat()
+        assignments.extend(["committed_at = ?", "valid_from = ?"])
+        params.extend([committed_iso, committed_iso])
+    if query_hits is not None:
+        assignments.append("query_hits = ?")
+        params.append(query_hits)
+    if corroborating_agents is not None:
+        assignments.append("corroborating_agents = ?")
+        params.append(corroborating_agents)
+
+    params.append(fact_id)
+    await engine.storage.db.execute(
+        f"UPDATE facts SET {', '.join(assignments)} WHERE id = ?",
+        params,
+    )
+    await engine.storage.db.commit()
+
+
+def test_effective_confidence_decays_unreinforced_facts():
+    now = datetime(2026, 1, 31, tzinfo=timezone.utc)
+    fresh = _confidence_fact(committed_at=now.isoformat())
+    old = _confidence_fact(committed_at=(now - timedelta(days=120)).isoformat())
+
+    assert _effective_confidence(old, now=now) < _effective_confidence(fresh, now=now)
+
+
+def test_effective_confidence_boosts_corroboration_and_query_hits():
+    now = datetime(2026, 1, 31, tzinfo=timezone.utc)
+    old = _confidence_fact(committed_at=(now - timedelta(days=60)).isoformat())
+    reinforced = _confidence_fact(
+        committed_at=(now - timedelta(days=60)).isoformat(),
+        query_hits=8,
+        corroborating_agents=3,
+    )
+
+    assert _effective_confidence(reinforced, now=now) > _effective_confidence(old, now=now)
+
+
+def test_effective_confidence_penalizes_open_conflicts():
+    fact = _confidence_fact()
+
+    assert _effective_confidence(fact, has_open_conflict=True) < _effective_confidence(
+        fact,
+        has_open_conflict=False,
+    )
+
+
+def test_effective_confidence_is_clamped():
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    fact = _confidence_fact(
+        confidence=0.99,
+        committed_at=now.isoformat(),
+        query_hits=1000,
+        corroborating_agents=1000,
+    )
+
+    assert _effective_confidence(fact, now=now) == 1.0
 
 
 @pytest.mark.asyncio
@@ -42,6 +124,14 @@ async def test_commit_returns_proactive_suggestions_for_rate_limit(engine: Engra
     assert any("retry" in s.lower() for s in result["suggestions"])
 
 
+def test_conflict_risk_estimation():
+    engine = EngramEngine(storage=None)  # storage not needed for this test
+
+    assert engine._estimate_conflict_risk("Rate limit is 1000", "api") == "high"
+    assert engine._estimate_conflict_risk("System should retry requests", "api") == "medium"
+    assert engine._estimate_conflict_risk("UI color is blue", "ui") == "low"
+
+
 @pytest.mark.asyncio
 async def test_commit_dedup(engine: EngramEngine):
     await engine.commit(
@@ -58,6 +148,210 @@ async def test_commit_dedup(engine: EngramEngine):
     )
     assert result2["duplicate"] is True
     assert result2["suggestions"] == []
+
+
+def _patch_test_embeddings(monkeypatch, vectors: dict[str, list[float]]) -> None:
+    def encode(content: str):
+        vector = np.array(vectors[content], dtype=np.float32)
+        norm = np.linalg.norm(vector)
+        return vector / norm if norm else vector
+
+    monkeypatch.setattr("engram.engine.embeddings.encode", encode)
+    monkeypatch.setattr("engram.engine.embeddings.get_model_name", lambda: "test-model")
+    monkeypatch.setattr("engram.engine.embeddings.get_model_version", lambda: "test-version")
+
+
+@pytest.mark.asyncio
+async def test_commit_semantic_duplicate_same_agent_skips_without_corroboration(
+    engine: EngramEngine, monkeypatch
+):
+    _patch_test_embeddings(
+        monkeypatch,
+        {
+            "The API timeout is 30 seconds": [1.0, 0.0, 0.0],
+            "API requests time out after 30 seconds": [0.96, 0.28, 0.0],
+        },
+    )
+
+    first = await engine.commit(
+        content="The API timeout is 30 seconds",
+        scope="api",
+        confidence=0.9,
+        agent_id="agent-1",
+    )
+    duplicate = await engine.commit(
+        content="API requests time out after 30 seconds",
+        scope="api",
+        confidence=0.8,
+        agent_id="agent-1",
+    )
+
+    facts = await engine.storage.get_current_facts_in_scope("api")
+    stored = await engine.storage.get_fact_by_id(first["fact_id"])
+
+    assert duplicate["duplicate"] is True
+    assert duplicate["dedup_reason"] == "semantic"
+    assert duplicate["fact_id"] == first["fact_id"]
+    assert duplicate["corroborated"] is False
+    assert len(facts) == 1
+    assert stored["corroborating_agents"] == 0
+
+
+@pytest.mark.asyncio
+async def test_commit_semantic_duplicate_cross_agent_reinforces_existing_fact(
+    engine: EngramEngine, monkeypatch
+):
+    _patch_test_embeddings(
+        monkeypatch,
+        {
+            "The API timeout is 30 seconds": [1.0, 0.0, 0.0],
+            "API requests time out after 30 seconds": [0.96, 0.28, 0.0],
+        },
+    )
+
+    first = await engine.commit(
+        content="The API timeout is 30 seconds",
+        scope="api",
+        confidence=0.9,
+        agent_id="agent-1",
+    )
+    duplicate = await engine.commit(
+        content="API requests time out after 30 seconds",
+        scope="api",
+        confidence=0.8,
+        agent_id="agent-2",
+    )
+
+    facts = await engine.storage.get_current_facts_in_scope("api")
+    stored = await engine.storage.get_fact_by_id(first["fact_id"])
+
+    assert duplicate["duplicate"] is True
+    assert duplicate["dedup_reason"] == "semantic"
+    assert duplicate["fact_id"] == first["fact_id"]
+    assert duplicate["corroborated"] is True
+    assert len(facts) == 1
+    assert stored["corroborating_agents"] == 1
+
+
+@pytest.mark.asyncio
+async def test_commit_semantic_duplicate_keeps_numeric_contradictions_separate(
+    engine: EngramEngine, monkeypatch
+):
+    _patch_test_embeddings(
+        monkeypatch,
+        {
+            "The API timeout is 30 seconds": [1.0, 0.0, 0.0],
+            "The API timeout is 60 seconds": [0.96, 0.28, 0.0],
+        },
+    )
+
+    first = await engine.commit(
+        content="The API timeout is 30 seconds",
+        scope="api",
+        confidence=0.9,
+        agent_id="agent-1",
+    )
+    second = await engine.commit(
+        content="The API timeout is 60 seconds",
+        scope="api",
+        confidence=0.8,
+        agent_id="agent-2",
+    )
+
+    facts = await engine.storage.get_current_facts_in_scope("api")
+
+    assert first["duplicate"] is False
+    assert second["duplicate"] is False
+    assert len(facts) == 2
+
+
+@pytest.mark.asyncio
+async def test_commit_semantic_duplicate_keeps_negated_claims_separate(
+    engine: EngramEngine, monkeypatch
+):
+    _patch_test_embeddings(
+        monkeypatch,
+        {
+            "The auth service uses JWT tokens": [1.0, 0.0, 0.0],
+            "The auth service does not use JWT tokens": [0.96, 0.28, 0.0],
+        },
+    )
+
+    first = await engine.commit(
+        content="The auth service uses JWT tokens",
+        scope="auth",
+        confidence=0.9,
+        agent_id="agent-1",
+    )
+    second = await engine.commit(
+        content="The auth service does not use JWT tokens",
+        scope="auth",
+        confidence=0.8,
+        agent_id="agent-2",
+    )
+
+    facts = await engine.storage.get_current_facts_in_scope("auth")
+
+    assert first["duplicate"] is False
+    assert second["duplicate"] is False
+    assert len(facts) == 2
+
+
+@pytest.mark.asyncio
+async def test_commit_semantic_duplicate_does_not_cross_scopes(engine: EngramEngine, monkeypatch):
+    _patch_test_embeddings(
+        monkeypatch,
+        {
+            "The API timeout is 30 seconds": [1.0, 0.0, 0.0],
+            "API requests time out after 30 seconds": [0.96, 0.28, 0.0],
+        },
+    )
+
+    first = await engine.commit(
+        content="The API timeout is 30 seconds",
+        scope="api",
+        confidence=0.9,
+        agent_id="agent-1",
+    )
+    second = await engine.commit(
+        content="API requests time out after 30 seconds",
+        scope="worker",
+        confidence=0.8,
+        agent_id="agent-2",
+    )
+
+    assert first["duplicate"] is False
+    assert second["duplicate"] is False
+
+
+@pytest.mark.asyncio
+async def test_batch_commit_counts_semantic_duplicates(engine: EngramEngine, monkeypatch):
+    _patch_test_embeddings(
+        monkeypatch,
+        {
+            "The API timeout is 30 seconds": [1.0, 0.0, 0.0],
+            "API requests time out after 30 seconds": [0.96, 0.28, 0.0],
+        },
+    )
+
+    result = await engine.batch_commit(
+        [
+            {
+                "content": "The API timeout is 30 seconds",
+                "scope": "api",
+                "agent_id": "agent-1",
+            },
+            {
+                "content": "API requests time out after 30 seconds",
+                "scope": "api",
+                "agent_id": "agent-2",
+            },
+        ]
+    )
+
+    assert result["committed"] == 1
+    assert result["duplicates"] == 1
+    assert result["results"][1]["status"] == "duplicate"
 
 
 @pytest.mark.asyncio
@@ -113,6 +407,84 @@ async def test_query_returns_results(engine: EngramEngine):
     results = await engine.query(topic="auth rate limiting", scope="auth")
     assert len(results) >= 1
     assert results[0]["content"] == "The auth service rate-limits to 1000 req/s per IP"
+
+
+@pytest.mark.asyncio
+async def test_query_returns_effective_confidence_and_preserves_raw_confidence(
+    engine: EngramEngine,
+    monkeypatch,
+):
+    from engram import embeddings
+
+    monkeypatch.setattr(embeddings, "encode", lambda text: np.ones(384, dtype=np.float32))
+    monkeypatch.setattr(embeddings, "get_model_version", lambda: "test-version")
+
+    result = await engine.commit(
+        content="The auth service signs session tokens with rotating keys",
+        scope="auth",
+        confidence=0.7,
+        agent_id="agent-1",
+    )
+
+    results = await engine.query(topic="session tokens", scope="auth")
+
+    hit = next(r for r in results if r["fact_id"] == result["fact_id"])
+    assert hit["confidence"] == 0.7
+    assert "effective_confidence" in hit
+    assert 0.0 <= hit["effective_confidence"] <= 1.0
+
+    stored = await engine.storage.get_fact_by_id(result["fact_id"])
+    assert stored["confidence"] == 0.7
+    assert stored["query_hits"] == 1
+
+
+@pytest.mark.asyncio
+async def test_query_ranking_uses_effective_confidence(engine: EngramEngine, monkeypatch):
+    from engram import embeddings
+
+    def encode(text: str):
+        vectors = {
+            "Cache entries expire according to the legacy runbook": [1.0, 0.0, 0.0],
+            "Cache entries expire according to the current service runbook": [0.0, 1.0, 0.0],
+            "cache expiration policy": [1.0, 1.0, 0.0],
+        }
+        vector = np.array(vectors[text], dtype=np.float32)
+        return vector / np.linalg.norm(vector)
+
+    monkeypatch.setattr(embeddings, "encode", encode)
+    monkeypatch.setattr(embeddings, "get_model_version", lambda: "test-version")
+
+    old = await engine.commit(
+        content="Cache entries expire according to the legacy runbook",
+        scope="cache",
+        confidence=0.95,
+        agent_id="agent-1",
+    )
+    reinforced = await engine.commit(
+        content="Cache entries expire according to the current service runbook",
+        scope="cache",
+        confidence=0.7,
+        agent_id="agent-2",
+    )
+
+    await _update_fact_reinforcement(
+        engine,
+        old["fact_id"],
+        committed_at=datetime.now(timezone.utc) - timedelta(days=180),
+        query_hits=0,
+        corroborating_agents=0,
+    )
+    await _update_fact_reinforcement(
+        engine,
+        reinforced["fact_id"],
+        query_hits=10,
+        corroborating_agents=3,
+    )
+
+    results = await engine.query(topic="cache expiration policy", scope="cache", limit=2)
+
+    assert results[0]["fact_id"] == reinforced["fact_id"]
+    assert results[0]["effective_confidence"] > results[1]["effective_confidence"]
 
 
 @pytest.mark.asyncio
@@ -227,6 +599,7 @@ async def test_detection_finds_semantic_nli_conflict(engine: EngramEngine, monke
         return np.ones(384, dtype=np.float32)
 
     monkeypatch.setattr(embeddings, "encode", fake_encode)
+    monkeypatch.setattr(embeddings, "get_model_version", lambda: "test-version")
     monkeypatch.setattr(engine, "_nli_model", FakeNLIModel(), raising=False)
 
     await engine.commit(
@@ -519,3 +892,22 @@ async def test_query_adjacent_scopes(engine: EngramEngine):
     # In-scope results should have adjacent=False
     in_scope = [r for r in results_adj if r.get("adjacent") is False]
     assert len(in_scope) > 0
+
+
+@pytest.mark.asyncio
+async def test_conflict_check_queued_false_on_queue_overflow(storage):
+    """When the detection queue is full, conflict_check_queued is False and detection_skipped is True."""
+    e = EngramEngine(storage)
+    # Fill detection queue to capacity without starting workers (queue stays full)
+    for _ in range(e._detection_queue.maxsize):
+        e._detection_queue.put_nowait("dummy-id")
+
+    result = await e.commit(
+        content="The cache TTL is 300 seconds",
+        scope="infra",
+        confidence=0.8,
+        agent_id="test-agent",
+    )
+
+    assert result["conflict_check_queued"] is False
+    assert result["detection_skipped"] is True

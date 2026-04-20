@@ -171,6 +171,21 @@ async def test_conflict_exists(storage: Storage):
 
 
 @pytest.mark.asyncio
+async def test_duplicate_conflict_pair_is_inserted_once(storage: Storage):
+    f1 = _fact(content="rate limit is 100")
+    f2 = _fact(content="rate limit is 200")
+    for f in (f1, f2):
+        await storage.insert_fact(f)
+
+    await storage.insert_conflict(_conflict(f1["id"], f2["id"]))
+    await storage.insert_conflict(_conflict(f2["id"], f1["id"]))
+
+    conflicts = await storage.get_conflicts(status="all")
+    assert len(conflicts) == 1
+    assert await storage.count_conflicts("all") == 1
+
+
+@pytest.mark.asyncio
 async def test_get_conflicting_fact_ids(storage: Storage):
     f1 = _fact()
     f2 = _fact()
@@ -314,10 +329,10 @@ async def test_increment_agent_flagged(storage: Storage):
 async def test_expire_ttl_facts(storage: Storage):
     # A fact whose TTL already expired (committed 10 days ago, ttl_days=1)
     past = _ts(-10)
-    expired = _fact(committed_at=past, ttl_days=1)
+    expired = _fact(committed_at=past, ttl_days=1, durability="ephemeral")
     expired["valid_from"] = past
-    # A fact that is still live (ttl_days=30)
-    live = _fact(ttl_days=30)
+    # A fact that is still live (ttl_days=30, also ephemeral but not yet expired)
+    live = _fact(ttl_days=30, durability="ephemeral")
 
     await storage.insert_fact(expired)
     await storage.insert_fact(live)
@@ -453,6 +468,71 @@ async def test_get_workspace_stats_conflict_counts(storage: Storage):
     # stats["conflicts"] has keys: open, resolved, dismissed, total, by_tier
     assert stats["conflicts"]["open"] >= 1
     assert stats["conflicts"]["total"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_stats_most_queried_is_privacy_preserving(storage: Storage):
+    f1 = _fact(content="secret implementation detail", scope="auth")
+    f2 = _fact(content="another private fact", scope="billing")
+    await storage.insert_fact(f1)
+    await storage.insert_fact(f2)
+    await storage.db.execute("UPDATE facts SET query_hits = ? WHERE id = ?", (5, f1["id"]))
+    await storage.db.execute("UPDATE facts SET query_hits = ? WHERE id = ?", (2, f2["id"]))
+    await storage.db.commit()
+
+    stats = await storage.get_workspace_stats()
+    most_queried = stats["facts"]["most_queried"]
+
+    assert [fact["id"] for fact in most_queried[:2]] == [f1["id"], f2["id"]]
+    assert most_queried[0]["query_hits"] == 5
+    assert most_queried[0]["scope"] == "auth"
+    assert "content" not in most_queried[0]
+    assert "engineer" not in most_queried[0]
+    assert "provenance" not in most_queried[0]
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_stats_most_active_agents(storage: Storage):
+    await storage.upsert_agent("agent-low")
+    await storage.upsert_agent("agent-high")
+    await storage.increment_agent_commits("agent-low")
+    await storage.increment_agent_commits("agent-high")
+    await storage.increment_agent_commits("agent-high")
+    await storage.increment_agent_flagged("agent-high")
+
+    stats = await storage.get_workspace_stats()
+    most_active = stats["agents"]["most_active"]
+
+    assert most_active[0]["agent_id"] == "agent-high"
+    assert most_active[0]["total_commits"] == 2
+    assert most_active[0]["flagged_commits"] == 1
+    assert "last_seen" in most_active[0]
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_stats_conflict_rate_and_over_time(storage: Storage):
+    f1 = _fact()
+    f2 = _fact()
+    f3 = _fact()
+    for f in (f1, f2, f3):
+        await storage.insert_fact(f)
+
+    open_conflict = _conflict(f1["id"], f2["id"], status="open")
+    open_conflict["detected_at"] = "2026-04-01T10:00:00+00:00"
+    resolved_conflict = _conflict(f2["id"], f3["id"], status="resolved")
+    resolved_conflict["detected_at"] = "2026-04-01T12:00:00+00:00"
+    dismissed_conflict = _conflict(f1["id"], f3["id"], status="dismissed")
+    dismissed_conflict["detected_at"] = "2026-04-02T09:00:00+00:00"
+    for conflict in (open_conflict, resolved_conflict, dismissed_conflict):
+        await storage.insert_conflict(conflict)
+
+    stats = await storage.get_workspace_stats()
+
+    assert stats["conflicts"]["rate"] == 1.0
+    assert stats["conflicts"]["over_time"] == [
+        {"date": "2026-04-01", "open": 1, "resolved": 1, "dismissed": 0, "total": 2},
+        {"date": "2026-04-02", "open": 0, "resolved": 0, "dismissed": 1, "total": 1},
+    ]
 
 
 # ── close_validity_window ─────────────────────────────────────────────

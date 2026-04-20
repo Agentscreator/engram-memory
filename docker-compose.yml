@@ -1,0 +1,81 @@
+# Engram — self-hosted deployment
+#
+# Profiles:
+#   sqlite   — single-container, SQLite on a local volume (default / simplest)
+#   postgres — full production stack: Engram + PostgreSQL
+#
+# Quick start:
+#   SQLite:   docker compose --profile sqlite up
+#   Postgres: docker compose --profile postgres up
+#
+# Environment overrides go in a .env file at the repo root (never commit it).
+# Required for Postgres profile:
+#   POSTGRES_PASSWORD=<choose a strong password>
+
+services:
+  # ── SQLite (simple, single-node) ────────────────────────────────────────────
+  engram-sqlite:
+    profiles: [sqlite]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: engram-team/engram:latest
+    restart: unless-stopped
+    ports:
+      - "${ENGRAM_PORT:-7474}:7474"
+    volumes:
+      - engram_data:/data
+    environment:
+      ENGRAM_DB_PATH: /data/knowledge.db
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; urllib.request.urlopen('http://localhost:7474/api/health',timeout=4); sys.exit(0)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ── PostgreSQL (production) ──────────────────────────────────────────────────
+  postgres:
+    profiles: [postgres]
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-engram}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-engram}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-engram} -d ${POSTGRES_DB:-engram}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+  engram-postgres:
+    profiles: [postgres]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: engram-team/engram:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${ENGRAM_PORT:-7474}:7474"
+    environment:
+      ENGRAM_DB_URL: >-
+        postgres://${POSTGRES_USER:-engram}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-engram}
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; urllib.request.urlopen('http://localhost:7474/api/health',timeout=4); sys.exit(0)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  engram_data:
+  postgres_data:

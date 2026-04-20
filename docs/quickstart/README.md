@@ -19,7 +19,7 @@ All IDEs follow the same basic pattern:
 
 1. **Run the installer**
    ```bash
-   curl -fsSL https://engram-us.com/install | sh
+   curl -fsSL https://engram-memory.com/install | sh
    ```
 
 2. **Restart your IDE**

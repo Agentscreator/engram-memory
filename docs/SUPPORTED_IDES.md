@@ -1,8 +1,8 @@
 # Supported IDEs
 
-Engram's install script (`curl -fsSL https://engram-us.com/install | sh`) auto-detects and configures the following IDEs. Each IDE has its own MCP config format — the installer handles the differences automatically.
+Engram's install script (`curl -fsSL https://engram-memory.com/install | sh`) auto-detects and configures the following IDEs. Each IDE has its own MCP config format — the installer handles the differences automatically.
 
-By default, the installer writes `https://mcp.engram.app/mcp` into each MCP config. If you need a custom endpoint, set `ENGRAM_MCP_URL` before running the installer.
+By default, the installer writes `https://www.engram-memory.com/mcp` into each MCP config. If you need a custom endpoint, set `ENGRAM_MCP_URL` before running the installer.
 
 ## Auto-configured by the installer
 
@@ -11,7 +11,7 @@ By default, the installer writes `https://mcp.engram.app/mcp` into each MCP conf
 | **Claude Code** | `~/.claude.json` | `mcpServers.{type: "http", url}` | CLI agent by Anthropic |
 | **Claude Desktop** | `claude_desktop_config.json` | `npx mcp-remote` stdio bridge | No native remote URL support; installer uses [mcp-remote](https://www.npmjs.com/package/mcp-remote) as a bridge. Requires Node.js/npx. |
 | **Cursor** | `~/.cursor/mcp.json` | `mcpServers.{url}` | VS Code fork by Anysphere |
-| **VS Code** | `<User>/mcp.json` | `servers.{type: "http", url}` | Requires GitHub Copilot extension for MCP |
+| **VS Code Agent Mode** | `Code/User/mcp.json` | `servers.{type: "http", url}` | Requires GitHub Copilot with Agent Mode |
 | **Windsurf** | `~/.codeium/windsurf/mcp_config.json` | `mcpServers.{serverUrl}` | Uses `serverUrl` key, not `url` |
 | **Kiro** | `~/.kiro/settings/mcp.json` | `mcpServers.{url}` | By AWS |
 | **Zed** | `settings.json` | `context_servers.{url}` | Rust-based editor; uses `context_servers` key |
@@ -44,13 +44,13 @@ If your IDE isn't listed above but supports MCP, add Engram as a remote HTTP ser
 
 **URL:**
 ```
-https://mcp.engram.app/mcp
+https://www.engram-memory.com/mcp
 ```
 
 **With an invite key:**
 ```json
 {
-  "url": "https://mcp.engram.app/mcp",
+  "url": "https://www.engram-memory.com/mcp",
   "headers": {
     "Authorization": "Bearer YOUR_INVITE_KEY"
   }
@@ -63,22 +63,22 @@ Adapt the key names to match your IDE's format (`url`, `serverUrl`, `type`, etc.
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://engram-us.com/install | sh
+curl -fsSL https://engram-memory.com/install | sh
 ```
 
 **Windows PowerShell:**
 ```powershell
-irm https://engram-us.com/install.ps1 | iex
+irm https://engram-memory.com/install.ps1 | iex
 ```
 
 **Windows CMD:**
 ```cmd
-curl -fsSL https://engram-us.com/install.cmd -o install.cmd && install.cmd && del install.cmd
+curl -fsSL https://engram-memory.com/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
 
 To join an existing workspace:
 ```bash
-curl -fsSL https://engram-us.com/install | sh -s -- --join ek_live_YOUR_KEY
+curl -fsSL https://engram-memory.com/install | sh -s -- --join ek_live_YOUR_KEY
 ```
 ## Verification and troubleshooting
 
@@ -87,7 +87,7 @@ After installation:
 1. Restart or reload your IDE if it was already open.
 2. Confirm that Engram was added to the IDE's MCP config file:
    - Cursor: `~/.cursor/mcp.json`
-   - VS Code: `<User>/mcp.json`
+   - VS Code Agent Mode: `Code/User/mcp.json`
    - Claude Code: `~/.claude.json`
 3. Open your IDE's MCP or tools UI, if available, and confirm the Engram server appears and is enabled.
 4. If you are joining an existing workspace, use your invite key during install.
@@ -116,14 +116,13 @@ If you install with `--join`, the final line will instead look like:
 ```
 
 ### Cursor
-**Common failure:** Cursor was not restarted after installation.  
-**Fix:** Restart Cursor, then confirm Engram appears in `~/.cursor/mcp.json` and in Cursor’s MCP or tools UI.
+**Common failure:** Cursor was not restarted after installation, or the agent searches files instead of calling the Engram MCP tool.
+**Fix:** Confirm Engram is under `mcpServers.engram.url` in `~/.cursor/mcp.json`, restart Cursor, approve the MCP tool prompt if shown, and confirm Engram is enabled in Cursor's MCP/tools UI. If Engram still uses the old `command: "uvx"` entry, re-run `engram install` to migrate the exact legacy entry to the hosted URL form.
 
 ### VS Code
 **Common failure:** VS Code uses `servers.engram`, not `mcpServers.engram`.  
-**Fix:** Confirm Engram was written under `servers` in `<User>/mcp.json`, then restart VS Code.
+**Fix:** Confirm Engram was written under `servers` in `Code/User/mcp.json`, then restart VS Code and approve the MCP server trust prompt if shown.
 
 ### Claude Code
 **Common failure:** Claude Code and Claude Desktop use different config files and setup methods.  
 **Fix:** Check `~/.claude.json`, confirm Engram is listed under `mcpServers.engram`, then restart Claude Code.
-

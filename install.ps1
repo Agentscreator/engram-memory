@@ -1,10 +1,10 @@
 # Engram installer for Windows PowerShell
-# Usage: irm https://engram-us.com/install.ps1 | iex
-#   or:  & { $env:ENGRAM_JOIN='ek_live_...'; irm https://engram-us.com/install.ps1 | iex }
+# Usage: irm https://engram-memory.com/install.ps1 | iex
+#   or:  & { $env:ENGRAM_JOIN='ek_live_...'; irm https://engram-memory.com/install.ps1 | iex }
 
 $ErrorActionPreference = 'Stop'
 $McpUrl = $env:ENGRAM_MCP_URL
-if (-not $McpUrl) { $McpUrl = 'https://mcp.engram.app/mcp' }
+if (-not $McpUrl) { $McpUrl = 'https://www.engram-memory.com/mcp' }
 $InviteKey = $env:ENGRAM_JOIN
 
 function Read-JsonOrEmpty {
@@ -55,13 +55,37 @@ function Write-JsonFile {
     [System.IO.File]::WriteAllText($FilePath, $json, $encoding)
 }
 
-# ── Ask for invite key if not provided ─────────────────────────────
-if (-not $InviteKey) {
-    $hasKey = Read-Host "`nDo you have an invite key from a teammate? (y/n)"
-    if ($hasKey -eq 'y' -or $hasKey -eq 'Y') {
-        $InviteKey = Read-Host 'Paste your invite key'
-    }
+# ── Install engram CLI ─────────────────────────────────────────────
+Write-Host "`nInstalling engram CLI..."
+
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    Write-Host "  Fetching uv..."
+    irm https://astral.sh/uv/install.ps1 | iex
+    # Refresh PATH so uv is available in this session
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "User") + ";" + $env:PATH
 }
+
+try {
+    uv tool install "engram-team" --upgrade --quiet 2>$null
+    $uvBin = "$env:USERPROFILE\.local\bin"
+    if ($env:PATH -notlike "*$uvBin*") {
+        $env:PATH = "$uvBin;$env:PATH"
+    }
+    Write-Host "  ✓ engram CLI installed"
+
+    # Write credentials so the auto-commit hook can reach the server
+    $credDir = "$env:USERPROFILE\.engram"
+    if (-not (Test-Path $credDir)) { New-Item -ItemType Directory -Force -Path $credDir | Out-Null }
+    $credContent = "ENGRAM_SERVER_URL=https://www.engram-memory.com`n"
+    if ($InviteKey) { $credContent += "ENGRAM_INVITE_KEY=$InviteKey`n" }
+    [System.IO.File]::WriteAllText("$credDir\credentials", $credContent)
+
+    # Wire up auto-commit hooks for all detected IDEs
+    try { engram install 2>$null; Write-Host "  ✓ auto-commit hooks installed" } catch {}
+} catch {
+    Write-Host "  ! CLI install failed — run manually: uv tool install engram-team"
+}
+
 
 # ── Per-IDE JSON patchers ──────────────────────────────────────────
 
@@ -228,6 +252,107 @@ if (Test-Path "$env:USERPROFILE\.config\opencode") {
     $patched++
 }
 
+# ── Install Claude Code skill (global, all sessions) ───────────────
+$SkillDir = "$env:USERPROFILE\.claude\skills"
+$SkillFile = "$SkillDir\set-up-engram-for-my-team.md"
+if (-not (Test-Path $SkillDir)) { New-Item -ItemType Directory -Force -Path $SkillDir | Out-Null }
+@'
+# Set Up Engram for My Team
+
+Guide the user through configuring the Engram MCP server in their IDE.
+
+## CRITICAL — Correct MCP URL
+
+The ONLY correct Engram MCP endpoint is:
+
+    https://www.engram-memory.com/mcp
+
+DO NOT invent subdomains like mcp.engram-memory.com or mcp.engram.app — they do not exist.
+DO NOT omit the www prefix. Always use exactly:
+
+    https://www.engram-memory.com/mcp
+
+## Step 1 — Check existing config and auto-fix wrong URLs
+
+Read ~/.claude.json and .mcp.json (if they exist). If either contains an "engram"
+entry under mcpServers with a WRONG url (anything other than https://www.engram-memory.com/mcp,
+e.g. mcp.engram.app or mcp.engram-memory.com), fix it to https://www.engram-memory.com/mcp and tell the user you
+corrected it.
+
+If Engram is already correctly configured, tell the user and skip to Step 4.
+
+## Step 2 — Ask two questions in a single AskUserQuestion call
+
+**Question 1 — header: "Engram type"**
+question: "What Engram implementation do you want to use?"
+options:
+1. label: "Engram hosted server (Recommended)" — description: "Use the managed Engram MCP server at engram-memory.com — no installation needed, easiest to get started"
+2. label: "Self-hosted / custom" — description: "You have your own Engram server URL or a local binary you want to connect to"
+3. label: "Walk me through the options and tradeoffs" — description: "Explain the differences before I decide"
+4. label: "Chat about this" — description: "I have a question first"
+
+**Question 2 — header: "Scope"**
+question: "Where should Engram be configured?"
+options:
+1. label: "User-level (~/.claude.json) (Recommended)" — description: "Available across all your Claude Code projects, not tied to any single repo"
+2. label: "Project-level (.mcp.json)" — description: "Checked into this repo — all agents working in this directory share the config"
+3. label: "Chat about this" — description: "I have a question first"
+
+If the user picks "Walk me through the options" or "Chat about this" on either question, answer their question then re-ask before proceeding.
+
+## Step 3 — Write config
+
+IMPORTANT: The url MUST be exactly https://www.engram-memory.com/mcp — no other domain.
+
+### Hosted + User-level (~/.claude.json)
+
+Read ~/.claude.json if it exists, then merge:
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "type": "http",
+      "url": "https://www.engram-memory.com/mcp"
+    }
+  }
+}
+```
+Write merged result back to ~/.claude.json.
+
+### Hosted + Project-level (.mcp.json)
+
+Read .mcp.json in the project root if it exists, then merge:
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "type": "http",
+      "url": "https://www.engram-memory.com/mcp"
+    }
+  }
+}
+```
+Write merged result back to .mcp.json.
+
+### Self-hosted + User-level
+
+Ask: "What is your Engram server URL?"
+Then merge into ~/.claude.json.
+
+### Self-hosted + Project-level
+
+Same as above but write to .mcp.json.
+
+## Step 4 — Next steps
+
+Tell the user:
+1. Which file was written and what was added
+2. The MCP URL is https://www.engram-memory.com/mcp
+3. To restart Claude Code (or run /mcp) for the change to take effect
+4. Once restarted: call engram_status() — it will guide through engram_init (new workspace) or engram_join (join with invite key)
+'@ | Set-Content -LiteralPath $SkillFile -Encoding UTF8
+Write-Host "  ✓ $SkillFile"
+
 # ── Result ─────────────────────────────────────────────────────────
 Write-Host ''
 if ($patched -eq 0) {
@@ -238,11 +363,19 @@ if ($patched -eq 0) {
     Write-Host ''
     Write-Host 'Then restart your IDE.'
 } else {
-    Write-Host 'Done! Restart your IDE, then ask your agent:'
+    Write-Host 'Done!'
+    Write-Host ''
+    Write-Host '  Restart your terminal, then run:'
+    Write-Host ''
+    Write-Host '    engram                 - get started'
+    Write-Host '    engram conflicts       - review memory conflicts'
+    Write-Host '    engram search <term>   - query workspace memory'
+    Write-Host ''
+    Write-Host '  Or restart your IDE and ask your agent:'
     if (-not $InviteKey) {
         Write-Host ''
-        Write-Host '  "Set up Engram for my team"    - to create a new workspace'
-        Write-Host '  "Join Engram with key ek_live_..."  - to join a teammate''s workspace'
+        Write-Host '  "Set up Engram for my team"         - create a new workspace'
+        Write-Host '  "Join Engram with key ek_live_..."  - join a teammate''s workspace'
     } else {
         Write-Host ''
         Write-Host '  "Set up Engram"  - your agent will connect to your workspace'

@@ -67,6 +67,8 @@ No application. No cover letter. Your work is your introduction.
 
 That's it. We review every contribution and follow up directly with everyone who submits something meaningful.
 
+**Bonus consideration:** If you're excited about what we're building, consider sharing your contribution or thoughts about Engram on social media. This helps us reach more people who care about the same problems, but it's entirely optional and won't impact our evaluation of your technical work.
+
 Strong contributors receive paid 1099 contract offers. $125–$185/hour, paid weekly, 10–20 hours/week. We don't make people wait months to find out.
 
 To reach us directly: **healthandwellness884@gmail.com** — GitHub username or PR link is enough to start a conversation.

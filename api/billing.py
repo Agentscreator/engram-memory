@@ -1,16 +1,27 @@
-"""Engram billing — Stripe integration + usage tracking.
+"""Engram billing — commit-volume tiered pricing with Stripe subscriptions.
 
-Pricing (mirrors Neon + 20% markup):
-  Free (Hobby): 512 MiB storage  (same as Neon's 0.5 GiB free tier)
-  Paid:         $0.1424 / GiB-month  (Neon charges $0.1187; we charge 20% more)
+Plans
+─────
+  free     :   500 commits/month  — $0
+  builder  :  5 000 commits/month — $12/mo
+  team     : 25 000 commits/month — $39/mo
+  scale    :100 000 commits/month — $99/mo
 
-When storage_bytes > HOBBY_LIMIT and no payment method on file → workspace paused.
-User adds a card via Stripe Checkout (setup mode) → workspace unpaused.
+All plans include LLM suggestions and the forgetting-based conflict detection.
 
-POST /billing/checkout   { engram_id }  → Stripe Checkout Session URL
-POST /billing/webhook                   → Stripe webhook handler
-GET  /billing/portal     ?engram_id=… → Stripe Customer Portal URL
-GET  /billing/status     ?engram_id=… → usage + billing status
+Overage (paid plans only): $0.015 / commit above tier limit, billed via
+Stripe metered item at period end.
+
+Stripe Price IDs are configured as environment variables so they can be
+updated without a code deploy:
+  STRIPE_PRICE_BUILDER   price_xxx for the Builder plan
+  STRIPE_PRICE_TEAM      price_xxx for the Team plan
+  STRIPE_PRICE_SCALE     price_xxx for the Scale plan
+
+POST /billing/checkout   { engram_id, plan }  → Stripe Checkout URL
+POST /billing/webhook                         → Stripe webhook handler
+GET  /billing/portal     ?engram_id=…         → Stripe Customer Portal URL
+GET  /billing/status     ?engram_id=…         → usage + plan status
 """
 
 from __future__ import annotations
@@ -29,14 +40,61 @@ DB_URL = os.environ.get("ENGRAM_DB_URL", "")
 SCHEMA = "engram"
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-APP_URL = os.environ.get("ENGRAM_APP_URL", "https://www.engram-us.com")
+APP_URL = os.environ.get("ENGRAM_APP_URL", "https://www.engram-memory.com")
 
-# ── Pricing constants ────────────────────────────────────────────────
-HOBBY_LIMIT_BYTES = 512 * 1024 * 1024  # 512 MiB (Neon free tier)
-PRICE_PER_GIB_MONTH = 0.1424  # $0.1424/GiB-month (+20% over Neon)
-PRICE_PER_BYTE_MONTH = PRICE_PER_GIB_MONTH / (1024**3)
+# ── Plan definitions ─────────────────────────────────────────────────
+# 'hobby' and 'pro' are legacy plan names — treated as 'free' and 'builder'.
+PLANS: dict[str, dict] = {
+    "free": {
+        "name": "Free",
+        "commits": 500,
+        "price_usd": 0,
+        "desc": "Personal use",
+    },
+    "builder": {
+        "name": "Builder",
+        "commits": 5_000,
+        "price_usd": 12,
+        "desc": "Solo developers",
+    },
+    "team": {
+        "name": "Team",
+        "commits": 25_000,
+        "price_usd": 39,
+        "desc": "Small teams",
+    },
+    "scale": {
+        "name": "Scale",
+        "commits": 100_000,
+        "price_usd": 99,
+        "desc": "Production",
+    },
+}
+
+# Legacy plan aliases
+_PLAN_ALIASES = {"hobby": "free", "pro": "builder"}
+
+OVERAGE_PRICE_PER_COMMIT = 0.015  # $0.015 per commit above paid-tier limit
+
+# Stripe Price IDs — set these in your environment after creating products in
+# the Stripe dashboard (or via the Stripe CLI / API).
+STRIPE_PRICES = {
+    "builder": os.environ.get("STRIPE_PRICE_BUILDER", ""),
+    "team": os.environ.get("STRIPE_PRICE_TEAM", ""),
+    "scale": os.environ.get("STRIPE_PRICE_SCALE", ""),
+}
 
 _pool: Any = None
+
+
+def canonical_plan(plan: str | None) -> str:
+    """Normalise legacy plan names to canonical ones."""
+    p = (plan or "free").lower()
+    return _PLAN_ALIASES.get(p, p if p in PLANS else "free")
+
+
+def plan_commit_limit(plan: str | None) -> int:
+    return PLANS[canonical_plan(plan)]["commits"]
 
 
 async def _get_pool() -> Any:
@@ -84,24 +142,11 @@ def _get_jwt_from_request(request: Request) -> dict | None:
 async def _user_owns_workspace(user_id: str, engram_id: str, pool: Any) -> bool:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT 1 FROM user_workspaces WHERE user_id = $1 AND engram_id = $2",
+            f"SELECT 1 FROM {SCHEMA}.user_workspaces WHERE user_id = $1 AND engram_id = $2",
             user_id,
             engram_id,
         )
     return row is not None
-
-
-# ── Usage helpers ────────────────────────────────────────────────────
-
-
-def _monthly_charge_usd(storage_bytes: int) -> float:
-    """Calculate monthly charge for storage above free tier."""
-    overage = max(0, storage_bytes - HOBBY_LIMIT_BYTES)
-    return round(overage * PRICE_PER_BYTE_MONTH, 4)
-
-
-def _storage_pct(storage_bytes: int) -> float:
-    return min(100.0, round(storage_bytes / HOBBY_LIMIT_BYTES * 100, 1))
 
 
 # ── Handlers ─────────────────────────────────────────────────────────
@@ -123,7 +168,10 @@ async def handle_status(request: Request) -> JSONResponse:
 
         async with pool.acquire() as conn:
             ws = await conn.fetchrow(
-                "SELECT paused, storage_bytes, plan, stripe_customer_id FROM workspaces WHERE engram_id = $1",
+                f"""SELECT paused, plan, stripe_customer_id, stripe_subscription_id,
+                           commit_count_month, commit_month, storage_bytes,
+                           TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') AS current_month
+                    FROM {SCHEMA}.workspaces WHERE engram_id = $1""",
                 engram_id,
             )
     except Exception as exc:
@@ -132,26 +180,44 @@ async def handle_status(request: Request) -> JSONResponse:
     if not ws:
         return JSONResponse({"error": "Workspace not found"}, status_code=404)
 
-    storage = ws["storage_bytes"] or 0
-    charge = _monthly_charge_usd(storage)
+    plan = canonical_plan(ws["plan"])
+    plan_info = PLANS[plan]
+    commit_limit = plan_info["commits"]
+
+    # Reset counter if month rolled over (read-only here; mcp.py resets on write)
+    committed = ws["commit_count_month"] or 0
+    if ws["commit_month"] != ws["current_month"]:
+        committed = 0
+
+    usage_pct = round(min(100.0, committed / commit_limit * 100), 1)
+
     return JSONResponse(
         {
             "engram_id": engram_id,
-            "plan": ws["plan"] or "hobby",
+            "plan": plan,
+            "plan_name": plan_info["name"],
             "paused": ws["paused"] or False,
-            "storage_bytes": storage,
-            "storage_mib": round(storage / (1024 * 1024), 2),
-            "hobby_limit_mib": 512,
-            "usage_pct": _storage_pct(storage),
+            "commits_this_month": committed,
+            "commit_limit": commit_limit,
+            "usage_pct": usage_pct,
             "has_payment_method": bool(ws["stripe_customer_id"]),
-            "estimated_monthly_usd": charge,
-            "price_per_gib_month": PRICE_PER_GIB_MONTH,
+            "has_subscription": bool(ws["stripe_subscription_id"]),
+            "overage_price_per_commit": OVERAGE_PRICE_PER_COMMIT,
+            "plans": {
+                k: {
+                    "name": v["name"],
+                    "commits": v["commits"],
+                    "price_usd": v["price_usd"],
+                    "desc": v["desc"],
+                }
+                for k, v in PLANS.items()
+            },
         }
     )
 
 
 async def handle_checkout(request: Request) -> JSONResponse:
-    """Create a Stripe Checkout Session (setup mode) to collect a payment method."""
+    """Create a Stripe Checkout Session (subscription) for a given plan."""
     session = _get_jwt_from_request(request)
     if not session:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
@@ -162,11 +228,25 @@ async def handle_checkout(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     engram_id = (body.get("engram_id") or "").strip()
+    plan = canonical_plan(body.get("plan") or "builder")
+
     if not engram_id:
         return JSONResponse({"error": "engram_id required"}, status_code=400)
-
+    if plan not in ("builder", "team", "scale"):
+        return JSONResponse(
+            {"error": "Invalid plan — must be builder, team, or scale"}, status_code=400
+        )
     if not STRIPE_SECRET_KEY:
         return JSONResponse({"error": "Stripe not configured"}, status_code=503)
+
+    price_id = STRIPE_PRICES.get(plan, "")
+    if not price_id:
+        return JSONResponse(
+            {
+                "error": f"Stripe price for '{plan}' not configured (set STRIPE_PRICE_{plan.upper()})"
+            },
+            status_code=503,
+        )
 
     try:
         pool = await _get_pool()
@@ -175,10 +255,12 @@ async def handle_checkout(request: Request) -> JSONResponse:
 
         async with pool.acquire() as conn:
             ws = await conn.fetchrow(
-                "SELECT stripe_customer_id FROM workspaces WHERE engram_id = $1", engram_id
+                f"SELECT stripe_customer_id FROM {SCHEMA}.workspaces WHERE engram_id = $1",
+                engram_id,
             )
             user = await conn.fetchrow(
-                "SELECT email, stripe_customer_id FROM users WHERE id = $1", session["sub"]
+                f"SELECT email, stripe_customer_id FROM {SCHEMA}.users WHERE id = $1",
+                session["sub"],
             )
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -195,26 +277,30 @@ async def handle_checkout(request: Request) -> JSONResponse:
             metadata={"engram_id": engram_id, "user_id": session["sub"]},
         )
         customer_id = customer.id
-        # Save customer id to user and workspace
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET stripe_customer_id = $1 WHERE id = $2",
-                customer_id,
-                session["sub"],
-            )
-            await conn.execute(
-                "UPDATE workspaces SET stripe_customer_id = $1 WHERE engram_id = $2",
-                customer_id,
-                engram_id,
-            )
+        try:
+            pool = await _get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    f"UPDATE {SCHEMA}.users SET stripe_customer_id = $1 WHERE id = $2",
+                    customer_id,
+                    session["sub"],
+                )
+                await conn.execute(
+                    f"UPDATE {SCHEMA}.workspaces SET stripe_customer_id = $1 WHERE engram_id = $2",
+                    customer_id,
+                    engram_id,
+                )
+        except Exception:
+            pass
 
     checkout_session = stripe.checkout.Session.create(
-        mode="setup",
+        mode="subscription",
         customer=customer_id,
-        payment_method_types=["card"],
+        line_items=[{"price": price_id, "quantity": 1}],
         success_url=f"{APP_URL}/dashboard?billing=success&id={engram_id}",
         cancel_url=f"{APP_URL}/dashboard?billing=cancel&id={engram_id}",
-        metadata={"engram_id": engram_id, "user_id": session["sub"]},
+        metadata={"engram_id": engram_id, "user_id": session["sub"], "plan": plan},
+        subscription_data={"metadata": {"engram_id": engram_id, "plan": plan}},
     )
 
     return JSONResponse({"checkout_url": checkout_session.url})
@@ -229,7 +315,6 @@ async def handle_portal(request: Request) -> JSONResponse:
     engram_id = request.query_params.get("engram_id", "").strip()
     if not engram_id:
         return JSONResponse({"error": "engram_id required"}, status_code=400)
-
     if not STRIPE_SECRET_KEY:
         return JSONResponse({"error": "Stripe not configured"}, status_code=503)
 
@@ -240,7 +325,8 @@ async def handle_portal(request: Request) -> JSONResponse:
 
         async with pool.acquire() as conn:
             ws = await conn.fetchrow(
-                "SELECT stripe_customer_id FROM workspaces WHERE engram_id = $1", engram_id
+                f"SELECT stripe_customer_id FROM {SCHEMA}.workspaces WHERE engram_id = $1",
+                engram_id,
             )
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -260,7 +346,7 @@ async def handle_portal(request: Request) -> JSONResponse:
 
 
 async def handle_webhook(request: Request) -> Response:
-    """Stripe webhook — handle payment method setup completion."""
+    """Stripe webhook — handle subscription lifecycle."""
     if not STRIPE_WEBHOOK_SECRET:
         return Response("Webhook secret not configured", status_code=503)
 
@@ -276,44 +362,108 @@ async def handle_webhook(request: Request) -> Response:
     except stripe.error.SignatureVerificationError:
         return Response("Invalid signature", status_code=400)
 
-    if event["type"] == "setup_intent.succeeded":
-        setup_intent = event["data"]["object"]
-        engram_id = (setup_intent.get("metadata") or {}).get("engram_id")
-        customer_id = setup_intent.get("customer")
+    etype = event["type"]
 
-        if engram_id and customer_id:
+    # ── Subscription activated / updated ────────────────────────────
+    if etype in ("customer.subscription.created", "customer.subscription.updated"):
+        sub = event["data"]["object"]
+        engram_id = (sub.get("metadata") or {}).get("engram_id")
+        plan = canonical_plan((sub.get("metadata") or {}).get("plan"))
+        customer_id = sub.get("customer")
+        sub_id = sub.get("id")
+        status = sub.get("status", "")
+
+        # Only activate on live/trialing subscriptions
+        if engram_id and status in ("active", "trialing"):
             try:
                 pool = await _get_pool()
                 async with pool.acquire() as conn:
-                    # Unpause workspace and record payment method
                     await conn.execute(
-                        """UPDATE workspaces
-                           SET paused = false, stripe_customer_id = $1, plan = 'pro'
-                           WHERE engram_id = $2""",
+                        f"""UPDATE {SCHEMA}.workspaces
+                               SET plan = $1, paused = false,
+                                   stripe_customer_id = $2,
+                                   stripe_subscription_id = $3
+                             WHERE engram_id = $4""",
+                        plan,
                         customer_id,
+                        sub_id,
                         engram_id,
                     )
             except Exception:
-                pass  # Log in production
+                pass
 
-    elif event["type"] == "checkout.session.completed":
+    # ── Subscription cancelled / expired ────────────────────────────
+    elif etype == "customer.subscription.deleted":
+        sub = event["data"]["object"]
+        engram_id = (sub.get("metadata") or {}).get("engram_id")
+        if engram_id:
+            try:
+                pool = await _get_pool()
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        f"""UPDATE {SCHEMA}.workspaces
+                               SET plan = 'free', stripe_subscription_id = NULL
+                             WHERE engram_id = $1""",
+                        engram_id,
+                    )
+            except Exception:
+                pass
+
+    # ── Checkout session completed (subscription mode) ───────────────
+    elif etype == "checkout.session.completed":
         cs = event["data"]["object"]
-        if cs.get("mode") == "setup":
+        if cs.get("mode") == "subscription":
             engram_id = (cs.get("metadata") or {}).get("engram_id")
+            plan = canonical_plan((cs.get("metadata") or {}).get("plan"))
             customer_id = cs.get("customer")
-            if engram_id and customer_id:
+            sub_id = cs.get("subscription")
+            if engram_id:
                 try:
                     pool = await _get_pool()
                     async with pool.acquire() as conn:
                         await conn.execute(
-                            """UPDATE workspaces
-                               SET paused = false, stripe_customer_id = $1, plan = 'pro'
-                               WHERE engram_id = $2""",
+                            f"""UPDATE {SCHEMA}.workspaces
+                                   SET plan = $1, paused = false,
+                                       stripe_customer_id = $2,
+                                       stripe_subscription_id = $3
+                                 WHERE engram_id = $4""",
+                            plan,
                             customer_id,
+                            sub_id,
                             engram_id,
                         )
                 except Exception:
                     pass
+
+    # ── Invoice paid — clear paused flag ────────────────────────────
+    elif etype == "invoice.payment_succeeded":
+        invoice = event["data"]["object"]
+        customer_id = invoice.get("customer")
+        if customer_id:
+            try:
+                pool = await _get_pool()
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        f"UPDATE {SCHEMA}.workspaces SET paused = false WHERE stripe_customer_id = $1",
+                        customer_id,
+                    )
+            except Exception:
+                pass
+
+    # ── Invoice payment failed — pause workspace ─────────────────────
+    elif etype == "invoice.payment_failed":
+        invoice = event["data"]["object"]
+        customer_id = invoice.get("customer")
+        if customer_id:
+            try:
+                pool = await _get_pool()
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        f"UPDATE {SCHEMA}.workspaces SET paused = true WHERE stripe_customer_id = $1",
+                        customer_id,
+                    )
+            except Exception:
+                pass
 
     return Response("ok", status_code=200)
 
@@ -334,7 +484,7 @@ app = Starlette(
         Route("/billing/checkout", handle_checkout, methods=["POST"]),
         Route("/billing/portal", handle_portal, methods=["GET"]),
         Route("/billing/webhook", handle_webhook, methods=["POST"]),
-        Route("/stripe/webhook", handle_webhook, methods=["POST"]),  # canonical Stripe URL
+        Route("/stripe/webhook", handle_webhook, methods=["POST"]),
         Route("/billing/{path:path}", handle_options, methods=["OPTIONS"]),
     ]
 )
