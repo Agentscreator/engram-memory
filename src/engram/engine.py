@@ -1234,10 +1234,10 @@ class EngramEngine:
             "fact_a_id": fact_id,
             "fact_b_id": synthetic_id,
             "detected_at": now,
-            "detection_tier": "tier0_codebase",
+            "detection_tier": "tier_codebase",
             "nli_score": None,
             "explanation": mismatch["explanation"],
-            "severity": "high",
+            "severity": "medium",
             "status": "open",
             "conflict_type": "genuine",
         })

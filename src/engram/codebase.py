@@ -1,10 +1,7 @@
-"""Codebase verification — ground-truth conflict detection.
+"""Codebase verification — fact-vs-code conflict detection.
 
 Scans the working directory for verifiable claims in Engram facts and
-creates high-severity conflicts when a fact contradicts what the code
-actually says.
-
-This is Tier 0 detection: the code is the source of truth.
+surfaces conflicts when a fact contradicts what the code actually says.
 """
 
 from __future__ import annotations

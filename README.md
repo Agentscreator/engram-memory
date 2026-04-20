@@ -109,9 +109,11 @@ Facts accumulate. The next time any agent opens this codebase — yours or anyon
 
 ## Conflict Detection
 
-Every commit triggers conflict detection across the full fact corpus. When two agents have recorded contradictory facts, Engram surfaces the contradiction on the dashboard before either agent acts on stale information.
+Engram runs conflict detection at two levels:
 
-Engram reads the workspace's commit history as a chronological story and asks: *where would a new agent get confused about what's currently true?* It catches reversals and ambiguity that simple pairwise comparison misses.
+**Agent vs. agent** — Every commit triggers detection across the full fact corpus. When two agents have recorded contradictory facts, Engram surfaces the contradiction before either agent acts on stale information. It reads the workspace's commit history as a chronological story and asks: *where would a new agent get confused about what's currently true?*
+
+**Codebase vs. agent** — On startup and every 10 minutes, Engram scans your codebase — config files, dependency manifests, Dockerfiles — and compares what it finds against what agents have committed to memory. When an agent claims the rate limit is 1000 but the config says 500, that conflict is surfaced immediately.
 
 Full design: [`docs/CONFLICT_DETECTIVE.md`](./docs/CONFLICT_DETECTIVE.md)
 
