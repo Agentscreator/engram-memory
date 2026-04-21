@@ -1120,14 +1120,17 @@ class SQLiteStorage(BaseStorage):
         return await cursor.fetchone() is not None
 
     async def get_conflicts(self, scope: str | None = None, status: str = "open") -> list[dict]:
-        conditions = [
-            "c.workspace_id = ?",
-            """NOT EXISTS (
+        conditions = ["c.workspace_id = ?"]
+        params: list[Any] = [self.workspace_id]
+
+        # Suppress re-detected conflicts for dismissed pairs in all views except the dismissed tab itself.
+        if status != "dismissed":
+            conditions.append(
+                """NOT EXISTS (
                 SELECT 1 FROM dismissed_conflicts dc
                 WHERE dc.conflict_id = c.id AND dc.workspace_id = c.workspace_id
-            )""",
-        ]
-        params: list[Any] = [self.workspace_id]
+            )"""
+            )
 
         if status != "all":
             conditions.append("c.status = ?")
@@ -1601,24 +1604,25 @@ class SQLiteStorage(BaseStorage):
         return row["cnt"] if row else 0
 
     async def count_conflicts(self, status: str = "open") -> int:
-        if status == "all":
-            cursor = await self.db.execute(
-                """SELECT COUNT(*) as cnt FROM conflicts
-                   WHERE workspace_id = ?
-                     AND NOT EXISTS (
+        hide_dismissed = status != "dismissed"
+        dismissed_filter = (
+            """AND NOT EXISTS (
                          SELECT 1 FROM dismissed_conflicts dc
                          WHERE dc.conflict_id = conflicts.id AND dc.workspace_id = conflicts.workspace_id
-                     )""",
+                     )"""
+            if hide_dismissed
+            else ""
+        )
+        if status == "all":
+            cursor = await self.db.execute(
+                f"""SELECT COUNT(*) as cnt FROM conflicts
+                   WHERE workspace_id = ? {dismissed_filter}""",
                 (self.workspace_id,),
             )
         else:
             cursor = await self.db.execute(
-                """SELECT COUNT(*) as cnt FROM conflicts
-                   WHERE status = ? AND workspace_id = ?
-                     AND NOT EXISTS (
-                         SELECT 1 FROM dismissed_conflicts dc
-                         WHERE dc.conflict_id = conflicts.id AND dc.workspace_id = conflicts.workspace_id
-                     )""",
+                f"""SELECT COUNT(*) as cnt FROM conflicts
+                   WHERE status = ? AND workspace_id = ? {dismissed_filter}""",
                 (status, self.workspace_id),
             )
         row = await cursor.fetchone()
