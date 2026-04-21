@@ -46,8 +46,6 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
 
         facts_count = await storage.count_facts(current_only=True)
         total_facts = await storage.count_facts(current_only=False)
-        open_conflicts = await storage.count_conflicts("open")
-        resolved_conflicts = await storage.count_conflicts("resolved")
         agents = await storage.get_agents()
         expiring = await storage.get_expiring_facts(days_ahead=7)
         recent_activity = await storage.get_fact_timeline(limit=10)
@@ -55,8 +53,8 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
             _render_index(
                 facts_count=facts_count,
                 total_facts=total_facts,
-                open_conflicts=open_conflicts,
-                resolved_conflicts=resolved_conflicts,
+                open_conflicts=0,
+                resolved_conflicts=0,
                 agents=agents,
                 expiring_count=len(expiring),
                 workspace_error=workspace_error,
@@ -146,11 +144,9 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
             )
 
         scopes = await storage.get_distinct_scopes()
-        conflict_ids = await storage.get_open_conflict_fact_ids()
         return HTMLResponse(
             _render_facts_table(
                 facts,
-                conflict_ids,
                 search_query=search_query,
                 scope=scope,
                 fact_type=fact_type,
@@ -799,14 +795,6 @@ def _render_index(
         <div class="stat-value">{total_facts}</div>
         <div class="stat-label">Total Facts</div>
       </div>
-      <div class="stat stat-warn">
-        <div class="stat-value">{open_conflicts}</div>
-        <div class="stat-label">Open Conflicts</div>
-      </div>
-      <div class="stat stat-ok">
-        <div class="stat-value">{resolved_conflicts}</div>
-        <div class="stat-label">Resolved</div>
-      </div>
       <div class="stat">
         <div class="stat-value">{len(agents)}</div>
         <div class="stat-label">Agents</div>
@@ -852,7 +840,7 @@ def _agent_row(a: dict) -> str:
 
 def _render_facts_table(
     facts: list[dict],
-    conflict_ids: set[str],
+    conflict_ids: set[str] | None = None,
     search_query: str = "",
     scope: str = "",
     fact_type: str = "",
@@ -865,9 +853,7 @@ def _render_facts_table(
 
     rows = []
     for f in facts:
-        has_conflict = f["id"] in conflict_ids
         verified = f.get("provenance") is not None
-        conflict_badge = '<span class="badge badge-open">conflict</span>' if has_conflict else ""
         ver_badge = (
             '<span class="badge badge-verified">verified</span>'
             if verified
@@ -884,7 +870,7 @@ def _render_facts_table(
             f"<tr><td class='content-cell'>{content_escaped}</td>"
             f"<td>{_esc(f['scope'])}</td><td>{f['confidence']:.2f}</td>"
             f"<td>{_esc(f['fact_type'])}</td><td>{_esc(f['agent_id'])}</td>"
-            f"<td>{conflict_badge} {ver_badge}</td>"
+            f"<td>{ver_badge}</td>"
             f"<td>{_esc(f.get('committed_at', '')[:19])}</td></tr>"
         )
 

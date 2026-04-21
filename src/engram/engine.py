@@ -1409,10 +1409,7 @@ class EngramEngine:
                     if conflict_type == "evolution":
                         await self._auto_resolve_evolution(cid, fact, other)
                     else:
-                        try:
-                            self._suggestion_queue.put_nowait(cid)
-                        except asyncio.QueueFull:
-                            pass
+                        await self._auto_dismiss_conflict(cid)
                     await self._fire_event(
                         "conflict.detected",
                         {
@@ -1492,10 +1489,7 @@ class EngramEngine:
                         if conflict_type == "evolution":
                             await self._auto_resolve_evolution(cid, fact, other)
                         else:
-                            try:
-                                self._suggestion_queue.put_nowait(cid)
-                            except asyncio.QueueFull:
-                                pass
+                            await self._auto_dismiss_conflict(cid)
                         await self._fire_event(
                             "conflict.detected",
                             {
@@ -1576,10 +1570,7 @@ class EngramEngine:
                         if conflict_type == "evolution":
                             await self._auto_resolve_evolution(cid, fact, other)
                         else:
-                            try:
-                                self._suggestion_queue.put_nowait(cid)
-                            except asyncio.QueueFull:
-                                pass
+                            await self._auto_dismiss_conflict(cid)
                         await self._fire_event(
                             "conflict.detected",
                             {
@@ -1644,10 +1635,7 @@ class EngramEngine:
                         if conflict_type == "evolution":
                             await self._auto_resolve_evolution(cid, first_fact or {}, fact)
                         else:
-                            try:
-                                self._suggestion_queue.put_nowait(cid)
-                            except asyncio.QueueFull:
-                                pass
+                            await self._auto_dismiss_conflict(cid)
                         await self._fire_event(
                             "conflict.detected",
                             {
@@ -1831,6 +1819,16 @@ class EngramEngine:
             winner_id[:12],
             loser_id[:12],
         )
+
+    async def _auto_dismiss_conflict(self, conflict_id: str) -> None:
+        """Auto-dismiss a detected conflict without requiring human review."""
+        await self.storage.auto_resolve_conflict(
+            conflict_id=conflict_id,
+            resolution_type="dismissed",
+            resolution="Auto-dismissed: conflict auto-resolution enabled.",
+            resolved_by="engram-auto",
+        )
+        logger.debug("Auto-dismissed conflict %s", conflict_id[:12])
 
     # ── engram_resolve ───────────────────────────────────────────────
 

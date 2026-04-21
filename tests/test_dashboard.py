@@ -29,7 +29,6 @@ def test_render_index():
     )
     assert "42" in html
     assert "Engram Dashboard" in html
-    assert "Open Conflicts" in html
 
 
 @pytest.mark.asyncio

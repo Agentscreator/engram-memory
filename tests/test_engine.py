@@ -557,7 +557,8 @@ async def test_detection_finds_numeric_conflict(engine: EngramEngine):
 
     await engine._detection_queue.join()
 
-    conflicts = await engine.get_conflicts(scope="auth", status="open")
+    # Conflicts are auto-dismissed; verify detection occurred
+    conflicts = await engine.get_conflicts(scope="auth", status="dismissed")
     assert len(conflicts) >= 1
     # Same-scope numeric entity conflicts are caught by tier0_entity (exact entity
     # name + different value in scope). tier2_numeric only fires when tier0 doesn't
@@ -583,7 +584,8 @@ async def test_detection_finds_cross_scope_numeric_conflict(engine: EngramEngine
 
     await engine._detection_queue.join()
 
-    conflicts = await engine.get_conflicts(status="open")
+    # Conflicts are auto-dismissed; verify detection occurred
+    conflicts = await engine.get_conflicts(status="dismissed")
     assert any(c["detection_tier"] == "tier2b_cross_scope" for c in conflicts)
 
 
@@ -617,7 +619,8 @@ async def test_detection_finds_semantic_nli_conflict(engine: EngramEngine, monke
 
     await engine._detection_queue.join()
 
-    conflicts = await engine.get_conflicts(scope="auth", status="open")
+    # Conflicts are auto-dismissed; verify detection occurred
+    conflicts = await engine.get_conflicts(scope="auth", status="dismissed")
     assert any(c["detection_tier"] == "tier1_nli" for c in conflicts)
 
 

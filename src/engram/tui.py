@@ -699,9 +699,6 @@ def run_tui(ws: Any, ctx: Any) -> None:
             ]
         return [
             ("class:toolbar", "  "),
-            ("class:toolbar.key", "conflicts"),
-            ("class:toolbar", " refresh"),
-            ("class:toolbar.sep", "   ·   "),
             ("class:toolbar.key", "merge"),
             ("class:toolbar", " join another memory space"),
             ("class:toolbar.sep", "   ·   "),
@@ -1053,9 +1050,6 @@ def run_tui(ws: Any, ctx: Any) -> None:
             app.invalidate()
 
     threading.Thread(target=_blink, daemon=True).start()
-
-    # Load conflicts immediately on startup
-    _load_conflicts(ws, output_lines)
 
     app.run()
 
