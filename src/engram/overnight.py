@@ -42,6 +42,7 @@ def _get_overnight_client(api_key: str) -> Any:
     global _overnight_client
     if _overnight_client is None:
         import anthropic
+
         _overnight_client = anthropic.Anthropic(api_key=api_key)
     return _overnight_client
 

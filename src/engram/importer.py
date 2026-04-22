@@ -37,8 +37,10 @@ def _get_importer_client(api_key: str) -> Any:
     global _importer_client
     if _importer_client is None:
         import anthropic
+
         _importer_client = anthropic.AsyncAnthropic(api_key=api_key)
     return _importer_client
+
 
 SUPPORTED_EXTENSIONS = {".md", ".txt"}
 SKIPPED_DIRS = {

@@ -22,6 +22,7 @@ def _get_suggester_client(api_key: str) -> Any:
     global _suggester_client
     if _suggester_client is None:
         import anthropic
+
         _suggester_client = anthropic.AsyncAnthropic(api_key=api_key)
     return _suggester_client
 
