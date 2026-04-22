@@ -182,13 +182,13 @@ async def test_dismissed_conflict_stays_hidden_after_refresh(
     )
     monkeypatch.setattr("engram.embeddings.get_model_version", lambda: "test-version")
 
-    r1 = await engine.commit(
+    await engine.commit(
         content="The auth service rate limit is 1000 req/s per IP",
         scope="conflicts-refresh",
         confidence=0.9,
         agent_id="agent-a",
     )
-    r2 = await engine.commit(
+    await engine.commit(
         content="The auth service rate limit is 2000 req/s per IP",
         scope="conflicts-refresh",
         confidence=0.9,
