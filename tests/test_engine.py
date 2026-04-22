@@ -920,17 +920,17 @@ async def test_queue_overflow_fallback_still_detects_conflicts(storage):
     e = EngramEngine(storage)
 
     await e.commit(
-        content="Auth API rate limit is 100 requests per minute",
+        content="Auth API request limit of 100 requests per minute",
         scope="auth",
         confidence=0.9,
         agent_id="agent-a",
     )
 
-    for _ in range(e._detection_queue.maxsize):
+    for _ in range(e._detection_queue.maxsize - e._detection_queue.qsize()):
         e._detection_queue.put_nowait("dummy-id")
 
     result = await e.commit(
-        content="Auth API rate limit is 300 requests per minute",
+        content="Auth API request limit of 300 requests per minute",
         scope="auth",
         confidence=0.9,
         agent_id="agent-b",
@@ -940,4 +940,4 @@ async def test_queue_overflow_fallback_still_detects_conflicts(storage):
     assert result["detection_skipped"] is False
 
     conflicts = await e.get_conflicts(scope="auth", status="open")
-    assert any(c["detection_tier"] == "tier0_entity" for c in conflicts)
+    assert any(c["detection_tier"] == "tier2_numeric" for c in conflicts)
