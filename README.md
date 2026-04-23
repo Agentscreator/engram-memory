@@ -140,7 +140,7 @@ Framework integrations:
 
 - [LangChain / LangGraph](./docs/integrations/langchain.md)
 - [OpenAI Agents SDK](./docs/integrations/openai-agents.md)
-- [open-multi-agent](https://github.com/JackChen-me/open-multi-agent) — TypeScript multi-agent orchestration engine. Engram is a listed integration: shared memory and conflict detection for teams built with open-multi-agent.
+- [open-multi-agent](https://github.com/JackChen-me/open-multi-agent) — TypeScript multi-agent orchestration engine.
 
 ---
 
