@@ -1,291 +1,246 @@
-﻿# Developer Setup Guide
+# Developer Setup Guide
 
-Welcome to Engram development! This guide walks you through setting up your local environment to contribute code to the project.
+Welcome to Engram development. This guide walks through setting up a local environment for contributing code to the project.
 
 ## Prerequisites
 
 Before you start, make sure you have:
 
-- **Python 3.11 or higher**
-  \\\ash
-  python --version
-  \\\
+- Python 3.11 or higher
+- Git
+- Make
+- A code editor such as VS Code or PyCharm
+- Docker, optional for container-based development
+- PostgreSQL, optional for testing the `ENGRAM_DB_URL` workflow
 
-- **Git** (for version control)
-  \\\ash
-  git --version
-  \\\
+Verify the core tools:
 
-- **A code editor** (VS Code, PyCharm, or similar)
+```bash
+python --version
+git --version
+make help
+```
 
-- **PostgreSQL** (optional, for team-mode testing)
-  - Local development works with SQLite by default
-  - Only needed if you're testing the \ENGRAM_DB_URL\ workflow
+Local development uses SQLite by default, so PostgreSQL is only needed when you are explicitly testing the team-mode database path.
 
+## Fork and Clone
 
-## Part 1: Fork and Clone the Repository
+1. Fork the repository on GitHub.
+2. Clone your fork:
 
-### 1.1 Fork on GitHub
-
-1. Go to https://github.com/imadahmad9507-ops/Engram
-2. Click the **Fork** button (top-right corner)
-3. Select your GitHub username as the owner
-4. Click **Create fork**
-
-### 1.2 Clone Your Fork
-
-\\\ash
+```bash
 git clone https://github.com/YOUR-USERNAME/Engram.git
 cd Engram
-\\\
+```
 
-Replace \YOUR-USERNAME\ with your actual GitHub username.
+3. Add the upstream remote:
 
-### 1.3 Add Upstream Reference
+```bash
+git remote add upstream https://github.com/Agentscreator/engram-memory.git
+git remote -v
+```
 
-This lets you stay in sync with the main repository:
+Replace `YOUR-USERNAME` with your GitHub username.
 
-\\\ash
-git remote add upstream https://github.com/imadahmad9507-ops/Engram.git
-git remote -v  # Verify both origin and upstream are configured
-\\\
+## Set Up Python
 
+Create and activate a virtual environment.
 
-## Part 2: Set Up Your Development Environment
+On Windows PowerShell:
 
-### 2.1 Create a Python Virtual Environment
-
-A virtual environment isolates project dependencies from your system Python.
-
-**On Windows (PowerShell):**
-\\\powershell
+```powershell
 python -m venv venv
 .\venv\Scripts\Activate.ps1
-\\\
+```
 
-**On macOS / Linux:**
-\\\ash
+On macOS or Linux:
+
+```bash
 python3.11 -m venv venv
 source venv/bin/activate
-\\\
+```
 
-You should see \(venv)\ appear at the start of your terminal prompt.
+Then install Engram and development dependencies:
 
-### 2.2 Upgrade pip
+```bash
+make install
+```
 
-\\\ash
-pip install --upgrade pip
-\\\
+This installs Engram in editable mode, project dependencies, and development tools such as pytest and ruff.
 
-### 2.3 Install Dependencies (with dev tools)
+If your machine has multiple Python installations, pin the interpreter explicitly:
 
-\\\ash
-pip install -e ".[dev]"
-\\\
+```bash
+make install PYTHON=/path/to/python
+make test PYTHON=/path/to/python
+```
 
-This installs:
-- Engram itself in editable mode (changes to code take effect immediately)
-- All required dependencies
-- Development tools for testing and linting
+## Verify the Setup
 
+Check that Engram imports correctly:
 
-## Part 3: Verify the Setup
+```bash
+python -c "import engram; print('Engram imported successfully')"
+```
 
-### 3.1 Check Python Path
+Run the local HTTP MCP server:
 
-\\\ash
-where python       # Windows
-which python       # macOS/Linux
-\\\
+```bash
+make serve
+```
 
-### 3.2 Check Imports
+Open the local dashboard at:
 
-\\\ash
-python -c "import engram; print('✓ Engram imported successfully')"
-\\\
+```text
+http://127.0.0.1:7474/dashboard
+```
 
-### 3.3 Run the MCP Server Locally
+Press `Ctrl+C` to stop the server.
 
-\\\ash
-python -m engram
-\\\
+## Common Commands
 
-Press \Ctrl+C\ to stop it.
+Use the root `Makefile` as the canonical command entry point:
 
+```bash
+make help
+```
 
-## Part 4: Run Tests
+Common targets:
 
-### 4.1 Run All Tests
+```bash
+make install        # Install development dependencies
+make test           # Run CI-style tests
+make lint           # Run ruff lint checks
+make format         # Format Python files with ruff
+make format-check   # Check formatting without writing changes
+make check          # Run lint, format-check, and tests
+make build          # Build Python package artifacts
+make clean          # Remove local build/cache artifacts
+make serve          # Run the local HTTP MCP server
+```
 
-\\\ash
-pytest tests/
-\\\
+Docker targets:
 
-### 4.2 Run Tests with Coverage Report
+```bash
+make docker-build
+make docker-up
+make docker-up-sqlite
+make docker-up-postgres
+make docker-down
+make docker-logs
+```
 
-\\\ash
-pytest tests/ --cov=src/engram
-\\\
+`make docker-up` starts the SQLite profile by default. Use `make docker-up-postgres` when you need the PostgreSQL profile.
 
-### 4.3 Run a Specific Test File
+## Development Workflow
 
-\\\ash
-pytest tests/test_commit.py -v
-\\\
+Create a feature branch before making changes:
 
-
-## Part 5: Create a Feature Branch
-
-Before making changes, create a branch:
-
-\\\ash
-# Update main from upstream
+```bash
 git checkout main
 git pull upstream main
-
-# Create your feature branch
 git checkout -b feature/your-feature-name
-\\\
+```
 
-**Good branch names:**
-- \ix/conflict-detection-threshold\
-- \docs/add-troubleshooting-guide\
-- \eature/improve-entity-extraction\
+Good branch names:
 
+- `fix/conflict-detection-threshold`
+- `docs/add-troubleshooting-guide`
+- `feature/improve-entity-extraction`
 
-## Part 6: Make Changes and Test
+Make your changes in the relevant area:
 
-### 6.1 Edit Code
+- Core logic: `src/engram/`
+- Tests: `tests/`
+- Documentation: `docs/`, `README.md`, or contributor docs
 
-Make your changes in:
-- Core logic: \/src/engram/\
-- Tests: \/tests/\
-- Documentation: \/docs/\ or \README.md\
+Before opening a PR, run:
 
-### 6.2 Run Tests After Each Change
+```bash
+make check
+```
 
-\\\ash
-pytest tests/ --tb=short
-\\\
+For focused testing:
 
-### 6.3 Check Code Style (Optional)
+```bash
+make test
+make test TEST_ARGS="tests/test_file.py::test_name -vv -s"
+```
 
-\\\ash
-# Format code
-black src/engram tests/
+## Commit and Push
 
-# Check linting
-flake8 src/engram tests/
-\\\
+Review your changes:
 
-
-## Part 7: Commit Your Work
-
-### 7.1 Stage and Commit
-
-\\\ash
-# See what changed
+```bash
 git status
+git diff
+```
 
-# Stage your changes
-git add src/engram/ tests/
+Stage and commit:
 
-# Commit with a clear message
-git commit -m "docs: add developer setup guide with troubleshooting section"
-\\\
+```bash
+git add <changed-files>
+git commit -m "docs: update developer setup workflow"
+```
 
-**Commit message format:**
-- Start with \ix:\, \eat:\, \docs:\, \	est:\, or \chore:\
-- First line: short summary (50 chars max)
-- Add blank line + details if needed
+Use conventional commit prefixes such as `fix:`, `feat:`, `docs:`, `test:`, or `chore:`.
 
-### 7.2 Push to Your Fork
+Push your branch:
 
-\\\ash
+```bash
 git push origin feature/your-feature-name
-\\\
+```
 
+## Submit a Pull Request
 
-## Part 8: Submit a Pull Request
+1. Open your fork on GitHub.
+2. Click **Compare & pull request**.
+3. Explain what changed, why it changed, and how you tested it.
+4. Create the pull request.
 
-### 8.1 Open a PR on GitHub
-
-1. Go to https://github.com/YOUR-USERNAME/Engram
-2. Click **Compare & pull request**
-3. Fill in the PR description explaining what you changed and why
-4. Click **Create Pull Request**
-
-### 8.2 Respond to Reviews
-
-If maintainers suggest changes:
-1. Make the changes on your branch
-2. Commit: \git commit -am "Update based on review feedback"\
-3. Push: \git push origin feature/your-feature-name\
-4. The PR updates automatically
-
+If maintainers request changes, update your branch and push again. The PR updates automatically.
 
 ## Troubleshooting
 
-### "pip install -e fails"
+### `make install` fails
 
-**Solution:**
-Make sure you're in the \Engram\ directory and your venv is activated:
-\\\ash
+Make sure you are in the repository root and your virtual environment is active:
+
+```bash
 cd Engram
-.\venv\Scripts\Activate.ps1  # Windows PowerShell
-source venv/bin/activate     # macOS/Linux
-pip install -e ".[dev]"
-\\\
+make install
+```
 
-### "ModuleNotFoundError: No module named 'engram'"
+### `ModuleNotFoundError: No module named 'engram'`
 
-**Solution:**
-Reinstall in editable mode:
-\\\ash
-pip install -e ".[dev]" --force-reinstall
-\\\
+Reinstall the editable package:
 
-### "Tests fail with 'No such table: facts'"
+```bash
+make install
+```
 
-**Solution:**
-Initialize the database:
-\\\ash
+### Tests fail with missing database tables
+
+Initialize the local database, then rerun tests:
+
+```bash
 python -m engram --init-db
-pytest tests/
-\\\
+make test
+```
 
-### "Permission denied: install.sh"
+### Docker services do not start
 
-**Solution:**
-\\\ash
-chmod +x install.sh
-./install.sh
-\\\
+Check Docker is running and inspect the logs:
 
+```bash
+docker --version
+make docker-logs
+```
 
-## Common Workflows
-
-### Sync Your Fork with Latest Changes
-
-\\\ash
-git fetch upstream
-git rebase upstream/main
-git push origin main
-\\\
-
-### Run a Specific Test with Debug Output
-
-\\\ash
-pytest tests/test_file.py::test_name -vv -s
-\\\
-
+For PostgreSQL profile testing, set required overrides in a local `.env` file and never commit secrets.
 
 ## Next Steps
 
-1. **Read the Architecture:** See [docs/IMPLEMENTATION.md](./IMPLEMENTATION.md)
-2. **Check Contribution Guidelines:** See [CONTRIBUTING.md](../CONTRIBUTING.md)
-3. **Ask Questions:** Open a GitHub Discussion if needed
-
----
-
-**Welcome to Engram development! We're glad you're here.** 🎉
+1. Read [docs/IMPLEMENTATION.md](./IMPLEMENTATION.md).
+2. Review [CONTRIBUTING.md](../CONTRIBUTING.md).
+3. Open a GitHub Discussion if you need design alignment before implementing.

@@ -185,7 +185,7 @@ Full literature review: [`docs/LITERATURE.md`](./docs/LITERATURE.md)
 
 ## Contributing
 
-PRs welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`HIRING.md`](./HIRING.md) for paid contract work ($125–185/hour).
+PRs welcome. Run `make help` for common development commands, then see [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`HIRING.md`](./HIRING.md) for paid contract work ($125–185/hour).
 
 ---
 

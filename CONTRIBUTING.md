@@ -15,12 +15,11 @@
 git clone https://github.com/YOUR-USERNAME/Engram.git
 cd Engram
 
-# 2. Install
-./install.sh          # macOS / Linux
-# or: pip install -e ".[dev]"
+# 2. Install development dependencies
+make install
 
 # 3. Run the MCP server locally
-python -m engram.cli serve --http
+make serve
 
 # 4. Open the local dashboard
 # http://127.0.0.1:7474/dashboard
@@ -28,11 +27,15 @@ python -m engram.cli serve --http
 # 5. Ask your agent (Claude Code, Cursor, etc.) to set up Engram
 # Your agent will call engram_init and you'll see it working.
 
-# 6. Make a change → open a PR
+# 6. Make a change and open a PR
 git checkout -b your-feature-or-fix
 ```
 
-That's it. If any step fails, open an issue — a broken setup path is itself a valid first contribution.
+That's it. If any step fails, open an issue - a broken setup path is itself a valid first contribution.
+
+Run `make help` to see every supported development command.
+
+If your machine has multiple Python installations, pass `PYTHON=/path/to/python` to keep install and test targets on the same interpreter.
 
 ---
 
@@ -101,6 +104,26 @@ Keep changes focused. One concern per PR. If you find yourself touching unrelate
 
 **4. Test your work**
 
+Before opening a PR, run the same local checks used by CI:
+
+```bash
+make check
+```
+
+For faster iteration, use the narrower targets:
+
+```bash
+make test
+make lint
+make format-check
+```
+
+To run one test file through the Makefile, pass `TEST_ARGS`:
+
+```bash
+make test TEST_ARGS="tests/test_cli_config.py -q"
+```
+
 Don't submit a PR you haven't run yourself. If tests don't exist yet for what you're changing, add them or note it clearly in the PR description.
 
 **5. Open a PR**
@@ -134,7 +157,7 @@ If you're unsure whether something is in scope, ask first. The cost of a quick d
 
 ## Code Style
 
-Consistency matters more than any particular style. Match what's already there. If you're introducing something new, be deliberate about it and note it in the PR.
+Consistency matters more than any particular style. Match what's already there. Use `make format` for automatic formatting and `make lint` before sending a PR. If you're introducing something new, be deliberate about it and note it in the PR.
 
 <br />
 
