@@ -4,6 +4,18 @@ All changes are fully tested — the suite grows from the project's original tes
 
 ---
 
+## Round 9 - Makefile developer workflow
+
+**Summary:** Added a root `Makefile` as the canonical entry point for common contributor commands and updated contribution guidance to use it.
+
+**Files changed:** `Makefile`, `CONTRIBUTING.md`, `CONTRIBUTIONS.md`, `README.md`, `docs/DEVELOPER_SETUP.md`
+
+**Commands added:** `make help`, `make install`, `make test`, `make test-all`, `make lint`, `make format`, `make format-check`, `make check`, `make build`, `make clean`, `make serve`, `make docker-build`, `make docker-up`, `make docker-up-sqlite`, `make docker-up-postgres`, `make docker-down`, `make docker-logs`
+
+**New tests added:** 0 (developer workflow/documentation change)
+
+---
+
 ## Round 8 — Seven major features
 
 **Summary:** Implemented 7 production-ready features across the full stack (schema, storage, engine, REST, MCP, tests). Schema bumped from v7 to v8 with 5 new tables.
