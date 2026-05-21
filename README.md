@@ -120,6 +120,19 @@ Full design: [`docs/CONFLICT_DETECTIVE.md`](./docs/CONFLICT_DETECTIVE.md)
 
 ---
 
+## Security & Forensics Integration
+
+Engram integrates with the [SANS SIFT Workstation](https://www.sans.org/tools/sift-workstation/) for secure agent system management and forensic analysis. When agents interact with security-critical systems, Engram's shared memory ensures:
+
+- **Audit trail integrity** — Every agent action is logged with timestamps and attribution
+- **Conflict detection** — Contradictory findings between agents are surfaced automatically
+- **Evidence correlation** — Multi-agent teams can cross-reference findings from disk analysis, memory forensics, and log analysis
+- **Secure coordination** — Agents share verified facts without exposing raw evidence
+
+See [`docs/SIFT_SETUP.md`](./docs/SIFT_SETUP.md) for integration details.
+
+---
+
 ## IDE Support
 
 Engram works with any AI coding environment. First-class support for:
