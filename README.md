@@ -26,10 +26,6 @@ Conflict detection for AI agents is as foundational as accounting was for financ
 
 When agents make consequential decisions, someone has to be accountable. Engram creates a verifiable audit trail — every instruction, every committed fact, every contradiction surfaced — so liability lands on the organizations deploying agents.
 
-## North Star
-
-Zero bugs in AI-assisted development. Every agent shares the same verified truth — contradictions between what agents believe and what the code says are caught before they become bugs.
-
 ---
 
 ## Getting Started
