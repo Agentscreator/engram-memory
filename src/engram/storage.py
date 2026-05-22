@@ -316,7 +316,7 @@ class BaseStorage(ABC):
         self,
         key_hash: str,
         engram_id: str,
-        expires_at: str | None,
+        expires_at: datetime | None,
         uses_remaining: int | None,
     ) -> None:
         """Store an invite key hash. Default no-op for local mode."""
@@ -1962,14 +1962,16 @@ class SQLiteStorage(BaseStorage):
         self,
         key_hash: str,
         engram_id: str,
-        expires_at: str | None,
+        expires_at: datetime | None,
         uses_remaining: int | None,
     ) -> None:
         now = _now_iso()
+        # SQLite expects ISO strings for datetime comparison
+        expires_str = expires_at.isoformat() if expires_at else None
         await self.db.execute(
             """INSERT OR IGNORE INTO invite_keys(key_hash, engram_id, created_at, expires_at, uses_remaining)
                VALUES (?, ?, ?, ?, ?)""",
-            (key_hash, engram_id, now, expires_at, uses_remaining),
+            (key_hash, engram_id, now, expires_str, uses_remaining),
         )
         await self.db.commit()
 
