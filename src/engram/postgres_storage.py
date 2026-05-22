@@ -1419,7 +1419,7 @@ class PostgresStorage(BaseStorage):
         self,
         key_hash: str,
         engram_id: str,
-        expires_at: str | None,
+        expires_at: datetime | None,
         uses_remaining: int | None,
     ) -> None:
         async with self.acquire() as conn:

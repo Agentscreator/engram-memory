@@ -358,7 +358,7 @@ async def engram_status() -> dict[str, Any]:
                 )
                 expires_ts = datetime.fromtimestamp(
                     time.time() + 90 * 86400, tz=timezone.utc
-                ).isoformat()
+                )
                 await _storage.insert_invite_key(
                     key_hash=key_hash,
                     engram_id=ws.engram_id,
@@ -529,7 +529,7 @@ async def engram_init(
 
         expires_ts = datetime.fromtimestamp(
             time.time() + invite_expires_days * 86400, tz=timezone.utc
-        ).isoformat()
+        )
 
         await _storage.ensure_workspace(engram_id, anonymous_mode, anon_agents)
         await _storage.insert_invite_key(
