@@ -356,9 +356,7 @@ async def engram_status() -> dict[str, Any]:
                     uses_remaining=50,
                     key_generation=ws.key_generation,
                 )
-                expires_ts = datetime.fromtimestamp(
-                    time.time() + 90 * 86400, tz=timezone.utc
-                )
+                expires_ts = datetime.fromtimestamp(time.time() + 90 * 86400, tz=timezone.utc)
                 await _storage.insert_invite_key(
                     key_hash=key_hash,
                     engram_id=ws.engram_id,

@@ -3067,9 +3067,7 @@ class EngramEngine:
             schema=ws.schema,
             key_generation=new_gen,
         )
-        expires_ts = datetime.fromtimestamp(
-            time.time() + expires_days * 86400, tz=timezone.utc
-        )
+        expires_ts = datetime.fromtimestamp(time.time() + expires_days * 86400, tz=timezone.utc)
         await self.storage.insert_invite_key(
             key_hash=key_hash,
             engram_id=ws.engram_id,
